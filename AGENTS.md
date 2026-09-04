@@ -196,6 +196,18 @@ The Bevy client requires a Linux desktop session and a working graphics stack.
 The protocol, editor-core, and replay crates are standalone technology spikes
 and are intentionally not part of the root workspace yet.
 
+Convenience launch commands from the repository root:
+
+```bash
+./scripts/run-server.sh [127.0.0.1:4000]
+./scripts/run-client.sh
+./scripts/run-editor.sh [--output /tmp/starter-terrain.mmterrain]
+```
+
+The editor launcher currently runs the editor-core CLI spike and does not open
+a desktop window. The client launcher requires a Linux desktop session and
+working graphics stack.
+
 ## Development server
 
 The initial server is a development process, not a production MMO server. It

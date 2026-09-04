@@ -78,7 +78,16 @@ Run from this directory:
 ```bash
 cargo fmt -- --check
 cargo test
+cargo run --
+cargo run -- --output /tmp/starter-terrain.mmterrain
 ```
+
+The binary is a command-line technology-spike launcher, not the eventual
+desktop editor. With no arguments it applies one sample pressure-sensitive
+raise stroke and reports the resulting document. `--output` writes the
+deterministic source document so the format can be inspected or loaded by
+another tool. A future Qt or SDL desktop shell will feed real tablet events
+into the same `TerrainEditor` API.
 
 The crate has no third-party dependencies and is not part of the repository's
 main workspace yet; that keeps this isolated spike independently buildable

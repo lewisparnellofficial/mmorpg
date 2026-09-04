@@ -40,3 +40,10 @@ cargo test --manifest-path tools/mmorpg-editor-core/Cargo.toml
 
 The next editor spike should connect Qt or SDL tablet events to this API and
 validate the interaction on a real pen tablet.
+
+From the repository root, the current CLI editor spike can be launched with:
+
+```bash
+./scripts/run-editor.sh
+./scripts/run-editor.sh --output /tmp/starter-terrain.mmterrain
+```
