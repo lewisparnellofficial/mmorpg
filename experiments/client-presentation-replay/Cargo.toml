@@ -1,0 +1,15 @@
+[package]
+name = "client-presentation-replay"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+mmorpg-client-model = { path = "../../crates/mmorpg-client-model" }
+mmorpg-content = { path = "../../crates/mmorpg-content" }
+mmorpg-core = { path = "../../crates/mmorpg-core" }
+
+[lints.rust]
+unsafe_code = "forbid"

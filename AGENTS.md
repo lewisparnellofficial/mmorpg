@@ -181,6 +181,21 @@ cargo test --manifest-path tools/mmorpg-content-check/Cargo.toml
 cargo run --quiet --manifest-path tools/mmorpg-content-check/Cargo.toml
 ```
 
+Client and editor technology spikes:
+
+```bash
+cargo check --manifest-path crates/mmorpg-client/Cargo.toml
+cargo run --manifest-path crates/mmorpg-client/Cargo.toml
+cargo test --manifest-path crates/mmorpg-client-protocol/Cargo.toml
+cargo test --manifest-path tools/mmorpg-editor-core/Cargo.toml
+cargo test --manifest-path experiments/client-presentation-replay/Cargo.toml
+cargo run --quiet --manifest-path experiments/client-presentation-replay/Cargo.toml
+```
+
+The Bevy client requires a Linux desktop session and a working graphics stack.
+The protocol, editor-core, and replay crates are standalone technology spikes
+and are intentionally not part of the root workspace yet.
+
 ## Development server
 
 The initial server is a development process, not a production MMO server. It

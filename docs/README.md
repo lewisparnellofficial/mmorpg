@@ -13,6 +13,7 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [Persistence](architecture/persistence.md) — durable state, transactions, snapshots, journals, and recovery.
 - [UI scripting](architecture/ui-scripting.md) — player addons, the default UI, sandbox boundaries, and protected actions.
 - [Development tools](architecture/development-tools.md) — terrain, tablet, particle, world, NPC, quest, and content workflows.
+- [UI scripting spike](research/ui-scripting-spike.md) — runtime candidates, shared UI API, quotas, and anti-automation tests.
 - [Research plan](research/README.md) — research tracks, deliverables, and coordination rules.
 - [Rust server research](research/rust-server.md) — preliminary findings for Rust runtime, ownership, and region workers.
 - [Networking research](research/networking-and-replication.md) — preliminary findings for transport and replication.
@@ -23,6 +24,8 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [Client technology spike](research/client-technology-spike.md) — Linux/Rust runtime, rendering, input, asset, networking, and scripting candidates.
 - [Editor technology spike](research/editor-technology-spike.md) — Linux editor, pen-tablet, terrain, particle, and source-data workflow candidates.
 - [Client presentation model](../crates/mmorpg-client-model/README.md) — event/snapshot-only client state projection used by future rendering and UI adapters.
+- [Client shell spike](../crates/mmorpg-client/README.md) — Bevy Linux window and starter-zone scene prototype.
+- [Client protocol adapter](../crates/mmorpg-client-protocol/README.md) — typed helpers for the temporary development command line.
 - [Content validation tool](../tools/README.md) — current starter-catalog validation command and future authoring-tool boundary.
 
 ## Status vocabulary

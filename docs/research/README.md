@@ -1,6 +1,6 @@
 # Research Program
 
-**Status:** In progress — first three tracks started 2026-09-04
+**Status:** In progress — client/editor tracks started 2026-09-04
 
 ## Purpose
 
@@ -55,6 +55,23 @@ Primary output: a capability matrix and adversarial sandbox test plan.
 Investigate simulated clients, load generation, observability, crash dumps, replay, backups, staging, and multi-process deployment.
 
 Primary output: capacity-test scenarios and an operational baseline.
+
+## Current implementation spikes
+
+The initial client/editor research tracks now have small local validation
+artifacts:
+
+- Client runtime: `crates/mmorpg-client` opens a Bevy/Vulkan Linux window and
+  presents the starter catalog with primitive geometry.
+- Client boundary: `crates/mmorpg-client-model` projects authoritative events;
+  `crates/mmorpg-client-protocol` encodes temporary development commands.
+- Editor input/terrain: `tools/mmorpg-editor-core` provides a GUI-independent
+  tablet sample and heightmap brush model.
+- UI scripting: `ui-scripting-spike.md` records the sandbox and adversarial-test
+  design; no scripting runtime has been accepted or embedded yet.
+
+These artifacts are technology spikes. They do not establish production
+capacity, final engine/framework choices, or a production wire protocol.
 
 ## Current orchestration pass
 

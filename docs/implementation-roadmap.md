@@ -32,6 +32,13 @@ architecture and research remain in `docs/architecture/` and
 - Renderer-independent client presentation projection for authoritative
   player/NPC, combat, economy, and quest events.
 - Standalone starter-catalog validation CLI for the shared content boundary.
+- Bevy Linux client shell that opens a window and displays a primitive
+  town/field scene from the shared starter catalog.
+- Typed temporary-protocol command encoder with input validation.
+- Device-neutral pen-tablet and heightmap editing core with deterministic
+  source persistence and stroke-level undo/redo.
+- Client presentation replay experiment covering the full starter quest,
+  economy, combat, and loot loop.
 
 ## Completed batch: town/field gameplay loop
 
@@ -92,6 +99,11 @@ The first foundations from this batch now exist:
   these recommendations still require local windowing, rendering, tablet, and
   scripting spikes before they become accepted decisions.
 
+The window and terrain-core spikes now run locally. The remaining technology
+work in this batch is to connect native tablet events, feed a real network
+adapter into the client presentation model, and validate the protected UI
+scripting boundary with an embedded runtime.
+
 ### Batch 4: real simulation scheduling
 
 - Cast times and cooldowns.
@@ -126,15 +138,13 @@ The first foundations from this batch now exist:
 - Safe-point migration.
 - Group cohesion and event assignment.
 
-### Batch 8: client and tools
+### Batch 8: production client and tools
 
-- Client engine selection.
-- Linux client shell.
-- Shared content schemas.
-- Terrain and pen-tablet editor.
-- Asset placement.
-- Particle authoring.
-- UI scripting runtime and sandbox.
+- Production client runtime and renderer integration.
+- Versioned network transport and authoritative event decoder.
+- Real tablet-device editor shell.
+- Terrain tiles, materials, placement, particles, and runtime packaging.
+- UI scripting runtime, protected input context, and sandbox test suite.
 
 ## Working rule
 

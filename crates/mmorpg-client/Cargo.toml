@@ -1,0 +1,14 @@
+[package]
+name = "mmorpg-client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+bevy = { version = "0.19.1", default-features = true }
+mmorpg-content = { path = "../mmorpg-content" }
+
+[lints.rust]
+unsafe_code = "forbid"

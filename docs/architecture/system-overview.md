@@ -67,6 +67,11 @@ The repository now contains the first implementation of this shape:
 - `crates/mmorpg-client-model` — renderer-independent presentation state that
   accepts authoritative events and snapshots without providing gameplay
   authority or a client command API.
+- `crates/mmorpg-client` — standalone Bevy Linux client-shell technology spike
+  that opens a window and presents the starter catalog with primitive geometry.
+- `crates/mmorpg-client-protocol` — standalone typed command-line encoder for
+  the temporary development server adapter; it deliberately does not parse
+  human-readable server output.
 - `crates/mmorpg-core` — dependency-free authoritative starter-zone simulation.
 - `crates/mmorpg-server` — Linux headless development server with a temporary
   nonblocking TCP line protocol.
@@ -75,6 +80,12 @@ The current development tooling also includes `tools/mmorpg-content-check`, a
 standalone catalog validation command. It validates the same typed content
 catalog that runtime code consumes; it is not yet the full terrain, placement,
 particle, NPC, or quest editor.
+
+The editor-side foundation is `tools/mmorpg-editor-core`, a standalone,
+dependency-light heightmap and tablet-input model. It currently provides a
+device-neutral tablet sample, pressure-aware terrain brushes, deterministic
+source persistence, and stroke-level undo/redo; a Linux GUI/device shell is
+still a future spike.
 
 The current server is intentionally a development process. It does not yet
 provide authentication, durable persistence, binary protocol versioning,
