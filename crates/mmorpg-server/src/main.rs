@@ -1,4 +1,4 @@
-use mmorpg_core::{Command, EntityId, Event, ItemId, Role, World};
+use mmorpg_core::{Command, EntityId, Event, ItemId, QuestId, Role, World};
 use std::collections::VecDeque;
 use std::env;
 use std::io::{self, Read, Write};
@@ -165,6 +165,9 @@ impl Server {
         client.queue_line("HELP buy <vendor-id> <item-id> <quantity>");
         client.queue_line("HELP loot <enemy-id>");
         client.queue_line("HELP inventory");
+        client.queue_line("HELP quest-offers <npc-id>");
+        client.queue_line("HELP accept-quest <npc-id> <quest-id>");
+        client.queue_line("HELP turn-in-quest <npc-id> <quest-id>");
         client.queue_line("HELP state");
         client.queue_line("HELP quit");
     }
@@ -202,6 +205,12 @@ impl Server {
                 lines.push(format!(
                     "ITEM player={} item={} quantity={}",
                     player.id, stack.item_id, stack.quantity
+                ));
+            }
+            for quest in &player.quests {
+                lines.push(format!(
+                    "QUEST player={} quest={} progress={}/{} status={:?}",
+                    player.id, quest.quest_id, quest.progress, quest.required_count, quest.status
                 ));
             }
         }
@@ -448,6 +457,70 @@ fn format_event(event: &Event) -> String {
             "EVENT transaction_rejected player={} reason={reason}",
             player_id
         ),
+        Event::QuestOffersListed {
+            player_id,
+            npc_id,
+            quests,
+        } => {
+            let quest_text = quests
+                .iter()
+                .map(|quest| {
+                    format!(
+                        "id={} name={}",
+                        quest.quest_id,
+                        quest.name.replace(' ', "_")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(";");
+            format!(
+                "EVENT quest_offers player={} npc={} quests={quest_text}",
+                player_id, npc_id
+            )
+        }
+        Event::QuestAccepted {
+            player_id,
+            npc_id,
+            quest_id,
+        } => format!(
+            "EVENT quest_accepted player={} npc={} quest={}",
+            player_id, npc_id, quest_id
+        ),
+        Event::QuestProgressed {
+            player_id,
+            quest_id,
+            progress,
+            required_count,
+        } => format!(
+            "EVENT quest_progressed player={} quest={} progress={}/{}",
+            player_id, quest_id, progress, required_count
+        ),
+        Event::QuestCompleted {
+            player_id,
+            quest_id,
+        } => format!(
+            "EVENT quest_completed player={} quest={}",
+            player_id, quest_id
+        ),
+        Event::QuestRewarded {
+            player_id,
+            quest_id,
+            gold,
+            item_id,
+            item_quantity,
+            gold_remaining,
+        } => format!(
+            "EVENT quest_rewarded player={} quest={} gold={} item={} quantity={} gold_remaining={}",
+            player_id,
+            quest_id,
+            gold,
+            item_id.map_or_else(|| "none".to_owned(), |item| item.to_string()),
+            item_quantity,
+            gold_remaining
+        ),
+        Event::QuestRejected { player_id, reason } => {
+            format!("EVENT quest_rejected player={} reason={reason}", player_id)
+        }
         Event::CommandRejected { reason } => format!("EVENT rejected reason={reason}"),
     }
 }
@@ -549,6 +622,38 @@ fn parse_line(line: &str, bound_player: Option<EntityId>) -> Result<ParsedLine, 
             }
             Ok(ParsedLine::Inventory)
         }
+        "quest-offers" | "quests" => {
+            if tokens.len() != 2 {
+                return Err("usage: quest-offers <npc-id>".to_owned());
+            }
+            let player_id = bound_player.ok_or_else(|| "connect first".to_owned())?;
+            Ok(ParsedLine::Command(Command::ListQuestOffers {
+                player_id,
+                npc_id: parse_entity_id(tokens[1])?,
+            }))
+        }
+        "accept-quest" => {
+            if tokens.len() != 3 {
+                return Err("usage: accept-quest <npc-id> <quest-id>".to_owned());
+            }
+            let player_id = bound_player.ok_or_else(|| "connect first".to_owned())?;
+            Ok(ParsedLine::Command(Command::AcceptQuest {
+                player_id,
+                npc_id: parse_entity_id(tokens[1])?,
+                quest_id: parse_quest_id(tokens[2])?,
+            }))
+        }
+        "turn-in-quest" => {
+            if tokens.len() != 3 {
+                return Err("usage: turn-in-quest <npc-id> <quest-id>".to_owned());
+            }
+            let player_id = bound_player.ok_or_else(|| "connect first".to_owned())?;
+            Ok(ParsedLine::Command(Command::TurnInQuest {
+                player_id,
+                npc_id: parse_entity_id(tokens[1])?,
+                quest_id: parse_quest_id(tokens[2])?,
+            }))
+        }
         "state" => Ok(ParsedLine::State),
         "help" => Ok(ParsedLine::Help),
         "quit" | "exit" => Ok(ParsedLine::Quit),
@@ -576,6 +681,13 @@ fn parse_item_id(value: &str) -> Result<ItemId, String> {
         .parse::<u32>()
         .map(ItemId)
         .map_err(|_| "item-id must be an integer".to_owned())
+}
+
+fn parse_quest_id(value: &str) -> Result<QuestId, String> {
+    value
+        .parse::<u32>()
+        .map(QuestId)
+        .map_err(|_| "quest-id must be an integer".to_owned())
 }
 
 fn parse_positive_quantity(value: &str) -> Result<u32, String> {
@@ -665,6 +777,35 @@ mod tests {
         );
         assert!(parse_line("buy 1 2 0", own).is_err());
         assert!(parse_line("loot 12", None).is_err());
+    }
+
+    #[test]
+    fn development_protocol_parses_quest_commands_for_bound_player() {
+        let own = Some(EntityId(7));
+        assert_eq!(
+            parse_line("quest-offers 1", own).unwrap_command(),
+            Command::ListQuestOffers {
+                player_id: EntityId(7),
+                npc_id: EntityId(1),
+            }
+        );
+        assert_eq!(
+            parse_line("accept-quest 1 1", own).unwrap_command(),
+            Command::AcceptQuest {
+                player_id: EntityId(7),
+                npc_id: EntityId(1),
+                quest_id: QuestId(1),
+            }
+        );
+        assert_eq!(
+            parse_line("turn-in-quest 1 1", own).unwrap_command(),
+            Command::TurnInQuest {
+                player_id: EntityId(7),
+                npc_id: EntityId(1),
+                quest_id: QuestId(1),
+            }
+        );
+        assert!(parse_line("accept-quest 1 nope", own).is_err());
     }
 
     trait ParsedLineExt {

@@ -26,6 +26,9 @@ architecture and research remain in `docs/architecture/` and
   inventory inspection.
 - Shared dependency-free content catalog for item, NPC, vendor, quest, reward,
   and starter-zone spawn definitions.
+- Runtime quest state, authoritative kill progress, town turn-in, and
+  exactly-once quest rewards.
+- Development-protocol commands for quest offers, acceptance, and turn-in.
 
 ## Completed batch: town/field gameplay loop
 
@@ -44,11 +47,11 @@ later batch and should replace the storage boundary without changing gameplay
 command semantics. The line protocol remains a development adapter, not a
 production client protocol.
 
-## Current batch: quests and progression
+## Completed batch: quests and progression
 
-The first shared content boundary is now in place. The next implementation
-increment will use its quest definitions to add runtime quest state and the
-town-to-field progression loop.
+The shared content boundary now drives the first runtime quest. The starter
+loop is playable through the development protocol: accept the quest in town,
+defeat the field wolves, return to town, and claim the reward.
 
 ### Batch 3: quests and progression
 
@@ -58,9 +61,22 @@ town-to-field progression loop.
 - Quest completion and rewards.
 - A small starter quest chain.
 
-The client and editor technology spikes can begin alongside this batch once
-the initial schemas are stable. They should consume the shared definitions and
-must not become alternate sources of authoritative gameplay state.
+## Current batch: client and editor technology spikes
+
+The shared schema is stable enough for small, disposable technology spikes.
+These spikes should prove the Linux runtime choices without committing the
+project to a full production client or editor architecture yet:
+
+- Linux client window, input, camera, and basic scene rendering.
+- Loading the shared starter catalog and displaying zone/NPC data.
+- A minimal network connection to the development server.
+- Editor window and pen-tablet input discovery.
+- Heightmap brush prototype with save/load of a small source document.
+- Asset placement and particle preview feasibility.
+- UI scripting runtime feasibility and protected-action boundary research.
+
+The client and editor remain presentation and authoring tools. They must not
+become alternate sources of authoritative gameplay state.
 
 ### Batch 4: real simulation scheduling
 

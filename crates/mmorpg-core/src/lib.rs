@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use mmorpg_content::starter_catalog;
 pub use mmorpg_content::{
     ContentCatalog, ItemDefinition, ItemId, QuestDefinition, QuestId, item_definition,
 };
+use mmorpg_content::{NpcTemplateId, ObjectiveDefinition, starter_catalog};
 
 const MAX_MOVE_PER_COMMAND: f32 = 10.0;
 const ATTACK_RANGE: f32 = 32.0;
@@ -229,6 +229,7 @@ pub struct Player {
     pub target: Option<EntityId>,
     pub gold: u32,
     pub inventory: Inventory,
+    pub quests: Vec<QuestProgress>,
 }
 
 impl Player {
@@ -243,6 +244,7 @@ impl Player {
             target: self.target,
             gold: self.gold,
             inventory: self.inventory.clone(),
+            quests: self.quests.clone(),
         }
     }
 }
@@ -256,6 +258,7 @@ pub enum NpcKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Npc {
     pub id: EntityId,
+    pub template_id: NpcTemplateId,
     pub name: String,
     pub kind: NpcKind,
     pub position: Position,
@@ -274,6 +277,30 @@ pub struct PlayerSnapshot {
     pub target: Option<EntityId>,
     pub gold: u32,
     pub inventory: Inventory,
+    pub quests: Vec<QuestProgress>,
+}
+
+/// State for one quest accepted by a player.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuestProgress {
+    pub quest_id: QuestId,
+    pub progress: u32,
+    pub required_count: u32,
+    pub status: QuestStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QuestStatus {
+    Accepted,
+    Completed,
+    Rewarded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QuestOffer {
+    pub quest_id: QuestId,
+    pub name: &'static str,
+    pub description: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -320,6 +347,20 @@ pub enum Command {
     LootEnemy {
         player_id: EntityId,
         enemy_id: EntityId,
+    },
+    ListQuestOffers {
+        player_id: EntityId,
+        npc_id: EntityId,
+    },
+    AcceptQuest {
+        player_id: EntityId,
+        npc_id: EntityId,
+        quest_id: QuestId,
+    },
+    TurnInQuest {
+        player_id: EntityId,
+        npc_id: EntityId,
+        quest_id: QuestId,
     },
 }
 
@@ -374,6 +415,38 @@ pub enum Event {
         player_id: EntityId,
         reason: String,
     },
+    QuestOffersListed {
+        player_id: EntityId,
+        npc_id: EntityId,
+        quests: Vec<QuestOffer>,
+    },
+    QuestAccepted {
+        player_id: EntityId,
+        npc_id: EntityId,
+        quest_id: QuestId,
+    },
+    QuestProgressed {
+        player_id: EntityId,
+        quest_id: QuestId,
+        progress: u32,
+        required_count: u32,
+    },
+    QuestCompleted {
+        player_id: EntityId,
+        quest_id: QuestId,
+    },
+    QuestRewarded {
+        player_id: EntityId,
+        quest_id: QuestId,
+        gold: u32,
+        item_id: Option<ItemId>,
+        item_quantity: u32,
+        gold_remaining: u32,
+    },
+    QuestRejected {
+        player_id: EntityId,
+        reason: String,
+    },
     CommandRejected {
         reason: String,
     },
@@ -425,6 +498,7 @@ impl World {
         };
 
         let vendor_id = world.spawn_npc(
+            NpcTemplateId::MIRA_THE_MERCHANT,
             "Mira the Merchant",
             NpcKind::Vendor,
             Position::new(0.0, 0.0),
@@ -439,9 +513,27 @@ impl World {
                 },
             );
         }
-        world.spawn_npc("Field Wolf", NpcKind::Enemy, Position::new(24.0, 0.0), 100);
-        world.spawn_npc("Field Wolf", NpcKind::Enemy, Position::new(30.0, 6.0), 100);
-        world.spawn_npc("Field Wolf", NpcKind::Enemy, Position::new(30.0, -6.0), 100);
+        world.spawn_npc(
+            NpcTemplateId::FIELD_WOLF,
+            "Field Wolf",
+            NpcKind::Enemy,
+            Position::new(24.0, 0.0),
+            100,
+        );
+        world.spawn_npc(
+            NpcTemplateId::FIELD_WOLF,
+            "Field Wolf",
+            NpcKind::Enemy,
+            Position::new(30.0, 6.0),
+            100,
+        );
+        world.spawn_npc(
+            NpcTemplateId::FIELD_WOLF,
+            "Field Wolf",
+            NpcKind::Enemy,
+            Position::new(30.0, -6.0),
+            100,
+        );
         world
     }
 
@@ -505,6 +597,7 @@ impl World {
 
     fn spawn_npc(
         &mut self,
+        template_id: NpcTemplateId,
         name: &str,
         kind: NpcKind,
         position: Position,
@@ -515,6 +608,7 @@ impl World {
             id,
             Npc {
                 id,
+                template_id,
                 name: name.to_owned(),
                 kind,
                 position,
@@ -563,6 +657,7 @@ impl World {
                     target: None,
                     gold: STARTER_GOLD,
                     inventory: Inventory::new(STARTER_INVENTORY_CAPACITY),
+                    quests: Vec::new(),
                 };
                 events.push(Event::PlayerJoined {
                     player: player.snapshot(),
@@ -639,26 +734,31 @@ impl World {
                     Role::Healer => 4,
                     Role::DamageDealer => 12,
                 };
-                let Some(target) = self.npcs.get_mut(&target_id) else {
-                    Self::reject(events, "target no longer exists");
-                    return;
+                let (target_template_id, target_health, defeated) = {
+                    let Some(target) = self.npcs.get_mut(&target_id) else {
+                        Self::reject(events, "target no longer exists");
+                        return;
+                    };
+                    if target.kind != NpcKind::Enemy || target.health == 0 {
+                        Self::reject(events, "target is not a living enemy");
+                        return;
+                    }
+                    if player_position.distance_squared(target.position)
+                        > ATTACK_RANGE * ATTACK_RANGE
+                    {
+                        Self::reject(events, "target is out of attack range");
+                        return;
+                    }
+                    target.health = target.health.saturating_sub(damage);
+                    (target.template_id, target.health, target.health == 0)
                 };
-                if target.kind != NpcKind::Enemy || target.health == 0 {
-                    Self::reject(events, "target is not a living enemy");
-                    return;
-                }
-                if player_position.distance_squared(target.position) > ATTACK_RANGE * ATTACK_RANGE {
-                    Self::reject(events, "target is out of attack range");
-                    return;
-                }
-                target.health = target.health.saturating_sub(damage);
                 events.push(Event::AttackResolved {
                     player_id,
                     target_id,
                     damage,
-                    target_health: target.health,
+                    target_health,
                 });
-                if target.health == 0 {
+                if defeated {
                     events.push(Event::EnemyDefeated {
                         enemy_id: target_id,
                     });
@@ -667,6 +767,9 @@ impl World {
                     if reward.owner.is_none() {
                         reward.owner = Some(player_id);
                     }
+                }
+                if defeated {
+                    self.advance_kill_quests(player_id, target_template_id, events);
                 }
             }
             Command::ListVendor {
@@ -846,7 +949,243 @@ impl World {
                     quantity: 1,
                 });
             }
+            Command::ListQuestOffers { player_id, npc_id } => {
+                let Some(npc_template_id) = self.quest_giver_template(player_id, npc_id, events)
+                else {
+                    return;
+                };
+                let quests = starter_catalog()
+                    .quests
+                    .iter()
+                    .filter(|quest| quest.giver == npc_template_id)
+                    .map(|quest| QuestOffer {
+                        quest_id: quest.id,
+                        name: quest.name,
+                        description: quest.description,
+                    })
+                    .collect();
+                events.push(Event::QuestOffersListed {
+                    player_id,
+                    npc_id,
+                    quests,
+                });
+            }
+            Command::AcceptQuest {
+                player_id,
+                npc_id,
+                quest_id,
+            } => {
+                let Some(npc_template_id) = self.quest_giver_template(player_id, npc_id, events)
+                else {
+                    return;
+                };
+                let Some(quest) = starter_catalog()
+                    .quests
+                    .iter()
+                    .find(|quest| quest.id == quest_id && quest.giver == npc_template_id)
+                else {
+                    Self::reject_quest(events, player_id, "quest is not offered by this NPC");
+                    return;
+                };
+                let Some(ObjectiveDefinition::KillNpc {
+                    npc_template_id: objective_template_id,
+                    required_count,
+                }) = quest.objectives.first()
+                else {
+                    Self::reject_quest(events, player_id, "quest has no supported objective");
+                    return;
+                };
+                if *objective_template_id == NpcTemplateId(0) || *required_count == 0 {
+                    Self::reject_quest(events, player_id, "quest has invalid objective data");
+                    return;
+                }
+                let Some(player) = self.players.get_mut(&player_id) else {
+                    Self::reject_quest(events, player_id, format!("unknown player {player_id}"));
+                    return;
+                };
+                if player.quests.iter().any(|state| state.quest_id == quest_id) {
+                    Self::reject_quest(events, player_id, "quest was already accepted");
+                    return;
+                }
+                player.quests.push(QuestProgress {
+                    quest_id,
+                    progress: 0,
+                    required_count: *required_count,
+                    status: QuestStatus::Accepted,
+                });
+                events.push(Event::QuestAccepted {
+                    player_id,
+                    npc_id,
+                    quest_id,
+                });
+            }
+            Command::TurnInQuest {
+                player_id,
+                npc_id,
+                quest_id,
+            } => {
+                let Some(npc_template_id) = self.quest_giver_template(player_id, npc_id, events)
+                else {
+                    return;
+                };
+                let Some(quest) = starter_catalog()
+                    .quests
+                    .iter()
+                    .find(|quest| quest.id == quest_id && quest.giver == npc_template_id)
+                else {
+                    Self::reject_quest(events, player_id, "quest is not turned in to this NPC");
+                    return;
+                };
+                let reward = quest.reward;
+                let Some(player) = self.players.get(&player_id) else {
+                    Self::reject_quest(events, player_id, format!("unknown player {player_id}"));
+                    return;
+                };
+                let Some(state) = player
+                    .quests
+                    .iter()
+                    .find(|state| state.quest_id == quest_id)
+                else {
+                    Self::reject_quest(events, player_id, "quest was not accepted");
+                    return;
+                };
+                if state.status != QuestStatus::Completed {
+                    let reason = match state.status {
+                        QuestStatus::Accepted => "quest objectives are not complete",
+                        QuestStatus::Completed => unreachable!(),
+                        QuestStatus::Rewarded => "quest reward was already claimed",
+                    };
+                    Self::reject_quest(events, player_id, reason);
+                    return;
+                }
+                let item_definition = reward.item_id.and_then(item_definition);
+                if reward.item_id.is_some() && item_definition.is_none() {
+                    Self::reject_quest(events, player_id, "quest reward item is unknown");
+                    return;
+                }
+                if let Some(definition) = item_definition
+                    && !player.inventory.can_add(definition, reward.item_quantity)
+                {
+                    Self::reject_quest(events, player_id, "inventory has insufficient capacity");
+                    return;
+                }
+                let Some(gold_remaining) = player.gold.checked_add(reward.gold) else {
+                    Self::reject_quest(events, player_id, "quest reward gold is too large");
+                    return;
+                };
+                let player = self
+                    .players
+                    .get_mut(&player_id)
+                    .expect("player was checked above");
+                player.gold = gold_remaining;
+                if let Some(definition) = item_definition {
+                    player.inventory.add(definition, reward.item_quantity);
+                }
+                player
+                    .quests
+                    .iter_mut()
+                    .find(|state| state.quest_id == quest_id)
+                    .expect("quest state was checked above")
+                    .status = QuestStatus::Rewarded;
+                events.push(Event::QuestRewarded {
+                    player_id,
+                    quest_id,
+                    gold: reward.gold,
+                    item_id: reward.item_id,
+                    item_quantity: reward.item_quantity,
+                    gold_remaining,
+                });
+            }
         }
+    }
+
+    fn advance_kill_quests(
+        &mut self,
+        player_id: EntityId,
+        defeated_template_id: NpcTemplateId,
+        events: &mut Vec<Event>,
+    ) {
+        let updates: Vec<_> = self
+            .players
+            .get(&player_id)
+            .into_iter()
+            .flat_map(|player| player.quests.iter())
+            .filter_map(|state| {
+                if state.status != QuestStatus::Accepted {
+                    return None;
+                }
+                let quest = starter_catalog()
+                    .quests
+                    .iter()
+                    .find(|quest| quest.id == state.quest_id)?;
+                let Some(ObjectiveDefinition::KillNpc {
+                    npc_template_id,
+                    required_count,
+                }) = quest.objectives.first()
+                else {
+                    return None;
+                };
+                (*npc_template_id == defeated_template_id).then_some((
+                    state.quest_id,
+                    state.progress,
+                    *required_count,
+                ))
+            })
+            .collect();
+
+        let Some(player) = self.players.get_mut(&player_id) else {
+            return;
+        };
+        for (quest_id, old_progress, required_count) in updates {
+            let Some(state) = player
+                .quests
+                .iter_mut()
+                .find(|state| state.quest_id == quest_id)
+            else {
+                continue;
+            };
+            state.progress = old_progress.saturating_add(1).min(required_count);
+            events.push(Event::QuestProgressed {
+                player_id,
+                quest_id,
+                progress: state.progress,
+                required_count,
+            });
+            if state.progress == required_count {
+                state.status = QuestStatus::Completed;
+                events.push(Event::QuestCompleted {
+                    player_id,
+                    quest_id,
+                });
+            }
+        }
+    }
+
+    fn quest_giver_template(
+        &self,
+        player_id: EntityId,
+        npc_id: EntityId,
+        events: &mut Vec<Event>,
+    ) -> Option<NpcTemplateId> {
+        let Some(player) = self.players.get(&player_id) else {
+            Self::reject_quest(events, player_id, format!("unknown player {player_id}"));
+            return None;
+        };
+        let Some(npc) = self.npcs.get(&npc_id) else {
+            Self::reject_quest(events, player_id, format!("unknown NPC {npc_id}"));
+            return None;
+        };
+        if ZoneArea::from_position(player.position) != ZoneArea::Town {
+            Self::reject_quest(events, player_id, "quest giver is only available in town");
+            return None;
+        }
+        if player.position.distance_squared(npc.position)
+            > VENDOR_INTERACTION_RANGE * VENDOR_INTERACTION_RANGE
+        {
+            Self::reject_quest(events, player_id, "player is too far from quest giver");
+            return None;
+        }
+        Some(npc.template_id)
     }
 
     fn can_use_vendor(
@@ -888,6 +1227,13 @@ impl World {
 
     fn reject_transaction(events: &mut Vec<Event>, player_id: EntityId, reason: impl Into<String>) {
         events.push(Event::TransactionRejected {
+            player_id,
+            reason: reason.into(),
+        });
+    }
+
+    fn reject_quest(events: &mut Vec<Event>, player_id: EntityId, reason: impl Into<String>) {
+        events.push(Event::QuestRejected {
             player_id,
             reason: reason.into(),
         });
@@ -1065,6 +1411,147 @@ mod tests {
         assert_eq!("heal".parse::<Role>().unwrap(), Role::Healer);
         assert_eq!("dps".parse::<Role>().unwrap(), Role::DamageDealer);
         assert!("mage".parse::<Role>().is_err());
+    }
+
+    #[test]
+    fn quest_progress_is_derived_from_enemy_defeats_and_rewarded_once() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Questing", Role::DamageDealer);
+        let npc_id = vendor(&world);
+
+        let events = world.step([Command::ListQuestOffers { player_id, npc_id }]);
+        assert_eq!(
+            events,
+            vec![Event::QuestOffersListed {
+                player_id,
+                npc_id,
+                quests: vec![QuestOffer {
+                    quest_id: QuestId::CLEAR_THE_FIELD,
+                    name: "Clear the Field",
+                    description: "Thin the wolves threatening travelers outside town.",
+                }],
+            }]
+        );
+
+        let events = world.step([Command::AcceptQuest {
+            player_id,
+            npc_id,
+            quest_id: QuestId::CLEAR_THE_FIELD,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::QuestAccepted {
+                player_id,
+                npc_id,
+                quest_id: QuestId::CLEAR_THE_FIELD,
+            }]
+        );
+
+        let enemies: Vec<_> = world
+            .npcs()
+            .filter(|npc| npc.kind == NpcKind::Enemy)
+            .map(|npc| npc.id)
+            .collect();
+        for enemy_id in enemies {
+            defeat_enemy(&mut world, player_id, enemy_id);
+        }
+        assert_eq!(
+            world.player(player_id).unwrap().quests,
+            vec![QuestProgress {
+                quest_id: QuestId::CLEAR_THE_FIELD,
+                progress: 3,
+                required_count: 3,
+                status: QuestStatus::Completed,
+            }]
+        );
+
+        for _ in 0..5 {
+            world.step([Command::Move {
+                player_id,
+                dx: -10.0,
+                dy: 0.0,
+            }]);
+        }
+        let events = world.step([Command::TurnInQuest {
+            player_id,
+            npc_id,
+            quest_id: QuestId::CLEAR_THE_FIELD,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::QuestRewarded {
+                player_id,
+                quest_id: QuestId::CLEAR_THE_FIELD,
+                gold: 10,
+                item_id: Some(ItemId::TOWN_RATION),
+                item_quantity: 5,
+                gold_remaining: 30,
+            }]
+        );
+        assert_eq!(world.player(player_id).unwrap().gold, 30);
+        assert_eq!(
+            world
+                .player(player_id)
+                .unwrap()
+                .inventory
+                .quantity(ItemId::TOWN_RATION),
+            5
+        );
+
+        let events = world.step([Command::TurnInQuest {
+            player_id,
+            npc_id,
+            quest_id: QuestId::CLEAR_THE_FIELD,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::QuestRejected {
+                player_id,
+                reason: "quest reward was already claimed".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn incomplete_or_duplicate_quest_operations_are_rejected_without_mutation() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Questing", Role::Tank);
+        let npc_id = vendor(&world);
+
+        let events = world.step([Command::TurnInQuest {
+            player_id,
+            npc_id,
+            quest_id: QuestId::CLEAR_THE_FIELD,
+        }]);
+        assert!(matches!(events[0], Event::QuestRejected { .. }));
+
+        world.step([Command::AcceptQuest {
+            player_id,
+            npc_id,
+            quest_id: QuestId::CLEAR_THE_FIELD,
+        }]);
+        let events = world.step([Command::AcceptQuest {
+            player_id,
+            npc_id,
+            quest_id: QuestId::CLEAR_THE_FIELD,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::QuestRejected {
+                player_id,
+                reason: "quest was already accepted".to_owned(),
+            }]
+        );
+        assert_eq!(world.player(player_id).unwrap().gold, 20);
+        assert!(
+            world
+                .player(player_id)
+                .unwrap()
+                .inventory
+                .stacks()
+                .next()
+                .is_none()
+        );
     }
 
     #[test]

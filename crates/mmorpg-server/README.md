@@ -27,6 +27,9 @@ vendor <vendor-id>
 buy <vendor-id> <item-id> <quantity>
 loot <enemy-id>
 inventory
+quest-offers <npc-id>
+accept-quest <npc-id> <quest-id>
+turn-in-quest <npc-id> <quest-id>
 state
 quit
 ```
@@ -53,6 +56,10 @@ For example, after connecting in town, `vendor 1` lists the vendor's stock and
 `buy 1 2 3` purchases three Town Rations. After defeating a field wolf,
 `loot <enemy-id>` claims its reward if the connected player owns the reward.
 `inventory` prints the player's authoritative gold and item stacks.
+
+The starter quest is quest `1`, `Clear the Field`, offered by the starter
+town NPC `1`. Use `quest-offers 1`, `accept-quest 1 1`, defeat the three field
+wolves, return to town, and use `turn-in-quest 1 1`.
 
 The server must validate every command through the authoritative core. A
 successful command is not evidence that a client is trusted.
