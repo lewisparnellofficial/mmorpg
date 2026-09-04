@@ -139,6 +139,7 @@ impl Server {
                 });
             }
             Ok(ParsedLine::State) => self.send_state(client_id),
+            Ok(ParsedLine::Snapshot) => self.send_machine_snapshot(client_id),
             Ok(ParsedLine::Inventory) => self.send_inventory(client_id),
             Ok(ParsedLine::Help) => self.send_help(client_id),
             Ok(ParsedLine::Quit) => {
@@ -169,6 +170,7 @@ impl Server {
         client.queue_line("HELP accept-quest <npc-id> <quest-id>");
         client.queue_line("HELP turn-in-quest <npc-id> <quest-id>");
         client.queue_line("HELP state");
+        client.queue_line("HELP snapshot");
         client.queue_line("HELP quit");
     }
 
@@ -271,6 +273,23 @@ impl Server {
             )
         }))
         .collect();
+        if let Some(client) = self
+            .clients
+            .iter_mut()
+            .find(|client| client.id == client_id)
+        {
+            for line in lines {
+                client.queue_line(line);
+            }
+        }
+    }
+
+    /// Sends the temporary machine-readable bootstrap snapshot. This is kept
+    /// separate from `state` so existing terminal users retain the current
+    /// human-readable output while the graphical client has a deterministic
+    /// response to parse.
+    fn send_machine_snapshot(&mut self, client_id: u64) {
+        let lines = format_machine_snapshot(&self.world);
         if let Some(client) = self
             .clients
             .iter_mut()
@@ -525,9 +544,82 @@ fn format_event(event: &Event) -> String {
     }
 }
 
+/// Formats the temporary graphical-client bootstrap response.
+///
+/// The `TEMP_SNAPSHOT` prefix is deliberately not part of the future wire
+/// protocol. Records are whitespace-delimited key/value pairs, and text
+/// values use percent encoding so names containing spaces cannot change the
+/// record shape. Positions use Rust's shortest round-trippable float format.
+fn format_machine_snapshot(world: &World) -> Vec<String> {
+    let summary = world.summary();
+    let mut lines = vec!["TEMP_SNAPSHOT_BEGIN version=1".to_owned()];
+    lines.push(format!(
+        "TEMP_SNAPSHOT WORLD tick={} players={} npcs={} enemies={} vendors={}",
+        summary.tick,
+        summary.player_count,
+        summary.npc_count,
+        summary.enemy_count,
+        summary.vendor_count
+    ));
+    for player in world.players() {
+        lines.push(format!(
+            "TEMP_SNAPSHOT PLAYER id={} name={} role={} position={:?},{:?} health={} max_health={} gold={} target={}",
+            player.id,
+            encode_snapshot_text(&player.name),
+            player.role.as_str(),
+            player.position.x,
+            player.position.y,
+            player.health,
+            player.max_health,
+            player.gold,
+            player
+                .target
+                .map_or_else(|| "none".to_owned(), |target| target.to_string())
+        ));
+    }
+    for npc in world.npcs() {
+        lines.push(format!(
+            "TEMP_SNAPSHOT NPC id={} template_id={} name={} kind={} position={:?},{:?} health={} max_health={}",
+            npc.id,
+            npc.template_id,
+            encode_snapshot_text(&npc.name),
+            machine_npc_kind(npc.kind),
+            npc.position.x,
+            npc.position.y,
+            npc.health,
+            npc.max_health
+        ));
+    }
+    lines.push("TEMP_SNAPSHOT_END".to_owned());
+    lines
+}
+
+fn machine_npc_kind(kind: mmorpg_core::NpcKind) -> &'static str {
+    match kind {
+        mmorpg_core::NpcKind::Vendor => "vendor",
+        mmorpg_core::NpcKind::Enemy => "enemy",
+    }
+}
+
+fn encode_snapshot_text(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    encoded
+}
+
 enum ParsedLine {
     Command(Command),
     State,
+    Snapshot,
     Inventory,
     Help,
     Quit,
@@ -655,6 +747,7 @@ fn parse_line(line: &str, bound_player: Option<EntityId>) -> Result<ParsedLine, 
             }))
         }
         "state" => Ok(ParsedLine::State),
+        "snapshot" => Ok(ParsedLine::Snapshot),
         "help" => Ok(ParsedLine::Help),
         "quit" | "exit" => Ok(ParsedLine::Quit),
         _ => Err(format!("unknown command '{command}'; try help")),
@@ -819,6 +912,7 @@ mod tests {
                 ParsedLine::State | ParsedLine::Inventory | ParsedLine::Help | ParsedLine::Quit => {
                     panic!("expected a command")
                 }
+                ParsedLine::Snapshot => panic!("expected a command"),
             }
         }
     }
@@ -829,5 +923,44 @@ mod tests {
             enemy_id: EntityId(9),
         };
         assert_eq!(format_event(&event), "EVENT enemy_defeated id=9");
+    }
+
+    #[test]
+    fn snapshot_command_is_available_without_a_bound_player() {
+        assert!(matches!(
+            parse_line("snapshot", None),
+            Ok(ParsedLine::Snapshot)
+        ));
+    }
+
+    #[test]
+    fn machine_snapshot_has_stable_bootstrap_records() {
+        let mut world = World::new_starter_zone();
+        world.step([Command::JoinPlayer {
+            name: "Aria".to_owned(),
+            role: Role::DamageDealer,
+        }]);
+
+        assert_eq!(
+            format_machine_snapshot(&world),
+            vec![
+                "TEMP_SNAPSHOT_BEGIN version=1",
+                "TEMP_SNAPSHOT WORLD tick=1 players=1 npcs=4 enemies=3 vendors=1",
+                "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=0.0,0.0 health=100 max_health=100 gold=20 target=none",
+                "TEMP_SNAPSHOT NPC id=1 template_id=1 name=Mira%20the%20Merchant kind=vendor position=0.0,0.0 health=1 max_health=1",
+                "TEMP_SNAPSHOT NPC id=2 template_id=2 name=Field%20Wolf kind=enemy position=24.0,0.0 health=100 max_health=100",
+                "TEMP_SNAPSHOT NPC id=3 template_id=2 name=Field%20Wolf kind=enemy position=30.0,6.0 health=100 max_health=100",
+                "TEMP_SNAPSHOT NPC id=4 template_id=2 name=Field%20Wolf kind=enemy position=30.0,-6.0 health=100 max_health=100",
+                "TEMP_SNAPSHOT_END",
+            ]
+        );
+    }
+
+    #[test]
+    fn machine_snapshot_text_encoding_preserves_record_boundaries() {
+        assert_eq!(
+            encode_snapshot_text("Name with\tcontrols%"),
+            "Name%20with%09controls%25"
+        );
     }
 }
