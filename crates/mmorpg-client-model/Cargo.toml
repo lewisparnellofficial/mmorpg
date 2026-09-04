@@ -1,0 +1,12 @@
+[package]
+name = "mmorpg-client-model"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+mmorpg-content = { path = "../mmorpg-content" }
+mmorpg-core = { path = "../mmorpg-core" }
+
+[lints.rust]
+unsafe_code = "forbid"

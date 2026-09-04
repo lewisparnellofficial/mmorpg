@@ -173,6 +173,14 @@ The experiment README files and records under `docs/experiments/` define the
 meaning and limitations of each result. Do not present a synthetic benchmark
 as proof of production capacity.
 
+Content catalog smoke check:
+
+```bash
+cargo fmt --manifest-path tools/mmorpg-content-check/Cargo.toml -- --check
+cargo test --manifest-path tools/mmorpg-content-check/Cargo.toml
+cargo run --quiet --manifest-path tools/mmorpg-content-check/Cargo.toml
+```
+
 ## Development server
 
 The initial server is a development process, not a production MMO server. It

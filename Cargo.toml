@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/mmorpg-content",
+    "crates/mmorpg-client-model",
     "crates/mmorpg-core",
     "crates/mmorpg-server",
 ]

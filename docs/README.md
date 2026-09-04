@@ -20,6 +20,10 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [Open questions](open-questions.md) — unresolved decisions and questions requiring experiments or owner input.
 - [Implementation roadmap](implementation-roadmap.md) — ordered vertical-slice implementation batches.
 - [Shared content schema decision](decisions/ADR-003-shared-content-schema.md) — static definitions shared by tools, client, and server.
+- [Client technology spike](research/client-technology-spike.md) — Linux/Rust runtime, rendering, input, asset, networking, and scripting candidates.
+- [Editor technology spike](research/editor-technology-spike.md) — Linux editor, pen-tablet, terrain, particle, and source-data workflow candidates.
+- [Client presentation model](../crates/mmorpg-client-model/README.md) — event/snapshot-only client state projection used by future rendering and UI adapters.
+- [Content validation tool](../tools/README.md) — current starter-catalog validation command and future authoring-tool boundary.
 
 ## Status vocabulary
 

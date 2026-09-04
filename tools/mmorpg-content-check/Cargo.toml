@@ -1,0 +1,13 @@
+[package]
+name = "mmorpg-content-check"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+mmorpg-content = { path = "../../crates/mmorpg-content" }
+
+[lints.rust]
+unsafe_code = "forbid"

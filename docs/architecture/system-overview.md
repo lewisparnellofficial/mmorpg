@@ -64,9 +64,17 @@ The repository now contains the first implementation of this shape:
 
 - `crates/mmorpg-content` — dependency-free immutable content definitions and
   starter-catalog validation shared by runtime and tools.
+- `crates/mmorpg-client-model` — renderer-independent presentation state that
+  accepts authoritative events and snapshots without providing gameplay
+  authority or a client command API.
 - `crates/mmorpg-core` — dependency-free authoritative starter-zone simulation.
 - `crates/mmorpg-server` — Linux headless development server with a temporary
   nonblocking TCP line protocol.
+
+The current development tooling also includes `tools/mmorpg-content-check`, a
+standalone catalog validation command. It validates the same typed content
+catalog that runtime code consumes; it is not yet the full terrain, placement,
+particle, NPC, or quest editor.
 
 The current server is intentionally a development process. It does not yet
 provide authentication, durable persistence, binary protocol versioning,
@@ -97,6 +105,11 @@ The server authoritatively resolves:
 - World events.
 
 The client may predict and interpolate for responsiveness, but it cannot submit authoritative results.
+
+The client presentation model follows this boundary: its mutable state is
+updated only from authoritative events or snapshots. Rendering, input, and
+future UI scripting adapters remain outside the model and must translate user
+intent into server commands rather than applying gameplay results locally.
 
 ## Simulation ownership
 

@@ -29,6 +29,9 @@ architecture and research remain in `docs/architecture/` and
 - Runtime quest state, authoritative kill progress, town turn-in, and
   exactly-once quest rewards.
 - Development-protocol commands for quest offers, acceptance, and turn-in.
+- Renderer-independent client presentation projection for authoritative
+  player/NPC, combat, economy, and quest events.
+- Standalone starter-catalog validation CLI for the shared content boundary.
 
 ## Completed batch: town/field gameplay loop
 
@@ -77,6 +80,17 @@ project to a full production client or editor architecture yet:
 
 The client and editor remain presentation and authoring tools. They must not
 become alternate sources of authoritative gameplay state.
+
+The first foundations from this batch now exist:
+
+- `mmorpg-client-model` projects authoritative events and snapshots into
+  renderer/UI-friendly state, with no networking, rendering, or gameplay
+  command dependencies.
+- `mmorpg-content-check` validates the starter catalog and prints a compact
+  content summary for local tooling and CI smoke checks.
+- Client and editor research records the provisional technology candidates;
+  these recommendations still require local windowing, rendering, tablet, and
+  scripting spikes before they become accepted decisions.
 
 ### Batch 4: real simulation scheduling
 

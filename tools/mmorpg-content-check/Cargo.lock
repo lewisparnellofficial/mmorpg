@@ -3,27 +3,12 @@
 version = 4
 
 [[package]]
-name = "mmorpg-client-model"
-version = "0.1.0"
-dependencies = [
- "mmorpg-content",
- "mmorpg-core",
-]
-
-[[package]]
 name = "mmorpg-content"
 version = "0.1.0"
 
 [[package]]
-name = "mmorpg-core"
+name = "mmorpg-content-check"
 version = "0.1.0"
 dependencies = [
  "mmorpg-content",
-]
-
-[[package]]
-name = "mmorpg-server"
-version = "0.1.0"
-dependencies = [
- "mmorpg-core",
 ]
