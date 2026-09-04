@@ -14,6 +14,8 @@ These questions remain unresolved. They should be answered through research, pro
 - Which UI scripting runtime can enforce protected-action and resource limits reliably?
 - Which Linux editor technology provides responsive pen-tablet terrain sculpting?
 
+Research has started on the Rust runtime, network/replication model, and overworld layering. Preliminary findings are recorded in `docs/research/`; none of the related implementation choices are accepted yet.
+
 ## Capacity and performance
 
 - What is the desired server tick rate?

@@ -14,6 +14,9 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [UI scripting](architecture/ui-scripting.md) — player addons, the default UI, sandbox boundaries, and protected actions.
 - [Development tools](architecture/development-tools.md) — terrain, tablet, particle, world, NPC, quest, and content workflows.
 - [Research plan](research/README.md) — research tracks, deliverables, and coordination rules.
+- [Rust server research](research/rust-server.md) — preliminary findings for Rust runtime, ownership, and region workers.
+- [Networking research](research/networking-and-replication.md) — preliminary findings for transport and replication.
+- [Overworld layering research](research/overworld-layering.md) — preliminary findings for hotspot scaling and transparent layers.
 - [Open questions](open-questions.md) — unresolved decisions and questions requiring experiments or owner input.
 
 ## Status vocabulary

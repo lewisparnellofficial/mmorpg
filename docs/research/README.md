@@ -1,6 +1,6 @@
 # Research Program
 
-**Status:** Ready to begin
+**Status:** In progress — first three tracks started 2026-09-04
 
 ## Purpose
 
@@ -55,6 +55,26 @@ Primary output: a capability matrix and adversarial sandbox test plan.
 Investigate simulated clients, load generation, observability, crash dumps, replay, backups, staging, and multi-process deployment.
 
 Primary output: capacity-test scenarios and an operational baseline.
+
+## Current orchestration pass
+
+The first pass is intentionally focused on the three highest-risk, tightly coupled questions:
+
+- [Rust server and simulation](rust-server.md).
+- [Networking and replication](networking-and-replication.md).
+- [Transparent overworld layering](overworld-layering.md).
+
+These tracks should be read together. The layer model affects the simulation ownership model, and both affect replication and load testing.
+
+Current status:
+
+| Track | Status | Current output |
+|---|---|---|
+| Rust server and simulation | Preliminary findings recorded | Tokio/service-I/O candidate; region ownership and message passing proposed |
+| Networking and replication | Preliminary findings recorded | Reliable/unreliable delivery split; QUIC candidate; spatial replication required |
+| Transparent overworld layering | Preliminary findings recorded | Dynamic hotspot partitioning supported in principle; event semantics still open |
+
+No implementation technology has been marked accepted yet. The next step for all three tracks is a local prototype and benchmark.
 
 ## Research document format
 
