@@ -6,7 +6,7 @@
 //! accepts only the explicitly supported prefixes and field schemas; it is
 //! not a general-purpose parser for server logs or human-readable prose.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub use mmorpg_core::{EntityId, ItemId, NpcKind, Position, QuestId, Role, ZoneArea};
@@ -20,6 +20,13 @@ const TEMP_SNAPSHOT_VERSION: u32 = 1;
 const MAX_SERVER_FIELD_BYTES: usize = 256;
 const MAX_SERVER_NAME_BYTES: usize = 64;
 const MAX_SERVER_REASON_BYTES: usize = 256;
+
+/// Maximum number of records a [`SnapshotAssembler`] accepts in one frame.
+///
+/// The limit applies to the `WORLD`, `PLAYER`, and `NPC` records together.
+/// It bounds the assembler's temporary maps and prevents an untrusted stream
+/// from growing the in-progress snapshot without limit.
+pub const MAX_SNAPSHOT_RECORDS: usize = 4096;
 
 /// A validated command line without its trailing newline.
 ///
@@ -222,6 +229,378 @@ pub enum ServerLine {
     Connected(ConnectedState),
     Event(ServerEvent),
     SnapshotEnd,
+}
+
+/// A completed, validated temporary machine-readable snapshot.
+///
+/// The assembler publishes this value only after receiving a valid
+/// `TEMP_SNAPSHOT_END`. Callers can replace their currently displayed state
+/// with the returned value in one operation; a malformed or truncated frame
+/// never produces a partial [`Snapshot`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Snapshot {
+    pub version: u32,
+    pub world: WorldState,
+    pub players: BTreeMap<EntityId, PlayerState>,
+    pub npcs: BTreeMap<EntityId, NpcState>,
+}
+
+/// The record kinds recognized by [`SnapshotAssembler`] errors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotRecordKind {
+    Begin,
+    World,
+    Player,
+    Npc,
+    End,
+}
+
+impl fmt::Display for SnapshotRecordKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Begin => "begin",
+            Self::World => "world",
+            Self::Player => "player",
+            Self::Npc => "npc",
+            Self::End => "end",
+        };
+        formatter.write_str(name)
+    }
+}
+
+/// Errors produced while assembling a framed temporary snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SnapshotError {
+    /// The individual line failed the existing bounded decoder.
+    Decode(DecodeError),
+    /// A snapshot marker or record was received without the required frame.
+    SnapshotNotActive { record: SnapshotRecordKind },
+    /// A second begin marker arrived before the active frame ended.
+    DuplicateBegin,
+    /// A world, player, or NPC record was repeated. Entity IDs are unique
+    /// across player and NPC records in a snapshot.
+    DuplicateRecord {
+        record: SnapshotRecordKind,
+        id: Option<EntityId>,
+    },
+    /// An end marker arrived without an active frame.
+    EndOutsideSnapshot,
+    /// The frame ended without its required world record.
+    MissingWorld,
+    /// The stream ended while a frame was still in progress.
+    IncompleteSnapshot,
+    /// The frame exceeded the configured record bound.
+    TooManyRecords { max_records: usize },
+    /// A configured record bound of zero cannot accept a valid snapshot.
+    InvalidRecordLimit,
+    /// The world summary did not agree with the records carried by the frame.
+    RecordCountMismatch {
+        field: &'static str,
+        expected: u64,
+        actual: u64,
+    },
+}
+
+impl fmt::Display for SnapshotError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decode(error) => write!(formatter, "snapshot line rejected: {error}"),
+            Self::SnapshotNotActive { record } => {
+                write!(
+                    formatter,
+                    "snapshot {record} record received outside an active frame"
+                )
+            }
+            Self::DuplicateBegin => formatter.write_str("duplicate snapshot begin marker"),
+            Self::DuplicateRecord { record, id } => match id {
+                Some(id) => write!(
+                    formatter,
+                    "duplicate snapshot {record} record for entity {id}"
+                ),
+                None => write!(formatter, "duplicate snapshot {record} record"),
+            },
+            Self::EndOutsideSnapshot => {
+                formatter.write_str("snapshot end marker received outside an active frame")
+            }
+            Self::MissingWorld => formatter.write_str("snapshot is missing its world record"),
+            Self::IncompleteSnapshot => formatter.write_str("snapshot ended before its end marker"),
+            Self::TooManyRecords { max_records } => {
+                write!(formatter, "snapshot exceeds the {max_records}-record limit")
+            }
+            Self::InvalidRecordLimit => {
+                formatter.write_str("snapshot record limit must be greater than zero")
+            }
+            Self::RecordCountMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "snapshot world field '{field}' expects {expected} records but received {actual}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SnapshotError {}
+
+/// Incrementally validates and assembles the temporary snapshot framing.
+///
+/// Legacy `WORLD`, `PLAYER`, and `NPC` diagnostics, connection lines, and
+/// events are ignored by this component because they are not part of a
+/// `TEMP_SNAPSHOT` frame. Snapshot records are identified from their exact
+/// `TEMP_SNAPSHOT` prefix before decoding, so a legacy record can never be
+/// accidentally inserted into the pending snapshot.
+#[derive(Debug)]
+pub struct SnapshotAssembler {
+    pending: Option<PendingSnapshot>,
+    max_records: usize,
+}
+
+impl Default for SnapshotAssembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SnapshotAssembler {
+    /// Creates an assembler with the repository-wide safe record bound.
+    pub fn new() -> Self {
+        Self {
+            pending: None,
+            max_records: MAX_SNAPSHOT_RECORDS,
+        }
+    }
+
+    /// Creates an assembler with a smaller bound, useful for tests or a
+    /// caller with a tighter content contract. The bound cannot exceed the
+    /// fixed process-wide maximum.
+    pub fn with_max_records(max_records: usize) -> Result<Self, SnapshotError> {
+        if max_records == 0 || max_records > MAX_SNAPSHOT_RECORDS {
+            return Err(SnapshotError::InvalidRecordLimit);
+        }
+        Ok(Self {
+            pending: None,
+            max_records,
+        })
+    }
+
+    /// Returns whether a snapshot frame is currently being buffered.
+    pub fn is_active(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Feeds one complete server line into the assembler.
+    ///
+    /// `Ok(Some(snapshot))` is returned exactly once for a valid completed
+    /// frame, at the `TEMP_SNAPSHOT_END` line. Other valid lines return
+    /// `Ok(None)`. Any snapshot framing or validation error discards the
+    /// in-progress frame, leaving it safe for the caller to retain its last
+    /// completed snapshot and start again.
+    pub fn push_line(&mut self, line: &str) -> Result<Option<Snapshot>, SnapshotError> {
+        match snapshot_line_kind(line) {
+            Some(SnapshotRecordKind::Begin) => self.push_begin(line),
+            Some(SnapshotRecordKind::World)
+            | Some(SnapshotRecordKind::Player)
+            | Some(SnapshotRecordKind::Npc) => self.push_record(line),
+            Some(SnapshotRecordKind::End) => self.push_end(line),
+            None if line.split_whitespace().next() == Some("TEMP_SNAPSHOT") => {
+                self.push_record(line)
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Reports and discards a truncated frame at end-of-stream.
+    pub fn finish(&mut self) -> Result<(), SnapshotError> {
+        if self.pending.take().is_some() {
+            Err(SnapshotError::IncompleteSnapshot)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn push_begin(&mut self, line: &str) -> Result<Option<Snapshot>, SnapshotError> {
+        if self.pending.is_some() {
+            return self.abort(SnapshotError::DuplicateBegin);
+        }
+        let decoded = self.decode_snapshot_line(line)?;
+        let ServerLine::SnapshotBegin { version } = decoded else {
+            unreachable!("snapshot line classifier and decoder disagree");
+        };
+        self.pending = Some(PendingSnapshot::new(version));
+        Ok(None)
+    }
+
+    fn push_record(&mut self, line: &str) -> Result<Option<Snapshot>, SnapshotError> {
+        let decoded = self.decode_snapshot_line(line)?;
+        let Some(pending) = self.pending.as_ref() else {
+            let record = snapshot_record_kind(&decoded);
+            return Err(SnapshotError::SnapshotNotActive { record });
+        };
+
+        let record = snapshot_record_kind(&decoded);
+        let duplicate = match &decoded {
+            ServerLine::World(_) => pending.world.is_some(),
+            ServerLine::Player(player) => pending.ids.contains(&player.id),
+            ServerLine::Npc(npc) => pending.ids.contains(&npc.id),
+            _ => unreachable!("snapshot record classifier and decoder disagree"),
+        };
+        if duplicate {
+            let id = match decoded {
+                ServerLine::Player(player) => Some(player.id),
+                ServerLine::Npc(npc) => Some(npc.id),
+                ServerLine::World(_) => None,
+                _ => unreachable!("snapshot record classifier and decoder disagree"),
+            };
+            return self.abort(SnapshotError::DuplicateRecord { record, id });
+        }
+        if pending.record_count >= self.max_records {
+            return self.abort(SnapshotError::TooManyRecords {
+                max_records: self.max_records,
+            });
+        }
+
+        let pending = self
+            .pending
+            .as_mut()
+            .expect("pending snapshot was checked above");
+        pending.record_count += 1;
+        match decoded {
+            ServerLine::World(world) => pending.world = Some(world),
+            ServerLine::Player(player) => {
+                pending.ids.insert(player.id);
+                pending.players.insert(player.id, player);
+            }
+            ServerLine::Npc(npc) => {
+                pending.ids.insert(npc.id);
+                pending.npcs.insert(npc.id, npc);
+            }
+            _ => unreachable!("snapshot record classifier and decoder disagree"),
+        }
+        Ok(None)
+    }
+
+    fn push_end(&mut self, line: &str) -> Result<Option<Snapshot>, SnapshotError> {
+        if self.pending.is_none() {
+            return Err(SnapshotError::EndOutsideSnapshot);
+        }
+        let decoded = self.decode_snapshot_line(line)?;
+        if !matches!(decoded, ServerLine::SnapshotEnd) {
+            unreachable!("snapshot line classifier and decoder disagree");
+        }
+        let mut pending = self
+            .pending
+            .take()
+            .expect("pending snapshot was checked above");
+        let Some(world) = pending.world.as_ref() else {
+            return Err(SnapshotError::MissingWorld);
+        };
+        pending.validate_counts(world)?;
+        let world = pending
+            .world
+            .take()
+            .expect("world was checked immediately above");
+        Ok(Some(Snapshot {
+            version: pending.version,
+            world,
+            players: pending.players,
+            npcs: pending.npcs,
+        }))
+    }
+
+    fn decode_snapshot_line(&mut self, line: &str) -> Result<ServerLine, SnapshotError> {
+        decode_server_line(line).map_err(|error| self.abort_error(SnapshotError::Decode(error)))
+    }
+
+    fn abort<T>(&mut self, error: SnapshotError) -> Result<T, SnapshotError> {
+        self.pending = None;
+        Err(error)
+    }
+
+    fn abort_error(&mut self, error: SnapshotError) -> SnapshotError {
+        self.pending = None;
+        error
+    }
+}
+
+#[derive(Debug)]
+struct PendingSnapshot {
+    version: u32,
+    world: Option<WorldState>,
+    players: BTreeMap<EntityId, PlayerState>,
+    npcs: BTreeMap<EntityId, NpcState>,
+    ids: BTreeSet<EntityId>,
+    record_count: usize,
+}
+
+impl PendingSnapshot {
+    fn new(version: u32) -> Self {
+        Self {
+            version,
+            world: None,
+            players: BTreeMap::new(),
+            npcs: BTreeMap::new(),
+            ids: BTreeSet::new(),
+            record_count: 0,
+        }
+    }
+
+    fn validate_counts(&self, world: &WorldState) -> Result<(), SnapshotError> {
+        let counts = [
+            ("players", world.players, self.players.len() as u64),
+            ("npcs", world.npcs, self.npcs.len() as u64),
+            (
+                "enemies",
+                world.enemies,
+                self.npcs
+                    .values()
+                    .filter(|npc| npc.kind == NpcKind::Enemy)
+                    .count() as u64,
+            ),
+            (
+                "vendors",
+                world.vendors,
+                self.npcs
+                    .values()
+                    .filter(|npc| npc.kind == NpcKind::Vendor)
+                    .count() as u64,
+            ),
+        ];
+        for (field, expected, actual) in counts {
+            if expected != actual {
+                return Err(SnapshotError::RecordCountMismatch {
+                    field,
+                    expected,
+                    actual,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn snapshot_line_kind(line: &str) -> Option<SnapshotRecordKind> {
+    match line.split_whitespace().next()? {
+        "TEMP_SNAPSHOT_BEGIN" => Some(SnapshotRecordKind::Begin),
+        "TEMP_SNAPSHOT" => match line.split_whitespace().nth(1) {
+            Some("WORLD") => Some(SnapshotRecordKind::World),
+            Some("PLAYER") => Some(SnapshotRecordKind::Player),
+            Some("NPC") => Some(SnapshotRecordKind::Npc),
+            _ => None,
+        },
+        "TEMP_SNAPSHOT_END" => Some(SnapshotRecordKind::End),
+        _ => None,
+    }
+}
+
+fn snapshot_record_kind(line: &ServerLine) -> SnapshotRecordKind {
+    match line {
+        ServerLine::World(_) => SnapshotRecordKind::World,
+        ServerLine::Player(_) => SnapshotRecordKind::Player,
+        ServerLine::Npc(_) => SnapshotRecordKind::Npc,
+        _ => unreachable!("only snapshot records reach this helper"),
+    }
 }
 
 /// Counts and simulation time from a `WORLD` line.
@@ -1327,5 +1706,245 @@ mod tests {
                 max_bytes: MAX_SERVER_FIELD_BYTES,
             })
         );
+    }
+
+    fn snapshot_lines(include_enemy: bool) -> Vec<String> {
+        let mut lines = vec![
+            "TEMP_SNAPSHOT_BEGIN version=1".to_owned(),
+            format!(
+                "TEMP_SNAPSHOT WORLD tick=7 players=1 npcs={} enemies={} vendors=1",
+                if include_enemy { 2 } else { 1 },
+                if include_enemy { 1 } else { 0 }
+            ),
+            "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=0,0 health=100 max_health=100 gold=20 target=none".to_owned(),
+            "TEMP_SNAPSHOT NPC id=1 template_id=1 name=Mira%20the%20Merchant kind=vendor position=0,0 health=1 max_health=1".to_owned(),
+        ];
+        if include_enemy {
+            lines.push(
+                "TEMP_SNAPSHOT NPC id=2 template_id=2 name=Field%20Wolf kind=enemy position=24,0 health=100 max_health=100"
+                    .to_owned(),
+            );
+        }
+        lines.push("TEMP_SNAPSHOT_END".to_owned());
+        lines
+    }
+
+    fn assemble_with(
+        assembler: &mut SnapshotAssembler,
+        lines: impl IntoIterator<Item = String>,
+    ) -> Snapshot {
+        let mut completed = None;
+        for line in lines {
+            if let Some(snapshot) = assembler
+                .push_line(&line)
+                .expect("snapshot lines should be valid")
+            {
+                completed = Some(snapshot);
+            }
+        }
+        completed.expect("snapshot should publish at its end marker")
+    }
+
+    fn assemble(lines: impl IntoIterator<Item = String>) -> Snapshot {
+        assemble_with(&mut SnapshotAssembler::new(), lines)
+    }
+
+    #[test]
+    fn assembles_and_publishes_only_a_valid_completed_snapshot() {
+        let snapshot = assemble(snapshot_lines(true));
+
+        assert_eq!(snapshot.version, 1);
+        assert_eq!(snapshot.world.tick, 7);
+        assert_eq!(snapshot.players.len(), 1);
+        assert_eq!(snapshot.npcs.len(), 2);
+        assert_eq!(snapshot.players[&EntityId(5)].name, "Aria");
+        assert_eq!(snapshot.npcs[&EntityId(1)].kind, NpcKind::Vendor);
+        assert_eq!(snapshot.npcs[&EntityId(2)].kind, NpcKind::Enemy);
+    }
+
+    #[test]
+    fn rejects_records_outside_frames_and_duplicate_markers_or_records() {
+        let mut assembler = SnapshotAssembler::new();
+
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT WORLD tick=7 players=0 npcs=0 enemies=0 vendors=0"),
+            Err(SnapshotError::SnapshotNotActive {
+                record: SnapshotRecordKind::World,
+            })
+        );
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT_END"),
+            Err(SnapshotError::EndOutsideSnapshot)
+        );
+
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT_BEGIN version=1"),
+            Ok(None)
+        );
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT_BEGIN version=1"),
+            Err(SnapshotError::DuplicateBegin)
+        );
+        assert!(!assembler.is_active());
+
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT_BEGIN version=1"),
+            Ok(None)
+        );
+        let world = "TEMP_SNAPSHOT WORLD tick=7 players=0 npcs=0 enemies=0 vendors=0";
+        assert_eq!(assembler.push_line(world), Ok(None));
+        assert_eq!(
+            assembler.push_line(world),
+            Err(SnapshotError::DuplicateRecord {
+                record: SnapshotRecordKind::World,
+                id: None,
+            })
+        );
+        assert!(!assembler.is_active());
+
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT_END"),
+            Err(SnapshotError::EndOutsideSnapshot)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_version_missing_world_and_truncated_frames() {
+        let mut assembler = SnapshotAssembler::new();
+
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT_BEGIN version=2"),
+            Err(SnapshotError::Decode(
+                DecodeError::UnsupportedSnapshotVersion { version: 2 }
+            ))
+        );
+        assert!(!assembler.is_active());
+
+        assembler
+            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .unwrap();
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT_END"),
+            Err(SnapshotError::MissingWorld)
+        );
+        assert!(!assembler.is_active());
+
+        assembler
+            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .unwrap();
+        assembler
+            .push_line("TEMP_SNAPSHOT WORLD tick=7 players=1 npcs=0 enemies=0 vendors=0")
+            .unwrap();
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT_END"),
+            Err(SnapshotError::RecordCountMismatch {
+                field: "players",
+                expected: 1,
+                actual: 0,
+            })
+        );
+        assert!(!assembler.is_active());
+
+        assembler
+            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .unwrap();
+        assembler
+            .push_line("TEMP_SNAPSHOT WORLD tick=7 players=0 npcs=0 enemies=0 vendors=0")
+            .unwrap();
+        assert_eq!(assembler.finish(), Err(SnapshotError::IncompleteSnapshot));
+        assert!(!assembler.is_active());
+
+        assembler
+            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .unwrap();
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT WEATHER rain=true"),
+            Err(SnapshotError::Decode(
+                DecodeError::UnsupportedSnapshotRecord {
+                    name: "WEATHER".to_owned()
+                }
+            ))
+        );
+        assert!(!assembler.is_active());
+    }
+
+    #[test]
+    fn malformed_second_frame_does_not_publish_partial_state() {
+        let mut assembler = SnapshotAssembler::new();
+        let first = assemble_with(&mut assembler, snapshot_lines(true));
+
+        assembler
+            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .unwrap();
+        assembler
+            .push_line("TEMP_SNAPSHOT WORLD tick=8 players=1 npcs=1 enemies=0 vendors=1")
+            .unwrap();
+        assembler
+            .push_line(
+                "TEMP_SNAPSHOT NPC id=1 template_id=1 name=Mira kind=vendor position=0,0 health=1 max_health=1",
+            )
+            .unwrap();
+        assert!(matches!(
+            assembler.push_line(
+                "TEMP_SNAPSHOT NPC id=1 template_id=1 name=Mira kind=vendor position=0,0 health=1"
+            ),
+            Err(SnapshotError::Decode(DecodeError::MissingField {
+                field: "max_health"
+            }))
+        ));
+        assert!(!assembler.is_active());
+
+        assert_eq!(first.world.tick, 7);
+        assert_eq!(first.npcs.len(), 2);
+        assert!(first.npcs.contains_key(&EntityId(2)));
+    }
+
+    #[test]
+    fn a_completed_second_snapshot_replaces_the_first_atomically() {
+        let mut assembler = SnapshotAssembler::new();
+        let first = assemble_with(&mut assembler, snapshot_lines(true));
+        let second = assemble_with(&mut assembler, snapshot_lines(false));
+
+        assert_eq!(first.npcs.len(), 2);
+        assert_eq!(second.npcs.len(), 1);
+        assert!(first.npcs.contains_key(&EntityId(2)));
+        assert!(!second.npcs.contains_key(&EntityId(2)));
+        assert_eq!(second.world.npcs, 1);
+    }
+
+    #[test]
+    fn bounds_the_number_of_buffered_records() {
+        let mut assembler = SnapshotAssembler::with_max_records(3).unwrap();
+        assembler
+            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .unwrap();
+        assembler
+            .push_line("TEMP_SNAPSHOT WORLD tick=7 players=0 npcs=2 enemies=1 vendors=1")
+            .unwrap();
+        assembler
+            .push_line(
+                "TEMP_SNAPSHOT NPC id=1 template_id=1 name=Mira kind=vendor position=0,0 health=1 max_health=1",
+            )
+            .unwrap();
+        assembler
+            .push_line(
+                "TEMP_SNAPSHOT NPC id=2 template_id=2 name=Wolf kind=enemy position=1,0 health=100 max_health=100",
+            )
+            .unwrap();
+        assert_eq!(
+            assembler.push_line(
+                "TEMP_SNAPSHOT NPC id=3 template_id=2 name=Wolf kind=enemy position=2,0 health=100 max_health=100",
+            ),
+            Err(SnapshotError::TooManyRecords { max_records: 3 })
+        );
+        assert!(!assembler.is_active());
+        assert!(matches!(
+            SnapshotAssembler::with_max_records(0),
+            Err(SnapshotError::InvalidRecordLimit)
+        ));
+        assert!(matches!(
+            SnapshotAssembler::with_max_records(MAX_SNAPSHOT_RECORDS + 1),
+            Err(SnapshotError::InvalidRecordLimit)
+        ));
     }
 }

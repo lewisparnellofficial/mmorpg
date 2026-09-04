@@ -64,6 +64,40 @@ development adapter, not a versioned production protocol.
 The adapter has no networking dependency. A transport reads one complete line
 and passes it to the decoder without its trailing newline.
 
+## Atomic snapshot assembly
+
+`SnapshotAssembler` is the stream-level boundary for the temporary snapshot
+format. Feed it one complete line at a time with `push_line`:
+
+```rust
+let mut assembler = SnapshotAssembler::new();
+
+for line in lines_from_the_transport {
+    if let Some(snapshot) = assembler.push_line(line)? {
+        // Replace the displayed client state in one operation.
+        current_snapshot = snapshot;
+    }
+}
+assembler.finish()?; // reports an incomplete frame at end-of-stream
+```
+
+Only a valid sequence beginning with `TEMP_SNAPSHOT_BEGIN version=1` and
+ending with `TEMP_SNAPSHOT_END` produces a `Snapshot`. The assembler buffers
+the world, player, and NPC records and does not publish any of them
+individually. It rejects records outside an active frame, duplicate begin or
+record entries, missing world data, unsupported versions, malformed records,
+inconsistent world counts, and truncated frames. A failed frame is discarded,
+so a caller can retain its last completed snapshot and start assembling the
+next one.
+
+Player and NPC entity IDs must be unique across the whole frame. The default
+limit is `MAX_SNAPSHOT_RECORDS` (4,096 records total);
+`SnapshotAssembler::with_max_records` can select a smaller bound but cannot
+raise the fixed maximum. Legacy `WORLD`, `PLAYER`,
+and `NPC` diagnostics are ignored by the assembler. Their exact legacy
+prefixes remain separate from the `TEMP_SNAPSHOT` prefixes, so they cannot be
+mistaken for snapshot records.
+
 The crate is a standalone nested Cargo workspace so it can be checked before
 the temporary development adapter is promoted into the root workspace.
 
