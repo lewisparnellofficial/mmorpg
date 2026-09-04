@@ -3426,12 +3426,27 @@ name = "mmorpg-client"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "mmorpg-client-protocol",
  "mmorpg-content",
+]
+
+[[package]]
+name = "mmorpg-client-protocol"
+version = "0.1.0"
+dependencies = [
+ "mmorpg-core",
 ]
 
 [[package]]
 name = "mmorpg-content"
 version = "0.1.0"
+
+[[package]]
+name = "mmorpg-core"
+version = "0.1.0"
+dependencies = [
+ "mmorpg-content",
+]
 
 [[package]]
 name = "moxcms"

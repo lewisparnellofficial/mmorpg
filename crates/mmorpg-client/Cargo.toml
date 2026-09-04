@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 bevy = { version = "0.19.1", default-features = true }
 mmorpg-content = { path = "../mmorpg-content" }
+mmorpg-client-protocol = { path = "../mmorpg-client-protocol" }
 
 [lints.rust]
 unsafe_code = "forbid"

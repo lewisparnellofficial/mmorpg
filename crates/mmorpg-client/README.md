@@ -53,6 +53,9 @@ distributions; consult the Bevy setup documentation for the selected host.
   current content schema; it is not a performance, compatibility, or
   production-readiness result.
 
-The next useful spike is to replace the temporary snapshot/event adapter with
-the versioned wire protocol and feed `mmorpg-client-model` directly. Pen-tablet
-input and the separate content editor remain independent technology spikes.
+The client now uses the shared bounded development decoder for snapshot and
+event records, but still projects them into a small client-local state. The
+next useful spike is to feed those decoded records into
+`mmorpg-client-model`, then replace the temporary line transport with the
+versioned wire protocol. Pen-tablet input and the separate content editor
+remain independent technology spikes.

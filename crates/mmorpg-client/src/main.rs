@@ -8,6 +8,7 @@
 //! production wire protocol when that boundary is implemented.
 
 use bevy::prelude::*;
+use mmorpg_client_protocol::{EntityId, ServerEvent, ServerLine, decode_server_line};
 use mmorpg_content::{NpcArchetype, starter_catalog};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
@@ -35,9 +36,6 @@ struct PlayerMarker;
 
 #[derive(Component)]
 struct StatusText;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct EntityId(u64);
 
 #[derive(Clone, Copy, Debug, Default)]
 struct NpcState {
@@ -547,138 +545,59 @@ fn update_status_text(state: Res<ClientState>, mut query: Query<&mut Text, With<
 }
 
 fn apply_server_line(state: &mut ClientState, line: &str) {
-    // TEMPORARY ADAPTER: these diagnostics are not a stable protocol. Keep
-    // all gameplay state changes in this function sourced from server lines.
-    let fields = line.split_whitespace().collect::<Vec<_>>();
-    match fields.first().copied() {
-        Some("TEMP_SNAPSHOT_BEGIN") | Some("TEMP_SNAPSHOT_END") => {}
-        Some("TEMP_SNAPSHOT") => apply_snapshot_record(state, &fields),
-        Some("WORLD") => {
-            state.world_tick = field(&fields, "tick").and_then(|value| value.parse().ok());
-        }
-        Some("CONNECTED") => {
-            state.player_id = field(&fields, "player_id").and_then(parse_entity_id);
+    // TEMPORARY ADAPTER: the development protocol is not production-ready,
+    // but all gameplay state changes still pass through its strict decoder.
+    match decode_server_line(line) {
+        Ok(ServerLine::SnapshotBegin { .. } | ServerLine::SnapshotEnd) => {}
+        Ok(ServerLine::World(world)) => state.world_tick = Some(world.tick),
+        Ok(ServerLine::Connected(connected)) => {
+            state.player_id = Some(connected.player_id);
             state.connection_status = "authenticated development session".to_owned();
-            state.log(format!(
-                "connected as {}",
-                state
-                    .player_id
-                    .map_or_else(|| "unknown".to_owned(), |id| id.0.to_string())
-            ));
+            state.log(format!("connected as {}", connected.player_id.0));
         }
-        Some("PLAYER") => apply_player_state(state, &fields),
-        Some("NPC") => apply_npc_state(state, &fields),
-        Some("EVENT") => apply_event(state, &fields, line),
-        Some("ERR") => state.log(line.to_owned()),
-        Some("WELCOME") => state.log("server greeted client"),
-        Some("TYPE") => {}
-        Some(_) | None => state.log(line.to_owned()),
+        Ok(ServerLine::Player(player)) => apply_player_state(state, &player),
+        Ok(ServerLine::Npc(npc)) => apply_npc_state(state, &npc),
+        Ok(ServerLine::Event(event)) => apply_event(state, event),
+        Err(_) => match line.split_whitespace().next() {
+            Some("ERR") => state.log(line.to_owned()),
+            Some("WELCOME") => state.log("server greeted client"),
+            Some("TYPE") => {}
+            Some(_) | None => state.log(line.to_owned()),
+        },
     }
 }
 
-fn apply_snapshot_record(state: &mut ClientState, fields: &[&str]) {
-    match fields.get(1).copied() {
-        Some("WORLD") => {
-            state.world_tick = field(fields, "tick").and_then(|value| value.parse().ok());
-        }
-        Some("PLAYER") => apply_snapshot_player_state(state, fields),
-        Some("NPC") => apply_snapshot_npc_state(state, fields),
-        _ => state.log("invalid temporary snapshot record"),
+fn apply_player_state(state: &mut ClientState, player: &mmorpg_client_protocol::PlayerState) {
+    if Some(player.id) != state.player_id {
+        return;
     }
+    state.player_position = Vec2::new(player.position.x, player.position.y);
+    state.player_health = player.health;
+    state.player_max_health = player.max_health;
+    state.player_target = player.target;
 }
 
-fn apply_snapshot_player_state(state: &mut ClientState, fields: &[&str]) {
-    let Some(id) = field(fields, "id").and_then(parse_entity_id) else {
-        return;
-    };
-    if Some(id) != state.player_id {
-        return;
-    }
-    if let Some(position) = field(fields, "position").and_then(parse_position) {
-        state.player_position = position;
-    }
-    if let (Some(health), Some(max_health)) = (
-        field(fields, "health").and_then(|value| value.parse().ok()),
-        field(fields, "max_health").and_then(|value| value.parse().ok()),
-    ) {
-        state.player_health = health;
-        state.player_max_health = max_health;
-    }
-    state.player_target = field(fields, "target").and_then(parse_optional_entity_id);
-}
-
-fn apply_snapshot_npc_state(state: &mut ClientState, fields: &[&str]) {
-    let Some(id) = field(fields, "id").and_then(parse_entity_id) else {
-        return;
-    };
-    let Some(position) = field(fields, "position").and_then(parse_position) else {
-        return;
-    };
-    let (Some(health), Some(max_health)) = (
-        field(fields, "health").and_then(|value| value.parse().ok()),
-        field(fields, "max_health").and_then(|value| value.parse().ok()),
-    ) else {
-        return;
-    };
+fn apply_npc_state(state: &mut ClientState, npc: &mmorpg_client_protocol::NpcState) {
     state.npcs.insert(
-        id,
+        npc.id,
         NpcState {
-            position,
-            health,
-            max_health,
+            position: Vec2::new(npc.position.x, npc.position.y),
+            health: npc.health,
+            max_health: npc.max_health,
         },
     );
 }
 
-fn apply_player_state(state: &mut ClientState, fields: &[&str]) {
-    let Some(id) = field(fields, "id").and_then(parse_entity_id) else {
-        return;
-    };
-    if Some(id) != state.player_id {
-        return;
-    }
-    if let Some(position) = field(fields, "pos").and_then(parse_position) {
-        state.player_position = position;
-    }
-    if let Some((health, max_health)) = field(fields, "hp").and_then(parse_health) {
-        state.player_health = health;
-        state.player_max_health = max_health;
-    }
-    state.player_target = field(fields, "target").and_then(parse_optional_entity_id);
-}
-
-fn apply_npc_state(state: &mut ClientState, fields: &[&str]) {
-    let Some(id) = field(fields, "id").and_then(parse_entity_id) else {
-        return;
-    };
-    let Some(position) = field(fields, "pos").and_then(parse_position) else {
-        return;
-    };
-    let Some((health, max_health)) = field(fields, "hp").and_then(parse_health) else {
-        return;
-    };
-    state.npcs.insert(
-        id,
-        NpcState {
-            position,
-            health,
-            max_health,
-        },
-    );
-}
-
-fn apply_event(state: &mut ClientState, fields: &[&str], line: &str) {
-    let Some(kind) = fields.get(1).copied() else {
-        return;
-    };
-    match kind {
-        "player_moved" if event_player_is_local(state, fields) => {
-            if let Some(position) = field(fields, "pos").and_then(parse_position) {
-                state.player_position = position;
-            }
+fn apply_event(state: &mut ClientState, event: ServerEvent) {
+    match event {
+        ServerEvent::PlayerMoved { id, position, .. } if Some(id) == state.player_id => {
+            state.player_position = Vec2::new(position.x, position.y);
         }
-        "target_selected" if event_player_is_local(state, fields) => {
-            state.player_target = field(fields, "target").and_then(parse_entity_id);
+        ServerEvent::TargetSelected {
+            player_id,
+            target_id,
+        } if Some(player_id) == state.player_id => {
+            state.player_target = Some(target_id);
             state.log(format!(
                 "target {}",
                 state
@@ -686,64 +605,27 @@ fn apply_event(state: &mut ClientState, fields: &[&str], line: &str) {
                     .map_or_else(|| "none".to_owned(), |id| id.0.to_string())
             ));
         }
-        "attack" if event_player_is_local(state, fields) => {
-            if let Some(target) = field(fields, "target").and_then(parse_entity_id)
-                && let Some(npc) = state.npcs.get_mut(&target)
-                && let Some(health) =
-                    field(fields, "target_hp").and_then(|value| value.parse().ok())
-            {
-                npc.health = health;
+        ServerEvent::AttackResolved {
+            player_id,
+            target_id,
+            target_health,
+            ..
+        } if Some(player_id) == state.player_id => {
+            if let Some(npc) = state.npcs.get_mut(&target_id) {
+                npc.health = target_health;
             }
             state.log("server resolved attack".to_owned());
         }
-        "enemy_defeated" => {
-            if let Some(enemy) = field(fields, "id").and_then(parse_entity_id)
-                && let Some(npc) = state.npcs.get_mut(&enemy)
-            {
+        ServerEvent::EnemyDefeated { enemy_id } => {
+            if let Some(npc) = state.npcs.get_mut(&enemy_id) {
                 npc.health = 0;
             }
             state.log("enemy defeated; server decides rewards".to_owned());
         }
-        "rejected" | "transaction_rejected" | "quest_rejected" => state.log(line.to_owned()),
-        "item_purchased" | "loot_rewarded" | "quest_rewarded" => state.log(line.to_owned()),
+        ServerEvent::CommandRejected { reason } => state.log(format!("rejected: {reason}")),
+        ServerEvent::PlayerJoined { .. } => {}
         _ => {}
     }
-}
-
-fn event_player_is_local(state: &ClientState, fields: &[&str]) -> bool {
-    field(fields, "player")
-        .or_else(|| field(fields, "id"))
-        .and_then(parse_entity_id)
-        == state.player_id
-}
-
-fn field<'a>(fields: &'a [&str], key: &str) -> Option<&'a str> {
-    fields.iter().find_map(|field| {
-        let (field_key, value) = field.split_once('=')?;
-        (field_key == key).then_some(value)
-    })
-}
-
-fn parse_entity_id(value: &str) -> Option<EntityId> {
-    value
-        .parse::<u64>()
-        .ok()
-        .map(EntityId)
-        .filter(|id| id.0 != 0)
-}
-
-fn parse_optional_entity_id(value: &str) -> Option<EntityId> {
-    (value != "none").then(|| parse_entity_id(value)).flatten()
-}
-
-fn parse_position(value: &str) -> Option<Vec2> {
-    let (x, y) = value.split_once(',')?;
-    Some(Vec2::new(x.parse().ok()?, y.parse().ok()?))
-}
-
-fn parse_health(value: &str) -> Option<(u32, u32)> {
-    let (health, max_health) = value.split_once('/')?;
-    Some((health.parse().ok()?, max_health.parse().ok()?))
 }
 
 fn spawn_block(
