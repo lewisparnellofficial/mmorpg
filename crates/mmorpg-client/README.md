@@ -46,6 +46,9 @@ distributions; consult the Bevy setup documentation for the selected host.
 - The scene uses primitive meshes and hard-coded presentation layout. It does
   not validate or load authored terrain, models, animations, particles, sound,
   or music packages.
+- NPC marker identity and lifecycle now come from completed authoritative
+  snapshots; the static content catalog is used for scene/content validation,
+  not for inventing runtime entity IDs.
 - NPC labels are written to the terminal rather than rendered as in-world UI.
 - The shared catalog is compiled into `mmorpg-content`; an external content
   package format and hot reload pipeline remain future work.

@@ -9,9 +9,9 @@
 
 use bevy::prelude::*;
 use mmorpg_client_protocol::{
-    EntityId, ServerEvent, ServerLine, Snapshot, SnapshotAssembler, decode_server_line,
+    EntityId, NpcKind, ServerEvent, ServerLine, Snapshot, SnapshotAssembler, decode_server_line,
 };
-use mmorpg_content::{NpcArchetype, starter_catalog};
+use mmorpg_content::starter_catalog;
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -43,11 +43,30 @@ struct PlayerMarker;
 #[derive(Component)]
 struct StatusText;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 struct NpcState {
     position: Vec2,
     health: u32,
     max_health: u32,
+    kind: NpcKind,
+}
+
+impl Default for NpcState {
+    fn default() -> Self {
+        Self {
+            position: Vec2::ZERO,
+            health: 0,
+            max_health: 0,
+            kind: NpcKind::Enemy,
+        }
+    }
+}
+
+#[derive(Resource, Clone)]
+struct NpcPresentationAssets {
+    mesh: Handle<Mesh>,
+    vendor_material: Handle<StandardMaterial>,
+    enemy_material: Handle<StandardMaterial>,
 }
 
 #[derive(Resource, Debug)]
@@ -228,45 +247,13 @@ fn setup_scene(
         Vec3::new(4.4, 2.4, 4.4),
     );
 
-    let npc_materials = [
-        materials.add(Color::srgb(0.95, 0.78, 0.16)),
-        materials.add(Color::srgb(0.72, 0.72, 0.76)),
-    ];
-
-    for (index, spawn) in catalog.zones[0].spawns.iter().enumerate() {
-        let definition = catalog
-            .npcs
-            .iter()
-            .find(|npc| npc.id == spawn.npc_template_id)
-            .expect("every spawn must reference an NPC definition");
-        let material = match definition.archetype {
-            NpcArchetype::Vendor | NpcArchetype::QuestGiver => npc_materials[0].clone(),
-            NpcArchetype::Enemy => npc_materials[1].clone(),
-        };
-
-        // Content coordinates use x/y; the 3D presentation maps content y to
-        // world z. A primitive marker keeps every starter NPC visible.
-        commands.spawn((
-            Mesh3d(meshes.add(Capsule3d::new(0.45, 1.0))),
-            MeshMaterial3d(material),
-            Transform::from_xyz(spawn.x, 0.75, spawn.y),
-            StarterNpc {
-                id: EntityId(index as u64 + 1),
-            },
-        ));
-
-        println!(
-            "  instantiated {} '{}' at ({:.1}, {:.1})",
-            match definition.archetype {
-                NpcArchetype::Vendor => "vendor",
-                NpcArchetype::Enemy => "enemy",
-                NpcArchetype::QuestGiver => "quest giver",
-            },
-            definition.name,
-            spawn.x,
-            spawn.y
-        );
-    }
+    // NPC presentation entities are created only after the server publishes
+    // a completed snapshot. Catalog spawn order is not an entity identity.
+    commands.insert_resource(NpcPresentationAssets {
+        mesh: meshes.add(Capsule3d::new(0.45, 1.0)),
+        vendor_material: materials.add(Color::srgb(0.95, 0.78, 0.16)),
+        enemy_material: materials.add(Color::srgb(0.72, 0.72, 0.76)),
+    });
 
     commands.spawn((
         Mesh3d(meshes.add(Capsule3d::new(0.5, 1.1))),
@@ -528,21 +515,51 @@ fn next_target(state: &mut ClientState) -> Option<EntityId> {
 }
 
 fn sync_authoritative_presentation(
+    mut commands: Commands,
     state: Res<ClientState>,
+    assets: Res<NpcPresentationAssets>,
     mut player_query: Query<&mut Transform, (With<PlayerMarker>, Without<StarterNpc>)>,
-    mut npc_query: Query<(&StarterNpc, &mut Transform), Without<PlayerMarker>>,
+    mut npc_query: Query<(Entity, &StarterNpc, &mut Transform), Without<PlayerMarker>>,
 ) {
     if let Ok(mut transform) = player_query.single_mut() {
         transform.translation.x = state.player_position.x;
         transform.translation.z = state.player_position.y;
     }
-    for (marker, mut transform) in &mut npc_query {
+    let mut rendered_ids = BTreeMap::new();
+    for (entity, marker, mut transform) in &mut npc_query {
         if let Some(npc) = state.npcs.get(&marker.id) {
             transform.translation.x = npc.position.x;
             transform.translation.z = npc.position.y;
             transform.translation.y = if npc.health == 0 { 0.2 } else { 0.75 };
+            rendered_ids.insert(marker.id, entity);
+        } else {
+            commands.entity(entity).despawn();
         }
     }
+
+    for (id, npc) in &state.npcs {
+        if rendered_ids.contains_key(id) {
+            continue;
+        }
+        let material = match npc.kind {
+            NpcKind::Vendor => assets.vendor_material.clone(),
+            NpcKind::Enemy => assets.enemy_material.clone(),
+        };
+        commands.spawn((
+            Mesh3d(assets.mesh.clone()),
+            MeshMaterial3d(material),
+            Transform::from_xyz(
+                npc.position.x,
+                if npc.health == 0 { 0.2 } else { 0.75 },
+                npc.position.y,
+            ),
+            StarterNpc { id: *id },
+        ));
+    }
+}
+
+fn to_bevy_position(position: mmorpg_client_protocol::Position) -> Vec2 {
+    Vec2::new(position.x, position.y)
 }
 
 fn update_status_text(state: Res<ClientState>, mut query: Query<&mut Text, With<StatusText>>) {
@@ -620,6 +637,7 @@ fn apply_snapshot(state: &mut ClientState, snapshot: Snapshot) {
                     position: to_bevy_position(npc.position),
                     health: npc.health,
                     max_health: npc.max_health,
+                    kind: npc.kind,
                 },
             )
         })
@@ -649,6 +667,7 @@ fn apply_npc_state(state: &mut ClientState, npc: &mmorpg_client_protocol::NpcSta
             position: to_bevy_position(npc.position),
             health: npc.health,
             max_health: npc.max_health,
+            kind: npc.kind,
         },
     );
 }
@@ -705,10 +724,6 @@ fn spawn_block(
         MeshMaterial3d(material),
         Transform::from_translation(position),
     ));
-}
-
-fn to_bevy_position(position: mmorpg_client_protocol::Position) -> Vec2 {
-    Vec2::new(position.x, position.y)
 }
 
 #[cfg(test)]
