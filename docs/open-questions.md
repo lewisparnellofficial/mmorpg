@@ -16,6 +16,8 @@ These questions remain unresolved. They should be answered through research, pro
 
 Research has started on the Rust runtime, network/replication model, and overworld layering. Preliminary findings are recorded in `docs/research/`; none of the related implementation choices are accepted yet.
 
+The first local-validation pass is now complete. The results are recorded in `docs/experiments/`. The fixed-tick ownership model and layer-assignment invariants passed their synthetic tests; replication still needs a real Rust serializer, spatial index, fair scheduler, and 5,000-connection gateway test.
+
 ## Capacity and performance
 
 - What is the desired server tick rate?

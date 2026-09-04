@@ -1,0 +1,8 @@
+[package]
+name = "layer-manager-simulation"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[profile.release]
+debug = 0

@@ -2,6 +2,14 @@
 
 Measured results should be recorded here rather than mixed into general architecture prose.
 
+The current coordinated run is described in [the local validation plan](validation-plan.md).
+
+Current experiment records:
+
+- [EXP-001: Rust fixed-tick region worker](EXP-001-rust-region-worker.md)
+- [EXP-002: Replication workload model](EXP-002-replication-workload.md)
+- [EXP-003: Transparent overworld layer manager](EXP-003-layer-manager.md)
+
 ## Required experiment categories
 
 - 5,000 connected mostly idle clients.
