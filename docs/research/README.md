@@ -69,6 +69,10 @@ artifacts:
   tablet sample and heightmap brush model.
 - UI scripting: `ui-scripting-spike.md` records the sandbox and adversarial-test
   design; no scripting runtime has been accepted or embedded yet.
+- Persistence: `persistence-and-recovery.md` records the proposed durable
+  operation, snapshot, journal, backup, and recovery boundaries.
+- Instances/layers: `instances-and-layers.md` records explicit instance
+  lifecycle and transparent layer ownership/transfer policies.
 
 These artifacts are technology spikes. They do not establish production
 capacity, final engine/framework choices, or a production wire protocol.

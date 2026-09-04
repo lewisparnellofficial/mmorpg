@@ -1,0 +1,13 @@
+[package]
+name = "mmorpg-client-transport"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+mmorpg-client-protocol = { path = "../mmorpg-client-protocol" }
+
+[lints.rust]
+unsafe_code = "forbid"

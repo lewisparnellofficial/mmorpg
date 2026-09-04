@@ -19,6 +19,58 @@ const VENDOR_INTERACTION_RANGE: f32 = 12.0;
 const STARTER_GOLD: u32 = 20;
 const STARTER_INVENTORY_CAPACITY: usize = 16;
 
+/// Server-owned timing parameters for the explicit timed-combat path.
+///
+/// Durations are represented in simulation ticks rather than wall-clock time.
+/// This keeps combat decisions deterministic and leaves scheduling of the
+/// fixed-rate simulation loop to the server.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CombatTiming {
+    tick_hz: u32,
+    cast_time_ticks: u64,
+    cooldown_ticks: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidCombatTiming;
+
+impl CombatTiming {
+    pub fn new(
+        tick_hz: u32,
+        cast_time_ticks: u64,
+        cooldown_ticks: u64,
+    ) -> Result<Self, InvalidCombatTiming> {
+        if tick_hz == 0 {
+            return Err(InvalidCombatTiming);
+        }
+        Ok(Self {
+            tick_hz,
+            cast_time_ticks,
+            cooldown_ticks,
+        })
+    }
+
+    pub const fn tick_hz(self) -> u32 {
+        self.tick_hz
+    }
+
+    pub const fn cast_time_ticks(self) -> u64 {
+        self.cast_time_ticks
+    }
+
+    pub const fn cooldown_ticks(self) -> u64 {
+        self.cooldown_ticks
+    }
+}
+
+impl fmt::Display for InvalidCombatTiming {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("combat tick rate must be greater than zero")
+    }
+}
+
+impl std::error::Error for InvalidCombatTiming {}
+
 /// Stable identifier for any live world entity.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct EntityId(pub u64);
@@ -473,6 +525,13 @@ struct EnemyReward {
     claimed: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingAttack {
+    target_id: EntityId,
+    damage: u32,
+    resolve_tick: u64,
+}
+
 /// Single-owner authoritative starter-zone simulation.
 pub struct World {
     tick: u64,
@@ -482,6 +541,8 @@ pub struct World {
     npcs: BTreeMap<EntityId, Npc>,
     vendor_stock: BTreeMap<(EntityId, ItemId), VendorStock>,
     enemy_rewards: BTreeMap<EntityId, EnemyReward>,
+    combat_cooldowns: BTreeMap<EntityId, u64>,
+    pending_attacks: BTreeMap<EntityId, PendingAttack>,
 }
 
 impl World {
@@ -495,6 +556,8 @@ impl World {
             npcs: BTreeMap::new(),
             vendor_stock: BTreeMap::new(),
             enemy_rewards: BTreeMap::new(),
+            combat_cooldowns: BTreeMap::new(),
+            pending_attacks: BTreeMap::new(),
         };
 
         let vendor_id = world.spawn_npc(
@@ -595,6 +658,151 @@ impl World {
         events
     }
 
+    /// Applies commands using server-owned fixed-tick combat timing.
+    ///
+    /// Only [`Command::BasicAttack`] is affected by this path. A timed attack
+    /// validates its cooldown and cast state at the current server tick, then
+    /// resolves after `cast_time_ticks`. The original [`World::step`] path is
+    /// intentionally unchanged for existing development callers.
+    pub fn step_with_combat_timing<I>(&mut self, commands: I, timing: CombatTiming) -> Vec<Event>
+    where
+        I: IntoIterator<Item = Command>,
+    {
+        let mut events = Vec::new();
+        for command in commands {
+            match command {
+                Command::BasicAttack { player_id } => {
+                    self.apply_timed_basic_attack(player_id, timing, &mut events);
+                }
+                command => self.apply(command, &mut events),
+            }
+        }
+        self.tick = self.tick.saturating_add(1);
+        self.resolve_pending_attacks(&mut events);
+        events
+    }
+
+    fn apply_timed_basic_attack(
+        &mut self,
+        player_id: EntityId,
+        timing: CombatTiming,
+        events: &mut Vec<Event>,
+    ) {
+        let Some(player) = self.players.get(&player_id) else {
+            Self::reject(events, format!("unknown player {player_id}"));
+            return;
+        };
+        if self.pending_attacks.contains_key(&player_id) {
+            Self::reject(events, "combat cast is already in progress");
+            return;
+        }
+        if let Some(&ready_tick) = self.combat_cooldowns.get(&player_id)
+            && self.tick < ready_tick
+        {
+            Self::reject(
+                events,
+                format!("combat cooldown is not ready until tick {ready_tick}"),
+            );
+            return;
+        }
+        let Some(target_id) = player.target else {
+            Self::reject(events, "player has no target");
+            return;
+        };
+        let player_position = player.position;
+        let damage = match player.role {
+            Role::Tank => 8,
+            Role::Healer => 4,
+            Role::DamageDealer => 12,
+        };
+        let Some(target) = self.npcs.get(&target_id) else {
+            Self::reject(events, "target no longer exists");
+            return;
+        };
+        if target.kind != NpcKind::Enemy || target.health == 0 {
+            Self::reject(events, "target is not a living enemy");
+            return;
+        }
+        if player_position.distance_squared(target.position) > ATTACK_RANGE * ATTACK_RANGE {
+            Self::reject(events, "target is out of attack range");
+            return;
+        }
+
+        let resolve_tick = self.tick.saturating_add(timing.cast_time_ticks);
+        let ready_tick = resolve_tick.saturating_add(timing.cooldown_ticks);
+        self.combat_cooldowns.insert(player_id, ready_tick);
+        if timing.cast_time_ticks == 0 {
+            self.resolve_attack(player_id, target_id, damage, events);
+        } else {
+            self.pending_attacks.insert(
+                player_id,
+                PendingAttack {
+                    target_id,
+                    damage,
+                    resolve_tick,
+                },
+            );
+        }
+    }
+
+    fn resolve_pending_attacks(&mut self, events: &mut Vec<Event>) {
+        let due_attacks: Vec<_> = self
+            .pending_attacks
+            .iter()
+            .filter_map(|(&player_id, attack)| {
+                (attack.resolve_tick <= self.tick).then_some((player_id, *attack))
+            })
+            .collect();
+        for (player_id, attack) in due_attacks {
+            self.pending_attacks.remove(&player_id);
+            self.resolve_attack(player_id, attack.target_id, attack.damage, events);
+        }
+    }
+
+    fn resolve_attack(
+        &mut self,
+        player_id: EntityId,
+        target_id: EntityId,
+        damage: u32,
+        events: &mut Vec<Event>,
+    ) {
+        if !self.players.contains_key(&player_id) {
+            Self::reject(events, format!("unknown player {player_id}"));
+            return;
+        }
+        let (target_template_id, target_health, defeated) = {
+            let Some(target) = self.npcs.get_mut(&target_id) else {
+                Self::reject(events, "target no longer exists");
+                return;
+            };
+            if target.kind != NpcKind::Enemy || target.health == 0 {
+                Self::reject(events, "target is not a living enemy");
+                return;
+            }
+            target.health = target.health.saturating_sub(damage);
+            (target.template_id, target.health, target.health == 0)
+        };
+        events.push(Event::AttackResolved {
+            player_id,
+            target_id,
+            damage,
+            target_health,
+        });
+        if defeated {
+            events.push(Event::EnemyDefeated {
+                enemy_id: target_id,
+            });
+        }
+        if let Some(reward) = self.enemy_rewards.get_mut(&target_id)
+            && reward.owner.is_none()
+        {
+            reward.owner = Some(player_id);
+        }
+        if defeated {
+            self.advance_kill_quests(player_id, target_template_id, events);
+        }
+    }
+
     fn spawn_npc(
         &mut self,
         template_id: NpcTemplateId,
@@ -666,6 +874,8 @@ impl World {
             }
             Command::LeavePlayer { player_id } => {
                 if self.players.remove(&player_id).is_some() {
+                    self.combat_cooldowns.remove(&player_id);
+                    self.pending_attacks.remove(&player_id);
                     events.push(Event::PlayerLeft { player_id });
                 } else {
                     Self::reject(events, format!("unknown player {player_id}"));
@@ -1756,5 +1966,137 @@ mod tests {
                 reason: "enemy reward was already claimed".to_owned(),
             }]
         );
+    }
+
+    #[test]
+    fn timed_combat_resolves_after_fixed_tick_cast_time() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Caster", Role::DamageDealer);
+        let enemy_id = first_enemy(&world);
+        let timing = CombatTiming::new(20, 2, 0).unwrap();
+
+        assert_eq!(timing.tick_hz(), 20);
+        assert_eq!(world.tick(), 1);
+        world.step_with_combat_timing(
+            [
+                Command::Move {
+                    player_id,
+                    dx: 10.0,
+                    dy: 0.0,
+                },
+                Command::Move {
+                    player_id,
+                    dx: 10.0,
+                    dy: 0.0,
+                },
+                Command::SelectTarget {
+                    player_id,
+                    target_id: enemy_id,
+                },
+            ],
+            timing,
+        );
+        assert_eq!(world.tick(), 2);
+
+        let events = world.step_with_combat_timing([Command::BasicAttack { player_id }], timing);
+        assert_eq!(world.tick(), 3);
+        assert!(events.is_empty());
+        assert_eq!(world.npc(enemy_id).unwrap().health, 100);
+
+        let events = world.step_with_combat_timing([], timing);
+        assert_eq!(world.tick(), 4);
+        assert!(matches!(
+            events.as_slice(),
+            [Event::AttackResolved {
+                player_id: resolved_player,
+                target_id: resolved_target,
+                damage: 12,
+                target_health: 88,
+            }] if *resolved_player == player_id && *resolved_target == enemy_id
+        ));
+        assert_eq!(world.npc(enemy_id).unwrap().health, 88);
+    }
+
+    #[test]
+    fn timed_combat_cooldown_rejection_does_not_mutate_state() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Cooldown", Role::DamageDealer);
+        let enemy_id = first_enemy(&world);
+        let timing = CombatTiming::new(20, 0, 2).unwrap();
+        world.step_with_combat_timing(
+            [
+                Command::Move {
+                    player_id,
+                    dx: 10.0,
+                    dy: 0.0,
+                },
+                Command::Move {
+                    player_id,
+                    dx: 10.0,
+                    dy: 0.0,
+                },
+                Command::SelectTarget {
+                    player_id,
+                    target_id: enemy_id,
+                },
+            ],
+            timing,
+        );
+        world.step_with_combat_timing([Command::BasicAttack { player_id }], timing);
+        let health_before = world.npc(enemy_id).unwrap().health;
+        let cooldown_before = world.combat_cooldowns[&player_id];
+
+        let events = world.step_with_combat_timing([Command::BasicAttack { player_id }], timing);
+        assert_eq!(
+            events,
+            vec![Event::CommandRejected {
+                reason: "combat cooldown is not ready until tick 4".to_owned(),
+            }]
+        );
+        assert_eq!(world.npc(enemy_id).unwrap().health, health_before);
+        assert_eq!(world.combat_cooldowns[&player_id], cooldown_before);
+        assert!(world.pending_attacks.is_empty());
+    }
+
+    #[test]
+    fn timed_combat_becomes_ready_at_the_server_tick_boundary() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Ready", Role::DamageDealer);
+        let enemy_id = first_enemy(&world);
+        let timing = CombatTiming::new(20, 0, 2).unwrap();
+        world.step_with_combat_timing(
+            [
+                Command::Move {
+                    player_id,
+                    dx: 10.0,
+                    dy: 0.0,
+                },
+                Command::Move {
+                    player_id,
+                    dx: 10.0,
+                    dy: 0.0,
+                },
+                Command::SelectTarget {
+                    player_id,
+                    target_id: enemy_id,
+                },
+            ],
+            timing,
+        );
+        world.step_with_combat_timing([Command::BasicAttack { player_id }], timing);
+        world.step_with_combat_timing([], timing);
+        assert_eq!(world.tick(), 4);
+
+        let events = world.step_with_combat_timing([Command::BasicAttack { player_id }], timing);
+        assert!(matches!(
+            events.as_slice(),
+            [Event::AttackResolved {
+                player_id: resolved_player,
+                target_id: resolved_target,
+                damage: 12,
+                target_health: 76,
+            }] if *resolved_player == player_id && *resolved_target == enemy_id
+        ));
+        assert_eq!(world.npc(enemy_id).unwrap().health, 76);
     }
 }

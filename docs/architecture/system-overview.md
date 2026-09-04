@@ -72,6 +72,10 @@ The repository now contains the first implementation of this shape:
 - `crates/mmorpg-client-protocol` — standalone typed command-line encoder for
   the temporary development server adapter; it deliberately does not parse
   human-readable server output.
+- `crates/mmorpg-client-transport` — standalone bounded blocking TCP adapter
+  for sending temporary command lines and reading diagnostic responses.
+- `crates/mmorpg-wire` — standalone versioned length-prefixed envelope
+  prototype with explicit message kinds and payload boundaries.
 - `crates/mmorpg-core` — dependency-free authoritative starter-zone simulation.
 - `crates/mmorpg-server` — Linux headless development server with a temporary
   nonblocking TCP line protocol.
@@ -87,9 +91,23 @@ device-neutral tablet sample, pressure-aware terrain brushes, deterministic
 source persistence, and stroke-level undo/redo; a Linux GUI/device shell is
 still a future spike.
 
+The authoritative core now also exposes an explicit fixed-tick combat path for
+cast-time and cooldown experiments. The original immediate development path
+remains available for compatibility, while timed combat state is owned by the
+world owner and resolves through the same authoritative events. Enemy patrol,
+aggro, leash, and respawn behavior remains a standalone experiment until its
+navigation, persistence, and ownership boundaries are integrated into the
+server.
+
 The current server is intentionally a development process. It does not yet
 provide authentication, durable persistence, binary protocol versioning,
 interest-managed replication, or multi-worker deployment.
+
+The wire and transport crates are preparatory boundaries, not a production
+network stack. The current server still speaks the human-readable line
+protocol, and the client transport must remain off the simulation/render path
+until asynchronous queues, authentication, framing, and authoritative event
+decoding are implemented.
 
 The code should retain interfaces for separating these later:
 

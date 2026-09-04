@@ -18,6 +18,7 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [Rust server research](research/rust-server.md) — preliminary findings for Rust runtime, ownership, and region workers.
 - [Networking research](research/networking-and-replication.md) — preliminary findings for transport and replication.
 - [Overworld layering research](research/overworld-layering.md) — preliminary findings for hotspot scaling and transparent layers.
+- [Instances and layers research](research/instances-and-layers.md) — lifecycle, ownership, transfers, world-boss policy, and failure recovery.
 - [Open questions](open-questions.md) — unresolved decisions and questions requiring experiments or owner input.
 - [Implementation roadmap](implementation-roadmap.md) — ordered vertical-slice implementation batches.
 - [Shared content schema decision](decisions/ADR-003-shared-content-schema.md) — static definitions shared by tools, client, and server.
@@ -26,6 +27,10 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [Client presentation model](../crates/mmorpg-client-model/README.md) — event/snapshot-only client state projection used by future rendering and UI adapters.
 - [Client shell spike](../crates/mmorpg-client/README.md) — Bevy Linux window and starter-zone scene prototype.
 - [Client protocol adapter](../crates/mmorpg-client-protocol/README.md) — typed helpers for the temporary development command line.
+- [Client transport spike](../crates/mmorpg-client-transport/README.md) — bounded loopback/TCP adapter for sending development commands.
+- [Wire envelope spike](../crates/mmorpg-wire/README.md) — versioned length-prefixed framing prototype for the future machine-readable protocol.
+- [AI/respawn experiment](../experiments/ai-respawn/README.md) — deterministic patrol, aggro, leash, death, and respawn behavior model.
+- [Persistence and recovery research](research/persistence-and-recovery.md) — durable state, idempotency, snapshots, journals, and crash recovery.
 - [Content validation tool](../tools/README.md) — current starter-catalog validation command and future authoring-tool boundary.
 
 ## Status vocabulary

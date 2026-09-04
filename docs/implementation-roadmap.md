@@ -39,6 +39,17 @@ architecture and research remain in `docs/architecture/` and
   source persistence and stroke-level undo/redo.
 - Client presentation replay experiment covering the full starter quest,
   economy, combat, and loot loop.
+- Explicit server-owned fixed-tick combat timing path with cast-time and
+  cooldown tests while preserving the original development path.
+- Versioned length-prefixed wire-envelope prototype with bounded decoding.
+- Bounded TCP transport adapter for typed development commands and diagnostic
+  lines.
+- Standalone deterministic enemy patrol, aggro, leash, death, and respawn
+  experiment.
+- Persistence and recovery research covering the future durable-operation and
+  checkpoint boundary.
+- Instances/layers research covering explicit instance lifecycle, transparent
+  layer transfers, and the 200-player world-boss policy.
 
 ## Completed batch: town/field gameplay loop
 
@@ -103,6 +114,10 @@ The window and terrain-core spikes now run locally. The remaining technology
 work in this batch is to connect native tablet events, feed a real network
 adapter into the client presentation model, and validate the protected UI
 scripting boundary with an embedded runtime.
+
+The timing, AI, wire-envelope, and development-transport additions are still
+prototypes. They do not yet provide a production event schema, async
+backpressure, authentication, encryption, or a client event decoder.
 
 ### Batch 4: real simulation scheduling
 
