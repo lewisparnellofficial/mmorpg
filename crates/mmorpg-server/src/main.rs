@@ -587,7 +587,7 @@ fn format_machine_snapshot(world: &World) -> Vec<String> {
             npc.position.x,
             npc.position.y,
             npc.health,
-            npc.max_health
+            npc.max_health,
         ));
     }
     lines.push("TEMP_SNAPSHOT_END".to_owned());

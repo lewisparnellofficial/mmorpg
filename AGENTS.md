@@ -128,6 +128,7 @@ move <player-id> <dx> <dy>
 target <entity-id>
 attack
 state
+snapshot
 help
 quit
 ```

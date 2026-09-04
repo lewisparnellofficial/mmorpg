@@ -5,9 +5,12 @@ technology spike, not a production client or an engine commitment.
 
 The binary uses Bevy `0.19.1` to open a desktop window, create a 3D camera and
 directional light, draw a primitive town and field, and instantiate the NPC
-placements from the shared `mmorpg-content` starter catalog. The vendor and
-enemy markers use different colors. Startup logs also identify the content
-definitions and placements that were instantiated.
+placements from the shared `mmorpg-content` starter catalog. It connects to
+the local development server on a background TCP worker, requests the bounded
+`snapshot` bootstrap response, and supports keyboard movement, target cycling,
+and server-authoritative basic attacks. The vendor and enemy markers use
+different colors. Startup logs also identify the content definitions and
+placements that were instantiated.
 
 ## Run
 
@@ -19,7 +22,9 @@ cargo check --manifest-path crates/mmorpg-client/Cargo.toml
 cargo run --manifest-path crates/mmorpg-client/Cargo.toml
 ```
 
-The window can be closed using the normal window controls. The first build
+The window can be closed using the normal window controls. With the server
+running in another terminal, use `WASD` to move, `Tab` to select the next
+known NPC, and `Space` to attack the selected target. The first build
 may take several minutes because Bevy and its graphics dependencies are
 compiled locally.
 
@@ -31,10 +36,12 @@ distributions; consult the Bevy setup documentation for the selected host.
 
 ## Deliberate limitations
 
-- There is no server connection, protocol, authentication, replication, or
-  authoritative simulation integration.
-- There is no camera controller, character movement, combat, targeting, UI,
-  persistence, or addon scripting.
+- The connection uses a temporary development TCP adapter and does not yet
+  provide authentication, encryption, reconnection, replication interest
+  management, or production backpressure.
+- The client has only a fixed camera, keyboard input, basic targeting, and a
+  compact diagnostic UI. It does not yet provide a full character controller,
+  inventory/quest panels, persistence, or addon scripting.
 - The scene uses primitive meshes and hard-coded presentation layout. It does
   not validate or load authored terrain, models, animations, particles, sound,
   or music packages.
@@ -46,6 +53,6 @@ distributions; consult the Bevy setup documentation for the selected host.
   current content schema; it is not a performance, compatibility, or
   production-readiness result.
 
-The next useful spike is a renderer-independent network adapter that feeds
-`mmorpg-client-model` events into this presentation shell. Pen-tablet input and
-the separate content editor remain independent technology spikes.
+The next useful spike is to replace the temporary snapshot/event adapter with
+the versioned wire protocol and feed `mmorpg-client-model` directly. Pen-tablet
+input and the separate content editor remain independent technology spikes.

@@ -44,6 +44,10 @@ architecture and research remain in `docs/architecture/` and
 - Versioned length-prefixed wire-envelope prototype with bounded decoding.
 - Bounded TCP transport adapter for typed development commands and diagnostic
   lines.
+- Interactive Bevy client shell with background TCP I/O, authoritative
+  snapshot bootstrap, keyboard movement, target cycling, attack input, and a
+  compact status HUD.
+- Temporary machine-readable snapshot decoder for the graphical client path.
 - Standalone deterministic enemy patrol, aggro, leash, death, and respawn
   experiment.
 - Persistence and recovery research covering the future durable-operation and
@@ -110,10 +114,10 @@ The first foundations from this batch now exist:
   these recommendations still require local windowing, rendering, tablet, and
   scripting spikes before they become accepted decisions.
 
-The window and terrain-core spikes now run locally. The remaining technology
-work in this batch is to connect native tablet events, feed a real network
-adapter into the client presentation model, and validate the protected UI
-scripting boundary with an embedded runtime.
+The window, terrain-core, and first interactive client spikes now run locally.
+The remaining technology work in this batch is to connect native tablet
+events, feed the typed network decoder into `mmorpg-client-model`, and validate
+the protected UI scripting boundary with an embedded runtime.
 
 The timing, AI, wire-envelope, and development-transport additions are still
 prototypes. They do not yet provide a production event schema, async

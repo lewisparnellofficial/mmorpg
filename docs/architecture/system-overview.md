@@ -68,10 +68,11 @@ The repository now contains the first implementation of this shape:
   accepts authoritative events and snapshots without providing gameplay
   authority or a client command API.
 - `crates/mmorpg-client` — standalone Bevy Linux client-shell technology spike
-  that opens a window and presents the starter catalog with primitive geometry.
-- `crates/mmorpg-client-protocol` — standalone typed command-line encoder for
-  the temporary development server adapter; it deliberately does not parse
-  human-readable server output.
+  that opens a window, presents the starter catalog with primitive geometry,
+  connects to the development server, and sends basic authoritative intents.
+- `crates/mmorpg-client-protocol` — standalone typed command-line encoder and
+  bounded decoder for the temporary development server adapter; it deliberately
+  rejects unrelated human-readable diagnostics.
 - `crates/mmorpg-client-transport` — standalone bounded blocking TCP adapter
   for sending temporary command lines and reading diagnostic responses.
 - `crates/mmorpg-wire` — standalone versioned length-prefixed envelope
@@ -104,10 +105,11 @@ provide authentication, durable persistence, binary protocol versioning,
 interest-managed replication, or multi-worker deployment.
 
 The wire and transport crates are preparatory boundaries, not a production
-network stack. The current server still speaks the human-readable line
-protocol, and the client transport must remain off the simulation/render path
-until asynchronous queues, authentication, framing, and authoritative event
-decoding are implemented.
+network stack. The current server still speaks a temporary line protocol. The
+graphical client uses a background worker and a framed machine-readable
+snapshot for local development, but authentication, production framing,
+asynchronous backpressure, and full authoritative event projection remain
+future work.
 
 The code should retain interfaces for separating these later:
 
