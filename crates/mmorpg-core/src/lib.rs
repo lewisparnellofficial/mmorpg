@@ -10,6 +10,9 @@ use std::str::FromStr;
 
 const MAX_MOVE_PER_COMMAND: f32 = 10.0;
 const ATTACK_RANGE: f32 = 32.0;
+const VENDOR_INTERACTION_RANGE: f32 = 12.0;
+const STARTER_GOLD: u32 = 20;
+const STARTER_INVENTORY_CAPACITY: usize = 16;
 
 /// Stable identifier for any live world entity.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -18,6 +21,139 @@ pub struct EntityId(pub u64);
 impl fmt::Display for EntityId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}", self.0)
+    }
+}
+
+/// Stable identifier for an item definition.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ItemId(pub u32);
+
+impl fmt::Display for ItemId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
+impl ItemId {
+    pub const FIELD_WOLF_PELT: Self = Self(1);
+    pub const TOWN_RATION: Self = Self(2);
+    pub const MINOR_HEALING_POTION: Self = Self(3);
+}
+
+/// Immutable content definition used by the starter economy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ItemDefinition {
+    pub id: ItemId,
+    pub name: &'static str,
+    pub max_stack: u32,
+}
+
+impl ItemDefinition {
+    pub const fn new(id: ItemId, name: &'static str, max_stack: u32) -> Self {
+        Self {
+            id,
+            name,
+            max_stack,
+        }
+    }
+}
+
+/// Returns the item content known by the starter-zone simulation.
+pub fn item_definition(item_id: ItemId) -> Option<ItemDefinition> {
+    match item_id {
+        ItemId::FIELD_WOLF_PELT => Some(ItemDefinition::new(
+            ItemId::FIELD_WOLF_PELT,
+            "Field Wolf Pelt",
+            20,
+        )),
+        ItemId::TOWN_RATION => Some(ItemDefinition::new(ItemId::TOWN_RATION, "Town Ration", 20)),
+        ItemId::MINOR_HEALING_POTION => Some(ItemDefinition::new(
+            ItemId::MINOR_HEALING_POTION,
+            "Minor Healing Potion",
+            20,
+        )),
+        _ => None,
+    }
+}
+
+/// One non-empty inventory stack.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemStack {
+    pub item_id: ItemId,
+    pub quantity: u32,
+}
+
+/// Slot-limited, stack-aware player inventory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Inventory {
+    capacity: usize,
+    stacks: Vec<ItemStack>,
+}
+
+impl Inventory {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            stacks: Vec::new(),
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn used_slots(&self) -> usize {
+        self.stacks.len()
+    }
+
+    pub fn stacks(&self) -> impl Iterator<Item = &ItemStack> {
+        self.stacks.iter()
+    }
+
+    pub fn quantity(&self, item_id: ItemId) -> u32 {
+        self.stacks
+            .iter()
+            .filter(|stack| stack.item_id == item_id)
+            .map(|stack| stack.quantity)
+            .sum()
+    }
+
+    fn can_add(&self, definition: ItemDefinition, quantity: u32) -> bool {
+        if quantity == 0 {
+            return false;
+        }
+        let existing_capacity: u64 = self
+            .stacks
+            .iter()
+            .filter(|stack| stack.item_id == definition.id)
+            .map(|stack| (definition.max_stack - stack.quantity) as u64)
+            .sum();
+        let empty_slots = self.capacity.saturating_sub(self.stacks.len()) as u64;
+        existing_capacity.saturating_add(empty_slots * definition.max_stack as u64)
+            >= quantity as u64
+    }
+
+    fn add(&mut self, definition: ItemDefinition, mut quantity: u32) {
+        for stack in &mut self.stacks {
+            if stack.item_id != definition.id || stack.quantity == definition.max_stack {
+                continue;
+            }
+            let amount = quantity.min(definition.max_stack - stack.quantity);
+            stack.quantity += amount;
+            quantity -= amount;
+            if quantity == 0 {
+                return;
+            }
+        }
+
+        while quantity > 0 {
+            let amount = quantity.min(definition.max_stack);
+            self.stacks.push(ItemStack {
+                item_id: definition.id,
+                quantity: amount,
+            });
+            quantity -= amount;
+        }
     }
 }
 
@@ -138,6 +274,8 @@ pub struct Player {
     pub health: u32,
     pub max_health: u32,
     pub target: Option<EntityId>,
+    pub gold: u32,
+    pub inventory: Inventory,
 }
 
 impl Player {
@@ -150,6 +288,8 @@ impl Player {
             health: self.health,
             max_health: self.max_health,
             target: self.target,
+            gold: self.gold,
+            inventory: self.inventory.clone(),
         }
     }
 }
@@ -179,6 +319,17 @@ pub struct PlayerSnapshot {
     pub health: u32,
     pub max_health: u32,
     pub target: Option<EntityId>,
+    pub gold: u32,
+    pub inventory: Inventory,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VendorListing {
+    pub item_id: ItemId,
+    pub name: &'static str,
+    pub unit_price: u32,
+    pub remaining_quantity: u32,
+    pub max_stack: u32,
 }
 
 /// Commands accepted by the authoritative world owner.
@@ -202,6 +353,20 @@ pub enum Command {
     },
     BasicAttack {
         player_id: EntityId,
+    },
+    ListVendor {
+        player_id: EntityId,
+        vendor_id: EntityId,
+    },
+    BuyItem {
+        player_id: EntityId,
+        vendor_id: EntityId,
+        item_id: ItemId,
+        quantity: u32,
+    },
+    LootEnemy {
+        player_id: EntityId,
+        enemy_id: EntityId,
     },
 }
 
@@ -233,6 +398,29 @@ pub enum Event {
     EnemyDefeated {
         enemy_id: EntityId,
     },
+    VendorListed {
+        player_id: EntityId,
+        vendor_id: EntityId,
+        listings: Vec<VendorListing>,
+    },
+    ItemPurchased {
+        player_id: EntityId,
+        vendor_id: EntityId,
+        item_id: ItemId,
+        quantity: u32,
+        total_price: u32,
+        gold_remaining: u32,
+    },
+    LootRewarded {
+        player_id: EntityId,
+        enemy_id: EntityId,
+        item_id: ItemId,
+        quantity: u32,
+    },
+    TransactionRejected {
+        player_id: EntityId,
+        reason: String,
+    },
     CommandRejected {
         reason: String,
     },
@@ -247,6 +435,18 @@ pub struct WorldSummary {
     pub vendor_count: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VendorStock {
+    unit_price: u32,
+    remaining_quantity: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EnemyReward {
+    owner: Option<EntityId>,
+    claimed: bool,
+}
+
 /// Single-owner authoritative starter-zone simulation.
 pub struct World {
     tick: u64,
@@ -254,6 +454,8 @@ pub struct World {
     bounds: Bounds,
     players: BTreeMap<EntityId, Player>,
     npcs: BTreeMap<EntityId, Npc>,
+    vendor_stock: BTreeMap<(EntityId, ItemId), VendorStock>,
+    enemy_rewards: BTreeMap<EntityId, EnemyReward>,
 }
 
 impl World {
@@ -265,13 +467,29 @@ impl World {
             bounds: Bounds::starter_zone(),
             players: BTreeMap::new(),
             npcs: BTreeMap::new(),
+            vendor_stock: BTreeMap::new(),
+            enemy_rewards: BTreeMap::new(),
         };
 
-        world.spawn_npc(
+        let vendor_id = world.spawn_npc(
             "Mira the Merchant",
             NpcKind::Vendor,
             Position::new(0.0, 0.0),
             1,
+        );
+        world.vendor_stock.insert(
+            (vendor_id, ItemId::TOWN_RATION),
+            VendorStock {
+                unit_price: 2,
+                remaining_quantity: 100,
+            },
+        );
+        world.vendor_stock.insert(
+            (vendor_id, ItemId::MINOR_HEALING_POTION),
+            VendorStock {
+                unit_price: 5,
+                remaining_quantity: 50,
+            },
         );
         world.spawn_npc("Field Wolf", NpcKind::Enemy, Position::new(24.0, 0.0), 100);
         world.spawn_npc("Field Wolf", NpcKind::Enemy, Position::new(30.0, 6.0), 100);
@@ -356,6 +574,15 @@ impl World {
                 max_health: health,
             },
         );
+        if kind == NpcKind::Enemy {
+            self.enemy_rewards.insert(
+                id,
+                EnemyReward {
+                    owner: None,
+                    claimed: false,
+                },
+            );
+        }
         id
     }
 
@@ -386,6 +613,8 @@ impl World {
                     health: 100,
                     max_health: 100,
                     target: None,
+                    gold: STARTER_GOLD,
+                    inventory: Inventory::new(STARTER_INVENTORY_CAPACITY),
                 };
                 events.push(Event::PlayerJoined {
                     player: player.snapshot(),
@@ -486,12 +715,232 @@ impl World {
                         enemy_id: target_id,
                     });
                 }
+                if let Some(reward) = self.enemy_rewards.get_mut(&target_id) {
+                    if reward.owner.is_none() {
+                        reward.owner = Some(player_id);
+                    }
+                }
+            }
+            Command::ListVendor {
+                player_id,
+                vendor_id,
+            } => {
+                if !self.can_use_vendor(player_id, vendor_id, events) {
+                    return;
+                }
+                let listings = self
+                    .vendor_stock
+                    .iter()
+                    .filter_map(|((stock_vendor_id, item_id), stock)| {
+                        if *stock_vendor_id != vendor_id || stock.remaining_quantity == 0 {
+                            return None;
+                        }
+                        let definition = item_definition(*item_id)?;
+                        Some(VendorListing {
+                            item_id: *item_id,
+                            name: definition.name,
+                            unit_price: stock.unit_price,
+                            remaining_quantity: stock.remaining_quantity,
+                            max_stack: definition.max_stack,
+                        })
+                    })
+                    .collect();
+                events.push(Event::VendorListed {
+                    player_id,
+                    vendor_id,
+                    listings,
+                });
+            }
+            Command::BuyItem {
+                player_id,
+                vendor_id,
+                item_id,
+                quantity,
+            } => {
+                if !self.can_use_vendor(player_id, vendor_id, events) {
+                    return;
+                }
+                let Some(definition) = item_definition(item_id) else {
+                    Self::reject_transaction(events, player_id, format!("unknown item {item_id}"));
+                    return;
+                };
+                if quantity == 0 {
+                    Self::reject_transaction(
+                        events,
+                        player_id,
+                        "quantity must be greater than zero",
+                    );
+                    return;
+                }
+                let Some(stock) = self.vendor_stock.get(&(vendor_id, item_id)).copied() else {
+                    Self::reject_transaction(
+                        events,
+                        player_id,
+                        format!("vendor does not sell item {item_id}"),
+                    );
+                    return;
+                };
+                if quantity > stock.remaining_quantity {
+                    Self::reject_transaction(
+                        events,
+                        player_id,
+                        "vendor does not have enough stock",
+                    );
+                    return;
+                }
+                let Some(total_price) = stock.unit_price.checked_mul(quantity) else {
+                    Self::reject_transaction(events, player_id, "purchase price is too large");
+                    return;
+                };
+                let Some(player) = self.players.get(&player_id) else {
+                    Self::reject_transaction(
+                        events,
+                        player_id,
+                        format!("unknown player {player_id}"),
+                    );
+                    return;
+                };
+                if player.gold < total_price {
+                    Self::reject_transaction(events, player_id, "player cannot afford purchase");
+                    return;
+                }
+                if !player.inventory.can_add(definition, quantity) {
+                    Self::reject_transaction(
+                        events,
+                        player_id,
+                        "inventory has insufficient capacity",
+                    );
+                    return;
+                }
+
+                let player = self
+                    .players
+                    .get_mut(&player_id)
+                    .expect("player was checked above");
+                player.gold -= total_price;
+                player.inventory.add(definition, quantity);
+                self.vendor_stock
+                    .get_mut(&(vendor_id, item_id))
+                    .expect("stock was checked above")
+                    .remaining_quantity -= quantity;
+                events.push(Event::ItemPurchased {
+                    player_id,
+                    vendor_id,
+                    item_id,
+                    quantity,
+                    total_price,
+                    gold_remaining: player.gold,
+                });
+            }
+            Command::LootEnemy {
+                player_id,
+                enemy_id,
+            } => {
+                let Some(player) = self.players.get(&player_id) else {
+                    Self::reject_transaction(
+                        events,
+                        player_id,
+                        format!("unknown player {player_id}"),
+                    );
+                    return;
+                };
+                let Some(enemy) = self.npcs.get(&enemy_id) else {
+                    Self::reject_transaction(
+                        events,
+                        player_id,
+                        format!("unknown enemy {enemy_id}"),
+                    );
+                    return;
+                };
+                if enemy.kind != NpcKind::Enemy {
+                    Self::reject_transaction(events, player_id, "entity is not an enemy");
+                    return;
+                }
+                if enemy.health > 0 {
+                    Self::reject_transaction(events, player_id, "enemy is not defeated");
+                    return;
+                }
+                let Some(reward) = self.enemy_rewards.get(&enemy_id).copied() else {
+                    Self::reject_transaction(events, player_id, "enemy has no reward");
+                    return;
+                };
+                if reward.owner != Some(player_id) {
+                    Self::reject_transaction(events, player_id, "player does not own enemy reward");
+                    return;
+                }
+                if reward.claimed {
+                    Self::reject_transaction(events, player_id, "enemy reward was already claimed");
+                    return;
+                }
+                let definition = item_definition(ItemId::FIELD_WOLF_PELT)
+                    .expect("starter loot item must have a definition");
+                if !player.inventory.can_add(definition, 1) {
+                    Self::reject_transaction(
+                        events,
+                        player_id,
+                        "inventory has insufficient capacity",
+                    );
+                    return;
+                }
+                self.players
+                    .get_mut(&player_id)
+                    .expect("player was checked above")
+                    .inventory
+                    .add(definition, 1);
+                self.enemy_rewards
+                    .get_mut(&enemy_id)
+                    .expect("reward was checked above")
+                    .claimed = true;
+                events.push(Event::LootRewarded {
+                    player_id,
+                    enemy_id,
+                    item_id: ItemId::FIELD_WOLF_PELT,
+                    quantity: 1,
+                });
             }
         }
     }
 
+    fn can_use_vendor(
+        &self,
+        player_id: EntityId,
+        vendor_id: EntityId,
+        events: &mut Vec<Event>,
+    ) -> bool {
+        let Some(player) = self.players.get(&player_id) else {
+            Self::reject_transaction(events, player_id, format!("unknown player {player_id}"));
+            return false;
+        };
+        let Some(vendor) = self.npcs.get(&vendor_id) else {
+            Self::reject_transaction(events, player_id, format!("unknown vendor {vendor_id}"));
+            return false;
+        };
+        if vendor.kind != NpcKind::Vendor {
+            Self::reject_transaction(events, player_id, "entity is not a vendor");
+            return false;
+        }
+        if ZoneArea::from_position(player.position) != ZoneArea::Town {
+            Self::reject_transaction(events, player_id, "vendor is only available in town");
+            return false;
+        }
+        if player.position.distance_squared(vendor.position)
+            > VENDOR_INTERACTION_RANGE * VENDOR_INTERACTION_RANGE
+        {
+            Self::reject_transaction(events, player_id, "player is too far from vendor");
+            return false;
+        }
+        true
+    }
+
     fn reject(events: &mut Vec<Event>, reason: impl Into<String>) {
         events.push(Event::CommandRejected {
+            reason: reason.into(),
+        });
+    }
+
+    fn reject_transaction(events: &mut Vec<Event>, player_id: EntityId, reason: impl Into<String>) {
+        events.push(Event::TransactionRejected {
+            player_id,
             reason: reason.into(),
         });
     }
@@ -518,6 +967,37 @@ mod tests {
             .find(|npc| npc.kind == NpcKind::Enemy)
             .expect("starter zone should contain an enemy")
             .id
+    }
+
+    fn vendor(world: &World) -> EntityId {
+        world
+            .npcs()
+            .find(|npc| npc.kind == NpcKind::Vendor)
+            .expect("starter zone should contain a vendor")
+            .id
+    }
+
+    fn defeat_enemy(world: &mut World, player_id: EntityId, enemy_id: EntityId) {
+        world.step([
+            Command::Move {
+                player_id,
+                dx: 10.0,
+                dy: 0.0,
+            },
+            Command::Move {
+                player_id,
+                dx: 10.0,
+                dy: 0.0,
+            },
+            Command::SelectTarget {
+                player_id,
+                target_id: enemy_id,
+            },
+        ]);
+        for _ in 0..9 {
+            world.step([Command::BasicAttack { player_id }]);
+        }
+        assert_eq!(world.npc(enemy_id).unwrap().health, 0);
     }
 
     #[test]
@@ -637,5 +1117,209 @@ mod tests {
         assert_eq!("heal".parse::<Role>().unwrap(), Role::Healer);
         assert_eq!("dps".parse::<Role>().unwrap(), Role::DamageDealer);
         assert!("mage".parse::<Role>().is_err());
+    }
+
+    #[test]
+    fn vendor_purchase_succeeds_and_merges_same_item_into_a_stack() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Buyer", Role::Tank);
+        let vendor_id = vendor(&world);
+
+        let events = world.step([Command::ListVendor {
+            player_id,
+            vendor_id,
+        }]);
+        let Event::VendorListed { listings, .. } = &events[0] else {
+            panic!("expected vendor listing: {events:?}");
+        };
+        assert_eq!(listings.len(), 2);
+        assert!(
+            listings.iter().any(|listing| {
+                listing.item_id == ItemId::TOWN_RATION && listing.unit_price == 2
+            })
+        );
+
+        let events = world.step([Command::BuyItem {
+            player_id,
+            vendor_id,
+            item_id: ItemId::TOWN_RATION,
+            quantity: 2,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::ItemPurchased {
+                player_id,
+                vendor_id,
+                item_id: ItemId::TOWN_RATION,
+                quantity: 2,
+                total_price: 4,
+                gold_remaining: 16,
+            }]
+        );
+
+        world.step([Command::BuyItem {
+            player_id,
+            vendor_id,
+            item_id: ItemId::TOWN_RATION,
+            quantity: 3,
+        }]);
+        let player = world.player(player_id).unwrap();
+        assert_eq!(player.gold, 10);
+        assert_eq!(player.inventory.quantity(ItemId::TOWN_RATION), 5);
+        assert_eq!(player.inventory.used_slots(), 1);
+        assert_eq!(
+            world.vendor_stock[&(vendor_id, ItemId::TOWN_RATION)].remaining_quantity,
+            95
+        );
+    }
+
+    #[test]
+    fn insufficient_gold_rejects_purchase_without_mutating_state() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Poor Buyer", Role::Healer);
+        let vendor_id = vendor(&world);
+
+        let events = world.step([Command::BuyItem {
+            player_id,
+            vendor_id,
+            item_id: ItemId::MINOR_HEALING_POTION,
+            quantity: 5,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::TransactionRejected {
+                player_id,
+                reason: "player cannot afford purchase".to_owned(),
+            }]
+        );
+        assert_eq!(world.player(player_id).unwrap().gold, STARTER_GOLD);
+        assert_eq!(
+            world
+                .player(player_id)
+                .unwrap()
+                .inventory
+                .quantity(ItemId::MINOR_HEALING_POTION),
+            0
+        );
+        assert_eq!(
+            world.vendor_stock[&(vendor_id, ItemId::MINOR_HEALING_POTION)].remaining_quantity,
+            50
+        );
+    }
+
+    #[test]
+    fn invalid_vendor_and_item_are_rejected() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Validator", Role::DamageDealer);
+        let enemy_id = first_enemy(&world);
+        let vendor_id = vendor(&world);
+
+        let events = world.step([Command::ListVendor {
+            player_id,
+            vendor_id: enemy_id,
+        }]);
+        assert!(matches!(
+            events.as_slice(),
+            [Event::TransactionRejected { player_id: rejected_id, .. }] if *rejected_id == player_id
+        ));
+
+        let events = world.step([Command::BuyItem {
+            player_id,
+            vendor_id,
+            item_id: ItemId(999),
+            quantity: 1,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::TransactionRejected {
+                player_id,
+                reason: "unknown item 999".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn inventory_capacity_rejects_purchase_without_spending_gold() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Full Pack", Role::Tank);
+        let vendor_id = vendor(&world);
+        let player = world.players.get_mut(&player_id).unwrap();
+        for _ in 0..player.inventory.capacity() {
+            player.inventory.stacks.push(ItemStack {
+                item_id: ItemId::TOWN_RATION,
+                quantity: 20,
+            });
+        }
+
+        let events = world.step([Command::BuyItem {
+            player_id,
+            vendor_id,
+            item_id: ItemId::MINOR_HEALING_POTION,
+            quantity: 1,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::TransactionRejected {
+                player_id,
+                reason: "inventory has insufficient capacity".to_owned(),
+            }]
+        );
+        assert_eq!(world.player(player_id).unwrap().gold, STARTER_GOLD);
+        assert_eq!(world.player(player_id).unwrap().inventory.used_slots(), 16);
+    }
+
+    #[test]
+    fn defeated_enemy_rewards_are_owned_once_by_the_first_attacker() {
+        let mut world = World::new_starter_zone();
+        let owner_id = join(&mut world, "Hunter", Role::DamageDealer);
+        let other_player_id = join(&mut world, "Observer", Role::Tank);
+        let enemy_id = first_enemy(&world);
+        defeat_enemy(&mut world, owner_id, enemy_id);
+
+        let events = world.step([Command::LootEnemy {
+            player_id: other_player_id,
+            enemy_id,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::TransactionRejected {
+                player_id: other_player_id,
+                reason: "player does not own enemy reward".to_owned(),
+            }]
+        );
+
+        let events = world.step([Command::LootEnemy {
+            player_id: owner_id,
+            enemy_id,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::LootRewarded {
+                player_id: owner_id,
+                enemy_id,
+                item_id: ItemId::FIELD_WOLF_PELT,
+                quantity: 1,
+            }]
+        );
+        assert_eq!(
+            world
+                .player(owner_id)
+                .unwrap()
+                .inventory
+                .quantity(ItemId::FIELD_WOLF_PELT),
+            1
+        );
+
+        let events = world.step([Command::LootEnemy {
+            player_id: owner_id,
+            enemy_id,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::TransactionRejected {
+                player_id: owner_id,
+                reason: "enemy reward was already claimed".to_owned(),
+            }]
+        );
     }
 }
