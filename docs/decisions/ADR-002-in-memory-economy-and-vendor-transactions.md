@@ -74,7 +74,9 @@ Negative and limitations:
   model groups, contribution, tags, threat, or shared loot eligibility.
 - Vendor stock is hard-coded starter content rather than versioned content
   loaded from the content pipeline.
-- The current development server does not yet parse or expose these commands.
+- The current development server exposes these commands through its temporary
+  line protocol, but the protocol is intentionally not a production wire
+  format.
 - `PlayerSnapshot` now carries a clone of the in-memory inventory; a future
   replication API should use purpose-built delta messages instead of sending
   complete economy state on every snapshot.
@@ -133,6 +135,9 @@ economy and keep the first API small.
 - Tests cover purchase success, stack merging, insufficient gold, invalid
   vendor/item, inventory capacity, owner-only loot, duplicate loot claims,
   and the pre-existing movement and combat behavior.
+- The server adapter covers parsing and formatting for vendor listing,
+  purchase, loot, and inventory commands, and a local TCP smoke test exercises
+  purchase and loot end to end.
 
 ## Revisit conditions
 
