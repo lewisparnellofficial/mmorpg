@@ -1,0 +1,3 @@
+# Python execution artifacts
+__pycache__/
+*.py[cod]
