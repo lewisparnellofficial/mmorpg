@@ -498,8 +498,8 @@ fn next_target(state: &mut ClientState) -> Option<EntityId> {
 
 fn sync_authoritative_presentation(
     state: Res<ClientState>,
-    mut player_query: Query<&mut Transform, With<PlayerMarker>>,
-    mut npc_query: Query<(&StarterNpc, &mut Transform)>,
+    mut player_query: Query<&mut Transform, (With<PlayerMarker>, Without<StarterNpc>)>,
+    mut npc_query: Query<(&StarterNpc, &mut Transform), Without<PlayerMarker>>,
 ) {
     if let Ok(mut transform) = player_query.single_mut() {
         transform.translation.x = state.player_position.x;
