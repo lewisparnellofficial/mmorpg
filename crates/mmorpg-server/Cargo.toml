@@ -1,0 +1,11 @@
+[package]
+name = "mmorpg-server"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+mmorpg-core = { path = "../mmorpg-core" }
+
+[lints.rust]
+unsafe_code = "forbid"

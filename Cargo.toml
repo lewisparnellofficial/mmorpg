@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "crates/mmorpg-core",
+    "crates/mmorpg-server",
+]
+resolver = "3"

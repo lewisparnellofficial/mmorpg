@@ -60,6 +60,16 @@ The first playable slice can run as:
 - One content build and validation toolchain.
 - Optional local admin/debug interfaces.
 
+The repository now contains the first implementation of this shape:
+
+- `crates/mmorpg-core` — dependency-free authoritative starter-zone simulation.
+- `crates/mmorpg-server` — Linux headless development server with a temporary
+  nonblocking TCP line protocol.
+
+The current server is intentionally a development process. It does not yet
+provide authentication, durable persistence, binary protocol versioning,
+interest-managed replication, or multi-worker deployment.
+
 The code should retain interfaces for separating these later:
 
 - Gateway/session process.

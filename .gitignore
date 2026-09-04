@@ -1,3 +1,6 @@
 # Python execution artifacts
 __pycache__/
 *.py[cod]
+
+# Rust build output
+/target/
