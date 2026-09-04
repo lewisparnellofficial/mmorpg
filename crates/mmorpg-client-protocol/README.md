@@ -3,7 +3,8 @@
 This crate is a small, typed client-side adapter for the temporary
 line-oriented development protocol exposed by `mmorpg-server`.
 
-It constructs validated command lines for the current development slice:
+It constructs validated command lines and decodes the bounded structured state
+and event lines for the current development slice. Supported commands are:
 
 ```text
 connect <name> <tank|healer|damage>
@@ -29,12 +30,39 @@ including the server's combined vector-magnitude limit.
 `ProtocolLine` contains no trailing newline; a transport adapter may append one
 when writing the line to a socket.
 
-The adapter intentionally has no networking dependency and does not parse
-server output. The server's `EVENT`, `WORLD`, `PLAYER`, and related responses
-are human-readable diagnostics, not a stable client protocol. In particular,
-do not build a client by parsing authoritative results from those lines. A
-future production protocol needs versioned, machine-readable result messages
-and a separate result decoder.
+The decoder is exposed as `decode_server_line` and
+`ServerLine::decode`. It accepts only exact `WORLD`, `PLAYER`, `NPC`,
+`CONNECTED`, and selected `EVENT` prefixes with their required key/value
+fields. It currently decodes:
+
+```text
+TEMP_SNAPSHOT_BEGIN version=1
+TEMP_SNAPSHOT WORLD ...
+TEMP_SNAPSHOT PLAYER ...
+TEMP_SNAPSHOT NPC ...
+TEMP_SNAPSHOT_END
+WORLD tick=... players=... npcs=... enemies=... vendors=...
+PLAYER id=... name=... role=... pos=... hp=... gold=... target=...
+NPC id=... name=... kind=... pos=... hp=...
+CONNECTED player_id=... role=...
+EVENT player_joined ...
+EVENT player_moved ...
+EVENT target_selected ...
+EVENT attack ...
+EVENT enemy_defeated ...
+EVENT rejected ...
+```
+
+The decoder rejects unknown prefixes and fields, duplicate fields, missing
+fields, control characters, non-finite positions, invalid IDs/enums, and lines
+larger than `MAX_SERVER_LINE_BYTES`. The schema-defined `name` and `reason`
+values may contain spaces until the next `key=` field in legacy records. The
+`TEMP_SNAPSHOT` records use the server's bounded percent encoding for names.
+No other prose or diagnostic line is interpreted. This remains a temporary
+development adapter, not a versioned production protocol.
+
+The adapter has no networking dependency. A transport reads one complete line
+and passes it to the decoder without its trailing newline.
 
 The crate is a standalone nested Cargo workspace so it can be checked before
 the temporary development adapter is promoted into the root workspace.
