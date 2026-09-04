@@ -8,6 +8,7 @@ this repository.
 - [Project orientation](#project-orientation)
 - [Repository layout](#repository-layout)
 - [Required workflow](#required-workflow)
+- [Subagent and API cost guardrails](#subagent-and-api-cost-guardrails)
 - [Commands](#commands)
 - [Development server](#development-server)
 - [Experiments and research](#experiments-and-research)
@@ -64,6 +65,32 @@ docs/                             Architecture and research dossier
 8. Record measured benchmark results separately from estimates or research
    conclusions.
 9. Use a Conventional Commit message for every commit.
+
+## Subagent and API cost guardrails
+
+This project is Codex-only for delegated work. These are hard constraints,
+not suggestions:
+
+- Never invoke Pi, Paseo-hosted non-Codex agents, or an unknown agent provider
+  for this repository.
+- If delegation is useful, use only the Codex subagent mechanism exposed by
+  the current session (`multi_agent_v1__spawn_agent`) and leave the model
+  override unset unless the user explicitly chooses a Codex model.
+- Do not use generic agent-creation or scheduling integrations for project
+  work. In particular, do not call `mcp__paseo__create_agent`,
+  `mcp__paseo__create_schedule`, or any provider whose identity is not
+  explicitly Codex.
+- Before delegating, state the selected Codex mechanism and bounded write
+  scope in the working update. If the provider cannot be verified as Codex,
+  do the work locally instead.
+- Do not spend external API tokens on parallel research unless the user has
+  asked for that specific delegation. Prefer local inspection and validation
+  when they are sufficient.
+
+The repository cannot revoke tools supplied by the host application, so these
+rules are reinforced by process: use the explicit Codex-only tool allowlist
+above, never infer a provider from a nickname, and stop rather than guessing
+when a delegation surface is ambiguous.
 
 ## Commands
 

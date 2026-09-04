@@ -18,6 +18,7 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [Networking research](research/networking-and-replication.md) — preliminary findings for transport and replication.
 - [Overworld layering research](research/overworld-layering.md) — preliminary findings for hotspot scaling and transparent layers.
 - [Open questions](open-questions.md) — unresolved decisions and questions requiring experiments or owner input.
+- [Implementation roadmap](implementation-roadmap.md) — ordered vertical-slice implementation batches.
 
 ## Status vocabulary
 

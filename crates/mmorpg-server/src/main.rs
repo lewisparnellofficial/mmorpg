@@ -1,4 +1,4 @@
-use mmorpg_core::{Command, EntityId, Event, Role, World};
+use mmorpg_core::{Command, EntityId, Event, ItemId, Role, World};
 use std::collections::VecDeque;
 use std::env;
 use std::io::{self, Read, Write};
@@ -139,6 +139,7 @@ impl Server {
                 });
             }
             Ok(ParsedLine::State) => self.send_state(client_id),
+            Ok(ParsedLine::Inventory) => self.send_inventory(client_id),
             Ok(ParsedLine::Help) => self.send_help(client_id),
             Ok(ParsedLine::Quit) => {
                 self.clients[client_index].closed = true;
@@ -160,20 +161,21 @@ impl Server {
         client.queue_line("HELP move <dx> <dy>");
         client.queue_line("HELP target <entity-id>");
         client.queue_line("HELP attack");
+        client.queue_line("HELP vendor <vendor-id>");
+        client.queue_line("HELP buy <vendor-id> <item-id> <quantity>");
+        client.queue_line("HELP loot <enemy-id>");
+        client.queue_line("HELP inventory");
         client.queue_line("HELP state");
         client.queue_line("HELP quit");
     }
 
     fn send_state(&mut self, client_id: u64) {
-        let Some(client) = self
-            .clients
-            .iter_mut()
-            .find(|client| client.id == client_id)
-        else {
+        if !self.clients.iter().any(|client| client.id == client_id) {
             return;
-        };
+        }
+        let mut lines = Vec::new();
         let summary = self.world.summary();
-        client.queue_line(format!(
+        lines.push(format!(
             "WORLD tick={} players={} npcs={} enemies={} vendors={}",
             summary.tick,
             summary.player_count,
@@ -182,8 +184,8 @@ impl Server {
             summary.vendor_count
         ));
         for player in self.world.players() {
-            client.queue_line(format!(
-                "PLAYER id={} name={} role={} pos={:.2},{:.2} hp={}/{} target={}",
+            lines.push(format!(
+                "PLAYER id={} name={} role={} pos={:.2},{:.2} hp={}/{} gold={} target={}",
                 player.id,
                 player.name,
                 player.role.as_str(),
@@ -191,13 +193,20 @@ impl Server {
                 player.position.y,
                 player.health,
                 player.max_health,
+                player.gold,
                 player
                     .target
                     .map_or_else(|| "none".to_owned(), |target| target.to_string())
             ));
+            for stack in player.inventory.stacks() {
+                lines.push(format!(
+                    "ITEM player={} item={} quantity={}",
+                    player.id, stack.item_id, stack.quantity
+                ));
+            }
         }
         for npc in self.world.npcs() {
-            client.queue_line(format!(
+            lines.push(format!(
                 "NPC id={} name={} kind={:?} pos={:.2},{:.2} hp={}/{}",
                 npc.id,
                 npc.name,
@@ -207,6 +216,60 @@ impl Server {
                 npc.health,
                 npc.max_health
             ));
+        }
+        if let Some(client) = self
+            .clients
+            .iter_mut()
+            .find(|client| client.id == client_id)
+        {
+            for line in lines {
+                client.queue_line(line);
+            }
+        }
+    }
+
+    fn send_inventory(&mut self, client_id: u64) {
+        let Some(player_id) = self
+            .clients
+            .iter()
+            .find(|client| client.id == client_id)
+            .and_then(|client| client.player_id)
+        else {
+            if let Some(client) = self
+                .clients
+                .iter_mut()
+                .find(|client| client.id == client_id)
+            {
+                client.queue_line("ERR connect first");
+            }
+            return;
+        };
+
+        let Some(player) = self.world.players().find(|player| player.id == player_id) else {
+            return;
+        };
+        let lines: Vec<_> = std::iter::once(format!(
+            "INVENTORY player={} gold={} slots={}/{}",
+            player.id,
+            player.gold,
+            player.inventory.used_slots(),
+            player.inventory.capacity()
+        ))
+        .chain(player.inventory.stacks().map(|stack| {
+            format!(
+                "ITEM player={} item={} quantity={}",
+                player.id, stack.item_id, stack.quantity
+            )
+        }))
+        .collect();
+        if let Some(client) = self
+            .clients
+            .iter_mut()
+            .find(|client| client.id == client_id)
+        {
+            for line in lines {
+                client.queue_line(line);
+            }
         }
     }
 
@@ -337,6 +400,54 @@ fn format_event(event: &Event) -> String {
             player_id, target_id, damage, target_health
         ),
         Event::EnemyDefeated { enemy_id } => format!("EVENT enemy_defeated id={enemy_id}"),
+        Event::VendorListed {
+            player_id,
+            vendor_id,
+            listings,
+        } => {
+            let listing_text = listings
+                .iter()
+                .map(|listing| {
+                    format!(
+                        "item={} name={} price={} stock={} max_stack={}",
+                        listing.item_id,
+                        listing.name.replace(' ', "_"),
+                        listing.unit_price,
+                        listing.remaining_quantity,
+                        listing.max_stack
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(";");
+            format!(
+                "EVENT vendor_listed player={} vendor={} listings={listing_text}",
+                player_id, vendor_id
+            )
+        }
+        Event::ItemPurchased {
+            player_id,
+            vendor_id,
+            item_id,
+            quantity,
+            total_price,
+            gold_remaining,
+        } => format!(
+            "EVENT item_purchased player={} vendor={} item={} quantity={} total_price={} gold={}",
+            player_id, vendor_id, item_id, quantity, total_price, gold_remaining
+        ),
+        Event::LootRewarded {
+            player_id,
+            enemy_id,
+            item_id,
+            quantity,
+        } => format!(
+            "EVENT loot_rewarded player={} enemy={} item={} quantity={}",
+            player_id, enemy_id, item_id, quantity
+        ),
+        Event::TransactionRejected { player_id, reason } => format!(
+            "EVENT transaction_rejected player={} reason={reason}",
+            player_id
+        ),
         Event::CommandRejected { reason } => format!("EVENT rejected reason={reason}"),
     }
 }
@@ -344,6 +455,7 @@ fn format_event(event: &Event) -> String {
 enum ParsedLine {
     Command(Command),
     State,
+    Inventory,
     Help,
     Quit,
 }
@@ -399,6 +511,44 @@ fn parse_line(line: &str, bound_player: Option<EntityId>) -> Result<ParsedLine, 
             let player_id = bound_player.ok_or_else(|| "connect first".to_owned())?;
             Ok(ParsedLine::Command(Command::BasicAttack { player_id }))
         }
+        "vendor" | "list-vendor" => {
+            if tokens.len() != 2 {
+                return Err("usage: vendor <vendor-id>".to_owned());
+            }
+            let player_id = bound_player.ok_or_else(|| "connect first".to_owned())?;
+            Ok(ParsedLine::Command(Command::ListVendor {
+                player_id,
+                vendor_id: parse_entity_id(tokens[1])?,
+            }))
+        }
+        "buy" => {
+            if tokens.len() != 4 {
+                return Err("usage: buy <vendor-id> <item-id> <quantity>".to_owned());
+            }
+            let player_id = bound_player.ok_or_else(|| "connect first".to_owned())?;
+            Ok(ParsedLine::Command(Command::BuyItem {
+                player_id,
+                vendor_id: parse_entity_id(tokens[1])?,
+                item_id: parse_item_id(tokens[2])?,
+                quantity: parse_positive_quantity(tokens[3])?,
+            }))
+        }
+        "loot" => {
+            if tokens.len() != 2 {
+                return Err("usage: loot <enemy-id>".to_owned());
+            }
+            let player_id = bound_player.ok_or_else(|| "connect first".to_owned())?;
+            Ok(ParsedLine::Command(Command::LootEnemy {
+                player_id,
+                enemy_id: parse_entity_id(tokens[1])?,
+            }))
+        }
+        "inventory" => {
+            if tokens.len() != 1 {
+                return Err("usage: inventory".to_owned());
+            }
+            Ok(ParsedLine::Inventory)
+        }
         "state" => Ok(ParsedLine::State),
         "help" => Ok(ParsedLine::Help),
         "quit" | "exit" => Ok(ParsedLine::Quit),
@@ -419,6 +569,23 @@ fn parse_entity_id(value: &str) -> Result<EntityId, String> {
         .parse::<u64>()
         .map(EntityId)
         .map_err(|_| "entity-id must be an integer".to_owned())
+}
+
+fn parse_item_id(value: &str) -> Result<ItemId, String> {
+    value
+        .parse::<u32>()
+        .map(ItemId)
+        .map_err(|_| "item-id must be an integer".to_owned())
+}
+
+fn parse_positive_quantity(value: &str) -> Result<u32, String> {
+    let quantity = value
+        .parse::<u32>()
+        .map_err(|_| "quantity must be a positive integer".to_owned())?;
+    if quantity == 0 {
+        return Err("quantity must be a positive integer".to_owned());
+    }
+    Ok(quantity)
 }
 
 fn main() -> io::Result<()> {
@@ -468,6 +635,51 @@ mod tests {
         let own = Some(EntityId(7));
         assert!(parse_line("move 7 1 0", own).is_ok());
         assert!(parse_line("move 8 1 0", own).is_err());
+    }
+
+    #[test]
+    fn development_protocol_parses_economy_commands_for_bound_player() {
+        let own = Some(EntityId(7));
+        assert_eq!(
+            parse_line("vendor 1", own).unwrap_command(),
+            Command::ListVendor {
+                player_id: EntityId(7),
+                vendor_id: EntityId(1),
+            }
+        );
+        assert_eq!(
+            parse_line("buy 1 2 3", own).unwrap_command(),
+            Command::BuyItem {
+                player_id: EntityId(7),
+                vendor_id: EntityId(1),
+                item_id: ItemId(2),
+                quantity: 3,
+            }
+        );
+        assert_eq!(
+            parse_line("loot 12", own).unwrap_command(),
+            Command::LootEnemy {
+                player_id: EntityId(7),
+                enemy_id: EntityId(12),
+            }
+        );
+        assert!(parse_line("buy 1 2 0", own).is_err());
+        assert!(parse_line("loot 12", None).is_err());
+    }
+
+    trait ParsedLineExt {
+        fn unwrap_command(self) -> Command;
+    }
+
+    impl ParsedLineExt for Result<ParsedLine, String> {
+        fn unwrap_command(self) -> Command {
+            match self.expect("expected a parsed command") {
+                ParsedLine::Command(command) => command,
+                ParsedLine::State | ParsedLine::Inventory | ParsedLine::Help | ParsedLine::Quit => {
+                    panic!("expected a command")
+                }
+            }
+        }
     }
 
     #[test]

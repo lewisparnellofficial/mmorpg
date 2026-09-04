@@ -23,6 +23,10 @@ move <dx> <dy>
 move <player-id> <dx> <dy>
 target <entity-id>
 attack
+vendor <vendor-id>
+buy <vendor-id> <item-id> <quantity>
+loot <enemy-id>
+inventory
 state
 quit
 ```
@@ -38,6 +42,17 @@ nc 127.0.0.1 4400
 The optional explicit player ID on `move` is checked against the player bound
 to the connection. It exists for debugging and does not grant authority over
 another player.
+
+The starter economy uses vendor entity `1` and these item IDs:
+
+- `1` — Field Wolf Pelt (loot only in the starter slice).
+- `2` — Town Ration.
+- `3` — Minor Healing Potion.
+
+For example, after connecting in town, `vendor 1` lists the vendor's stock and
+`buy 1 2 3` purchases three Town Rations. After defeating a field wolf,
+`loot <enemy-id>` claims its reward if the connected player owns the reward.
+`inventory` prints the player's authoritative gold and item stacks.
 
 The server must validate every command through the authoritative core. A
 successful command is not evidence that a client is trusted.
