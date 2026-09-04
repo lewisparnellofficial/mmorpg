@@ -38,7 +38,8 @@ distributions; consult the Bevy setup documentation for the selected host.
 
 - The connection uses a temporary development TCP adapter and does not yet
   provide authentication, encryption, reconnection, replication interest
-  management, or production backpressure.
+  management, or production backpressure. The local spike does use a bounded
+  input/deferred-command queue and a five-second connection timeout.
 - The client has only a fixed camera, keyboard input, basic targeting, and a
   compact diagnostic UI. It does not yet provide a full character controller,
   inventory/quest panels, persistence, or addon scripting.

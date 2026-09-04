@@ -48,6 +48,9 @@ architecture and research remain in `docs/architecture/` and
   snapshot bootstrap, keyboard movement, target cycling, attack input, and a
   compact status HUD.
 - Temporary machine-readable snapshot decoder for the graphical client path.
+- Bounded stream-level snapshot assembly with atomic publication, duplicate
+  detection, count validation, truncation handling, and stale-entity removal.
+- Bounded graphical-client command/deferred queues and connection timeout.
 - Standalone deterministic enemy patrol, aggro, leash, death, and respawn
   experiment.
 - Persistence and recovery research covering the future durable-operation and
@@ -114,10 +117,10 @@ The first foundations from this batch now exist:
   these recommendations still require local windowing, rendering, tablet, and
   scripting spikes before they become accepted decisions.
 
-The window, terrain-core, and first interactive client spikes now run locally.
-The remaining technology work in this batch is to connect native tablet
-events, feed the typed network decoder into `mmorpg-client-model`, and validate
-the protected UI scripting boundary with an embedded runtime.
+The window, terrain-core, and first interactive client reliability spikes now
+run locally. The remaining technology work in this batch is to connect native
+tablet events, feed complete authoritative state into `mmorpg-client-model`,
+and validate the protected UI scripting boundary with an embedded runtime.
 
 The timing, AI, wire-envelope, and development-transport additions are still
 prototypes. They do not yet provide a production event schema, async

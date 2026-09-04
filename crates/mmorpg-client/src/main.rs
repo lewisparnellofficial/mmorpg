@@ -8,12 +8,14 @@
 //! production wire protocol when that boundary is implemented.
 
 use bevy::prelude::*;
-use mmorpg_client_protocol::{EntityId, ServerEvent, ServerLine, decode_server_line};
+use mmorpg_client_protocol::{
+    EntityId, ServerEvent, ServerLine, Snapshot, SnapshotAssembler, decode_server_line,
+};
 use mmorpg_content::{NpcArchetype, starter_catalog};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
-use std::net::TcpStream;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -25,6 +27,10 @@ const PLAYER_ROLE: &str = "damage";
 const MOVEMENT_STEP: f32 = 2.0;
 const MOVEMENT_REPEAT_SECONDS: f32 = 0.12;
 const MAX_LOG_LINES: usize = 6;
+const COMMAND_QUEUE_CAPACITY: usize = 64;
+const MAX_DEFERRED_COMMANDS: usize = 32;
+const MAX_OUTGOING_LINES: usize = 64;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Component)]
 struct StarterNpc {
@@ -57,6 +63,7 @@ struct ClientState {
     npcs: BTreeMap<EntityId, NpcState>,
     target_cursor: usize,
     logs: VecDeque<String>,
+    snapshot: SnapshotAssembler,
 }
 
 impl ClientState {
@@ -73,6 +80,7 @@ impl ClientState {
             npcs: BTreeMap::new(),
             target_cursor: 0,
             logs: VecDeque::from(["WASD move  Tab target  Space attack".to_owned()]),
+            snapshot: SnapshotAssembler::new(),
         }
     }
 
@@ -99,7 +107,7 @@ enum NetworkEvent {
 
 #[derive(Resource)]
 struct NetworkBridge {
-    command_tx: Sender<ClientCommand>,
+    command_tx: SyncSender<ClientCommand>,
     event_rx: Arc<Mutex<Receiver<NetworkEvent>>>,
 }
 
@@ -110,7 +118,7 @@ fn main() {
     let server_address = std::env::args()
         .nth(1)
         .unwrap_or_else(|| DEFAULT_SERVER_ADDRESS.to_owned());
-    let (command_tx, command_rx) = mpsc::channel();
+    let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel();
     spawn_network_worker(server_address.clone(), command_rx, event_tx);
 
@@ -303,7 +311,17 @@ fn spawn_network_worker(
         let _ = event_tx.send(NetworkEvent::Status(format!(
             "connecting to {server_address}"
         )));
-        let mut stream = match TcpStream::connect(&server_address) {
+        let Some(address) = server_address
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut addresses| addresses.next())
+        else {
+            let _ = event_tx.send(NetworkEvent::Status(
+                "connection address could not be resolved".to_owned(),
+            ));
+            return;
+        };
+        let mut stream = match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
             Ok(stream) => stream,
             Err(error) => {
                 let _ = event_tx.send(NetworkEvent::Status(format!("connection failed: {error}")));
@@ -331,8 +349,11 @@ fn spawn_network_worker(
         loop {
             match command_rx.try_recv() {
                 Err(TryRecvError::Disconnected) => break,
-                Ok(command) if session_ready => queue_command(&mut outgoing, command),
-                Ok(command) => deferred_commands.push_back(command),
+                Ok(command) if session_ready => queue_command_bounded(&mut outgoing, command),
+                Ok(command) if deferred_commands.len() < MAX_DEFERRED_COMMANDS => {
+                    deferred_commands.push_back(command)
+                }
+                Ok(_) => {}
                 Err(TryRecvError::Empty) => {}
             }
 
@@ -362,7 +383,7 @@ fn spawn_network_worker(
                                 queue_command_line(&mut outgoing, "snapshot");
                                 state_requested = true;
                                 while let Some(command) = deferred_commands.pop_front() {
-                                    queue_command(&mut outgoing, command);
+                                    queue_command_bounded(&mut outgoing, command);
                                 }
                             }
                             if event_tx.send(NetworkEvent::ServerLine(line)).is_err() {
@@ -391,7 +412,10 @@ fn queue_command_line(outgoing: &mut VecDeque<Vec<u8>>, command: &str) {
     outgoing.push_back(line);
 }
 
-fn queue_command(outgoing: &mut VecDeque<Vec<u8>>, command: ClientCommand) {
+fn queue_command_bounded(outgoing: &mut VecDeque<Vec<u8>>, command: ClientCommand) {
+    if outgoing.len() >= MAX_OUTGOING_LINES {
+        return;
+    }
     match command {
         ClientCommand::Move { dx, dy } => queue_command_line(outgoing, &format!("move {dx} {dy}")),
         ClientCommand::Target(EntityId(id)) => {
@@ -426,6 +450,9 @@ fn consume_network_events(bridge: Res<NetworkBridge>, mut state: ResMut<ClientSt
     while let Ok(event) = receiver.try_recv() {
         match event {
             NetworkEvent::Status(status) => {
+                if let Err(error) = state.snapshot.finish() {
+                    state.log(format!("discarded incomplete snapshot: {error}"));
+                }
                 state.connection_status = status.clone();
                 state.log(status);
             }
@@ -481,9 +508,15 @@ fn keyboard_input(
 }
 
 fn send_command(bridge: &NetworkBridge, state: &mut ClientState, command: ClientCommand) {
-    if bridge.command_tx.send(command).is_err() {
-        state.connection_status = "network worker stopped".to_owned();
-        state.log("network worker stopped".to_owned());
+    match bridge.command_tx.try_send(command) {
+        Ok(()) => {}
+        Err(mpsc::TrySendError::Full(_)) => {
+            state.log("input queue full; command dropped".to_owned());
+        }
+        Err(mpsc::TrySendError::Disconnected(_)) => {
+            state.connection_status = "network worker stopped".to_owned();
+            state.log("network worker stopped".to_owned());
+        }
     }
 }
 
@@ -547,6 +580,14 @@ fn update_status_text(state: Res<ClientState>, mut query: Query<&mut Text, With<
 fn apply_server_line(state: &mut ClientState, line: &str) {
     // TEMPORARY ADAPTER: the development protocol is not production-ready,
     // but all gameplay state changes still pass through its strict decoder.
+    if line.starts_with("TEMP_SNAPSHOT") {
+        match state.snapshot.push_line(line) {
+            Ok(Some(snapshot)) => apply_snapshot(state, snapshot),
+            Ok(None) => {}
+            Err(error) => state.log(format!("snapshot rejected: {error}")),
+        }
+        return;
+    }
     match decode_server_line(line) {
         Ok(ServerLine::SnapshotBegin { .. } | ServerLine::SnapshotEnd) => {}
         Ok(ServerLine::World(world)) => state.world_tick = Some(world.tick),
@@ -567,11 +608,35 @@ fn apply_server_line(state: &mut ClientState, line: &str) {
     }
 }
 
+fn apply_snapshot(state: &mut ClientState, snapshot: Snapshot) {
+    state.world_tick = Some(snapshot.world.tick);
+    state.npcs = snapshot
+        .npcs
+        .into_iter()
+        .map(|(id, npc)| {
+            (
+                id,
+                NpcState {
+                    position: to_bevy_position(npc.position),
+                    health: npc.health,
+                    max_health: npc.max_health,
+                },
+            )
+        })
+        .collect();
+
+    if let Some(player_id) = state.player_id
+        && let Some(player) = snapshot.players.get(&player_id)
+    {
+        apply_player_state(state, player);
+    }
+}
+
 fn apply_player_state(state: &mut ClientState, player: &mmorpg_client_protocol::PlayerState) {
     if Some(player.id) != state.player_id {
         return;
     }
-    state.player_position = Vec2::new(player.position.x, player.position.y);
+    state.player_position = to_bevy_position(player.position);
     state.player_health = player.health;
     state.player_max_health = player.max_health;
     state.player_target = player.target;
@@ -581,7 +646,7 @@ fn apply_npc_state(state: &mut ClientState, npc: &mmorpg_client_protocol::NpcSta
     state.npcs.insert(
         npc.id,
         NpcState {
-            position: Vec2::new(npc.position.x, npc.position.y),
+            position: to_bevy_position(npc.position),
             health: npc.health,
             max_health: npc.max_health,
         },
@@ -591,7 +656,7 @@ fn apply_npc_state(state: &mut ClientState, npc: &mmorpg_client_protocol::NpcSta
 fn apply_event(state: &mut ClientState, event: ServerEvent) {
     match event {
         ServerEvent::PlayerMoved { id, position, .. } if Some(id) == state.player_id => {
-            state.player_position = Vec2::new(position.x, position.y);
+            state.player_position = to_bevy_position(position);
         }
         ServerEvent::TargetSelected {
             player_id,
@@ -642,6 +707,10 @@ fn spawn_block(
     ));
 }
 
+fn to_bevy_position(position: mmorpg_client_protocol::Position) -> Vec2 {
+    Vec2::new(position.x, position.y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,13 +755,24 @@ mod tests {
     }
 
     #[test]
+    fn bounded_command_queue_drops_commands_after_the_outgoing_limit() {
+        let mut outgoing = VecDeque::new();
+        for _ in 0..MAX_OUTGOING_LINES {
+            queue_command_bounded(&mut outgoing, ClientCommand::Attack);
+        }
+        queue_command_bounded(&mut outgoing, ClientCommand::Attack);
+
+        assert_eq!(outgoing.len(), MAX_OUTGOING_LINES);
+    }
+
+    #[test]
     fn projects_the_machine_snapshot_records_used_by_the_graphical_client() {
         let mut state = ClientState::new(DEFAULT_SERVER_ADDRESS.to_owned());
         apply_server_line(&mut state, "CONNECTED player_id=5 role=damage");
         apply_server_line(&mut state, "TEMP_SNAPSHOT_BEGIN version=1");
         apply_server_line(
             &mut state,
-            "TEMP_SNAPSHOT WORLD tick=17 players=1 npcs=4 enemies=3 vendors=1",
+            "TEMP_SNAPSHOT WORLD tick=17 players=1 npcs=1 enemies=1 vendors=0",
         );
         apply_server_line(
             &mut state,
@@ -702,6 +782,7 @@ mod tests {
             &mut state,
             "TEMP_SNAPSHOT NPC id=2 template_id=2 name=Field%20Wolf kind=enemy position=24.0,0.0 health=100 max_health=100",
         );
+        apply_server_line(&mut state, "TEMP_SNAPSHOT_END");
 
         assert_eq!(state.world_tick, Some(17));
         assert_eq!(state.player_position, Vec2::new(3.0, -4.0));
