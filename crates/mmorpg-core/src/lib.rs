@@ -8,6 +8,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
+use mmorpg_content::starter_catalog;
+pub use mmorpg_content::{
+    ContentCatalog, ItemDefinition, ItemId, QuestDefinition, QuestId, item_definition,
+};
+
 const MAX_MOVE_PER_COMMAND: f32 = 10.0;
 const ATTACK_RANGE: f32 = 32.0;
 const VENDOR_INTERACTION_RANGE: f32 = 12.0;
@@ -21,58 +26,6 @@ pub struct EntityId(pub u64);
 impl fmt::Display for EntityId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}", self.0)
-    }
-}
-
-/// Stable identifier for an item definition.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ItemId(pub u32);
-
-impl fmt::Display for ItemId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.0)
-    }
-}
-
-impl ItemId {
-    pub const FIELD_WOLF_PELT: Self = Self(1);
-    pub const TOWN_RATION: Self = Self(2);
-    pub const MINOR_HEALING_POTION: Self = Self(3);
-}
-
-/// Immutable content definition used by the starter economy.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ItemDefinition {
-    pub id: ItemId,
-    pub name: &'static str,
-    pub max_stack: u32,
-}
-
-impl ItemDefinition {
-    pub const fn new(id: ItemId, name: &'static str, max_stack: u32) -> Self {
-        Self {
-            id,
-            name,
-            max_stack,
-        }
-    }
-}
-
-/// Returns the item content known by the starter-zone simulation.
-pub fn item_definition(item_id: ItemId) -> Option<ItemDefinition> {
-    match item_id {
-        ItemId::FIELD_WOLF_PELT => Some(ItemDefinition::new(
-            ItemId::FIELD_WOLF_PELT,
-            "Field Wolf Pelt",
-            20,
-        )),
-        ItemId::TOWN_RATION => Some(ItemDefinition::new(ItemId::TOWN_RATION, "Town Ration", 20)),
-        ItemId::MINOR_HEALING_POTION => Some(ItemDefinition::new(
-            ItemId::MINOR_HEALING_POTION,
-            "Minor Healing Potion",
-            20,
-        )),
-        _ => None,
     }
 }
 
@@ -477,20 +430,15 @@ impl World {
             Position::new(0.0, 0.0),
             1,
         );
-        world.vendor_stock.insert(
-            (vendor_id, ItemId::TOWN_RATION),
-            VendorStock {
-                unit_price: 2,
-                remaining_quantity: 100,
-            },
-        );
-        world.vendor_stock.insert(
-            (vendor_id, ItemId::MINOR_HEALING_POTION),
-            VendorStock {
-                unit_price: 5,
-                remaining_quantity: 50,
-            },
-        );
+        for listing in starter_catalog().vendor_listings {
+            world.vendor_stock.insert(
+                (vendor_id, listing.item_id),
+                VendorStock {
+                    unit_price: listing.unit_price,
+                    remaining_quantity: listing.initial_quantity,
+                },
+            );
+        }
         world.spawn_npc("Field Wolf", NpcKind::Enemy, Position::new(24.0, 0.0), 100);
         world.spawn_npc("Field Wolf", NpcKind::Enemy, Position::new(30.0, 6.0), 100);
         world.spawn_npc("Field Wolf", NpcKind::Enemy, Position::new(30.0, -6.0), 100);

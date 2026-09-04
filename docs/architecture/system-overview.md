@@ -62,6 +62,8 @@ The first playable slice can run as:
 
 The repository now contains the first implementation of this shape:
 
+- `crates/mmorpg-content` — dependency-free immutable content definitions and
+  starter-catalog validation shared by runtime and tools.
 - `crates/mmorpg-core` — dependency-free authoritative starter-zone simulation.
 - `crates/mmorpg-server` — Linux headless development server with a temporary
   nonblocking TCP line protocol.
@@ -110,7 +112,7 @@ Only one simulation owner should mutate an entity at a time. Cross-region and cr
 
 ## Static content and dynamic state
 
-Static content includes terrain, NPC templates, spells, items, quests, loot tables, and visual references. It should be versioned and packaged.
+Static content includes terrain, NPC templates, spells, items, quests, loot tables, and visual references. It should be versioned and packaged. The initial Rust content crate provides the typed shared boundary and validation; an editor source format and runtime package builder remain future work.
 
 Dynamic state includes active creatures, combat, timers, world-event progress, and player state. Active state should live in memory and be persisted through controlled durable operations rather than through per-frame database writes.
 

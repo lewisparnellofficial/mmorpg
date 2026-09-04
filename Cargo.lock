@@ -3,8 +3,15 @@
 version = 4
 
 [[package]]
+name = "mmorpg-content"
+version = "0.1.0"
+
+[[package]]
 name = "mmorpg-core"
 version = "0.1.0"
+dependencies = [
+ "mmorpg-content",
+]
 
 [[package]]
 name = "mmorpg-server"

@@ -1,11 +1,8 @@
 [package]
-name = "mmorpg-core"
+name = "mmorpg-content"
 version = "0.1.0"
 edition = "2024"
 publish = false
-
-[dependencies]
-mmorpg-content = { path = "../mmorpg-content" }
 
 [lints.rust]
 unsafe_code = "forbid"

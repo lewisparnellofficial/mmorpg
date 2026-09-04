@@ -24,6 +24,8 @@ architecture and research remain in `docs/architecture/` and
   exactly-once enemy loot claims.
 - Development-protocol commands for vendor listing, purchasing, loot, and
   inventory inspection.
+- Shared dependency-free content catalog for item, NPC, vendor, quest, reward,
+  and starter-zone spawn definitions.
 
 ## Completed batch: town/field gameplay loop
 
@@ -42,7 +44,11 @@ later batch and should replace the storage boundary without changing gameplay
 command semantics. The line protocol remains a development adapter, not a
 production client protocol.
 
-## Next batch: quests and progression
+## Current batch: quests and progression
+
+The first shared content boundary is now in place. The next implementation
+increment will use its quest definitions to add runtime quest state and the
+town-to-field progression loop.
 
 ### Batch 3: quests and progression
 
@@ -51,6 +57,10 @@ production client protocol.
 - Quest-giver interaction.
 - Quest completion and rewards.
 - A small starter quest chain.
+
+The client and editor technology spikes can begin alongside this batch once
+the initial schemas are stable. They should consume the shared definitions and
+must not become alternate sources of authoritative gameplay state.
 
 ### Batch 4: real simulation scheduling
 

@@ -19,6 +19,7 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [Overworld layering research](research/overworld-layering.md) — preliminary findings for hotspot scaling and transparent layers.
 - [Open questions](open-questions.md) — unresolved decisions and questions requiring experiments or owner input.
 - [Implementation roadmap](implementation-roadmap.md) — ordered vertical-slice implementation batches.
+- [Shared content schema decision](decisions/ADR-003-shared-content-schema.md) — static definitions shared by tools, client, and server.
 
 ## Status vocabulary
 
