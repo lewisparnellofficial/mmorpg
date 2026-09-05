@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "name": "orchestrator-test",
+  "feature": "Exercise integration, rejection, dependency blocking, and independent scheduling paths.",
+  "acceptance_checks": [
+    "A rejected task blocks only its dependents.",
+    "Independent tasks may still run and integrate."
+  ],
+  "feature_checks": [
+    "grep -Fqx 'accept_a' experiments/vibethinker/tests/fixtures/scheduler-a.txt",
+    "grep -Fqx 'independent_d' experiments/vibethinker/tests/fixtures/scheduler-independent.txt"
+  ],
+  "tasks": [
+    {
+      "id": "accept_a",
+      "description": "Integrate one deterministic fake artifact.",
+      "task": "The deterministic test runner supplies this artifact.",
+      "target_files": ["experiments/vibethinker/tests/fixtures/scheduler-a.txt"],
+      "context_commands": [],
+      "output_kind": "patch",
+      "acceptance_checks": [],
+      "semantic_constraints": ["The fake runner must return a patch that can be integrated."]
+    },
+    {
+      "id": "reject_b",
+      "description": "Reject one deterministic fake task.",
+      "task": "The deterministic test runner rejects this task.",
+      "target_files": ["experiments/vibethinker/tests/fixtures/scheduler-reject.txt"],
+      "context_commands": [],
+      "output_kind": "patch",
+      "acceptance_checks": [],
+      "semantic_constraints": ["The fake runner must reject this task deterministically."]
+    },
+    {
+      "id": "blocked_c",
+      "description": "Skip a task whose prerequisite was rejected.",
+      "task": "This task must not reach the deterministic runner.",
+      "depends_on": ["reject_b"],
+      "target_files": ["experiments/vibethinker/tests/fixtures/scheduler-blocked.txt"],
+      "context_commands": [],
+      "output_kind": "patch",
+      "acceptance_checks": [],
+      "semantic_constraints": ["This task must not run when reject_b is rejected."]
+    },
+    {
+      "id": "independent_d",
+      "description": "Integrate an independent task despite another branch being rejected.",
+      "task": "The deterministic test runner supplies this artifact.",
+      "target_files": ["experiments/vibethinker/tests/fixtures/scheduler-independent.txt"],
+      "context_commands": [],
+      "output_kind": "patch",
+      "acceptance_checks": [],
+      "semantic_constraints": ["The independent task must remain runnable after reject_b fails."]
+    }
+  ]
+}

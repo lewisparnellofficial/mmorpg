@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "name": "integration-conflict-test",
+  "feature": "Prove that a stale dependent artifact is rejected during cumulative integration.",
+  "acceptance_checks": [
+    "The prerequisite integrates successfully.",
+    "The stale dependent patch fails at the integration stage."
+  ],
+  "tasks": [
+    {
+      "id": "fresh_a",
+      "description": "Add a prerequisite line to the conflict fixture.",
+      "task": "The deterministic test runner supplies this artifact.",
+      "target_files": ["experiments/vibethinker/tests/fixtures/conflict.txt"],
+      "context_commands": [],
+      "output_kind": "patch",
+      "acceptance_checks": [],
+      "semantic_constraints": ["The artifact must integrate successfully."]
+    },
+    {
+      "id": "stale_b",
+      "description": "Return a patch based on the pre-prerequisite file state.",
+      "task": "The deterministic test runner deliberately supplies a stale artifact.",
+      "depends_on": ["fresh_a"],
+      "target_files": ["experiments/vibethinker/tests/fixtures/conflict.txt"],
+      "context_commands": [],
+      "output_kind": "patch",
+      "acceptance_checks": [],
+      "semantic_constraints": ["The orchestrator must reject the stale patch during integration."]
+    }
+  ]
+}

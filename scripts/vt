@@ -1,0 +1,408 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Small OpenAI-compatible client for the locally served VibeThinker model.
+# This command never edits the repository or applies model-generated changes.
+
+endpoint="${VT_ENDPOINT:-http://127.0.0.1:8081}"
+model="${VT_MODEL:-}"
+profile="${VT_PROFILE:-default}"
+format="text"
+system_prompt="${VT_SYSTEM_PROMPT:-You are a careful, concise assistant. Follow the requested output format exactly.}"
+max_tokens="${VT_MAX_TOKENS:-4096}"
+temperature="${VT_TEMPERATURE:-0.2}"
+top_p="${VT_TOP_P:-0.95}"
+top_k="${VT_TOP_K:-40}"
+min_p="${VT_MIN_P:-0.05}"
+top_n_sigma="${VT_TOP_NSIGMA:--1}"
+repeat_penalty="${VT_REPEAT_PENALTY:-1.05}"
+reasoning_format="${VT_REASONING_FORMAT:-deepseek}"
+reasoning_budget="${VT_REASONING_BUDGET:-1024}"
+reasoning_budget_message="${VT_REASONING_BUDGET_MESSAGE:-Stop reasoning now and return the final answer.}"
+timeout="${VT_TIMEOUT:-120}"
+retries="${VT_RETRIES:-2}"
+stream=0
+user_only=0
+prompt_file=""
+system_file=""
+debug=0
+
+system_explicit=0
+max_tokens_explicit=0
+temperature_explicit=0
+top_p_explicit=0
+top_k_explicit=0
+min_p_explicit=0
+top_n_sigma_explicit=0
+repeat_penalty_explicit=0
+reasoning_budget_explicit=0
+retries_explicit=0
+
+usage() {
+    cat <<'EOF'
+Usage:
+  vt [options] [prompt]
+  vt [options] < prompt.txt
+
+Send a prompt to the local OpenAI-compatible VibeThinker server.
+
+Options:
+  --endpoint URL       API base URL (default: http://127.0.0.1:8081)
+  --model MODEL        Model ID (auto-discovered from /v1/models by default)
+  --profile PROFILE    default or creator-code; selects a complete VT recipe
+  --file PATH          Read the user prompt from PATH
+  --system TEXT        Set the system prompt
+  --system-file PATH   Read the system prompt from PATH
+  --user-only          Send one user message, prepending --system text to it
+  --format FORMAT      text, code, patch, json, or raw (default: text)
+  --max-tokens N       Maximum generated tokens (default: 4096)
+  --temperature FLOAT  Sampling temperature (default: 0.2)
+  --top-p FLOAT        Nucleus sampling cutoff (default: 0.95)
+  --top-k N            Top-k sampling cutoff; -1 disables it (default: 40)
+  --min-p FLOAT        Minimum probability sampling cutoff (default: 0.05)
+  --top-nsigma FLOAT   Top-n-sigma cutoff; -1 disables it (default: -1)
+  --repeat-penalty N   Repetition penalty (default: 1.05)
+  --reasoning-format F Reasoning parser format (default: deepseek)
+  --reasoning-budget N Thinking token budget; -1 is unlimited (default: 1024)
+  --reasoning-budget-message TEXT
+                       Message used when the reasoning budget is exhausted
+  --stream             Request SSE streaming, then buffer and separate deltas
+                       before printing the answer (default: non-streaming)
+  --timeout SECONDS    HTTP timeout (default: 120)
+  --retries N          Retry failed/empty responses N times (default: 2)
+  --debug              Print request diagnostics to stderr
+  --check              Check endpoint and model availability
+  --models             List models exposed by the endpoint
+  -h, --help           Show this help
+
+Environment variables:
+  VT_ENDPOINT VT_MODEL VT_SYSTEM_PROMPT VT_MAX_TOKENS VT_TEMPERATURE VT_TOP_P
+  VT_PROFILE VT_TOP_K VT_MIN_P VT_TOP_NSIGMA VT_REPEAT_PENALTY VT_REASONING_FORMAT VT_REASONING_BUDGET
+  VT_REASONING_BUDGET_MESSAGE VT_TIMEOUT VT_RETRIES
+
+Profiles:
+  creator-code         Reproduce the VibeThinker/LiveCodeBench code recipe:
+                       one user message, temperature 0.6, top_p 0.95,
+                       top_k -1, max_tokens 40960, and no artificial
+                       reasoning cap. The prompt must already contain the
+                       benchmark-style Question/Format/Answer sections.
+EOF
+}
+
+die() {
+    echo "vt: $*" >&2
+    exit 2
+}
+
+need_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+check_number() {
+    [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "invalid $2: $1"
+}
+
+check_signed_number() {
+    [[ "$1" =~ ^-?[0-9]+([.][0-9]+)?$ ]] || die "invalid $2: $1"
+}
+
+check_format() {
+    case "$1" in
+        text|code|patch|json|raw) ;;
+        *) die "invalid format '$1' (expected text, code, patch, json, or raw)" ;;
+    esac
+}
+
+check_endpoint() {
+    need_command curl
+    need_command jq
+    local models
+    if ! models=$(curl -fsS --max-time "$timeout" "$endpoint/v1/models"); then
+        echo "endpoint: $endpoint";
+        echo "status:   unavailable";
+        exit 6
+    fi
+    local count
+    count=$(jq '.data // .models // [] | length' <<<"$models")
+    echo "endpoint: $endpoint"
+    echo "status:   reachable"
+    echo "models:   $count"
+    if (( count > 0 )); then
+        default_model=$(jq -r '(.data // .models)[0].id // (.data // .models)[0].name' <<<"$models")
+        echo "default:  $default_model"
+        echo "status:   ok"
+    else
+        echo "status:   no models"
+        exit 3
+    fi
+}
+
+need_command curl
+need_command jq
+
+check_only=0
+models_only=0
+while (($# > 0)); do
+    case "$1" in
+        --endpoint) [[ $# -ge 2 ]] || die "--endpoint requires a value"; endpoint="$2"; shift 2 ;;
+        --model) [[ $# -ge 2 ]] || die "--model requires a value"; model="$2"; shift 2 ;;
+        --profile) [[ $# -ge 2 ]] || die "--profile requires a value"; profile="$2"; shift 2 ;;
+        --file) [[ $# -ge 2 ]] || die "--file requires a path"; prompt_file="$2"; shift 2 ;;
+        --system) [[ $# -ge 2 ]] || die "--system requires a value"; system_prompt="$2"; system_explicit=1; shift 2 ;;
+        --system-file) [[ $# -ge 2 ]] || die "--system-file requires a path"; system_file="$2"; shift 2 ;;
+        --format) [[ $# -ge 2 ]] || die "--format requires a value"; format="$2"; shift 2 ;;
+        --max-tokens) [[ $# -ge 2 ]] || die "--max-tokens requires a value"; max_tokens="$2"; max_tokens_explicit=1; shift 2 ;;
+        --temperature) [[ $# -ge 2 ]] || die "--temperature requires a value"; temperature="$2"; temperature_explicit=1; shift 2 ;;
+        --top-p) [[ $# -ge 2 ]] || die "--top-p requires a value"; top_p="$2"; top_p_explicit=1; shift 2 ;;
+        --top-k) [[ $# -ge 2 ]] || die "--top-k requires a value"; top_k="$2"; top_k_explicit=1; shift 2 ;;
+        --min-p) [[ $# -ge 2 ]] || die "--min-p requires a value"; min_p="$2"; min_p_explicit=1; shift 2 ;;
+        --top-nsigma) [[ $# -ge 2 ]] || die "--top-nsigma requires a value"; top_n_sigma="$2"; top_n_sigma_explicit=1; shift 2 ;;
+        --repeat-penalty) [[ $# -ge 2 ]] || die "--repeat-penalty requires a value"; repeat_penalty="$2"; repeat_penalty_explicit=1; shift 2 ;;
+        --reasoning-format) [[ $# -ge 2 ]] || die "--reasoning-format requires a value"; reasoning_format="$2"; shift 2 ;;
+        --reasoning-budget) [[ $# -ge 2 ]] || die "--reasoning-budget requires a value"; reasoning_budget="$2"; reasoning_budget_explicit=1; shift 2 ;;
+        --reasoning-budget-message) [[ $# -ge 2 ]] || die "--reasoning-budget-message requires a value"; reasoning_budget_message="$2"; shift 2 ;;
+        --stream) stream=1; shift ;;
+        --timeout) [[ $# -ge 2 ]] || die "--timeout requires a value"; timeout="$2"; shift 2 ;;
+        --retries) [[ $# -ge 2 ]] || die "--retries requires a value"; retries="$2"; retries_explicit=1; shift 2 ;;
+        --user-only) user_only=1; shift ;;
+        --debug) debug=1; shift ;;
+        --check) check_only=1; shift ;;
+        --models) models_only=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; break ;;
+        -*) die "unknown option: $1" ;;
+        *) break ;;
+    esac
+done
+
+case "$profile" in
+    default) ;;
+    creator-code)
+        # These defaults reproduce the published VibeThinker/LiveCodeBench
+        # code-generation recipe. Explicit CLI options still win.
+        (( system_explicit )) || system_prompt='You are an expert Python programmer. You will be given a question (problem specification) and will generate a correct Python program that matches the specification and passes all tests.'
+        (( max_tokens_explicit )) || max_tokens=40960
+        (( temperature_explicit )) || temperature=0.6
+        (( top_p_explicit )) || top_p=0.95
+        (( top_k_explicit )) || top_k=-1
+        (( min_p_explicit )) || min_p=0
+        (( top_n_sigma_explicit )) || top_n_sigma=-1
+        (( repeat_penalty_explicit )) || repeat_penalty=1.0
+        (( reasoning_budget_explicit )) || reasoning_budget=-1
+        (( retries_explicit )) || retries=0
+        user_only=1
+        ;;
+    *) die "invalid profile '$profile' (expected default or creator-code)" ;;
+esac
+
+check_format "$format"
+[[ "$max_tokens" =~ ^[0-9]+$ ]] || die "invalid max tokens: $max_tokens"
+check_number "$temperature" temperature
+check_number "$top_p" top-p
+check_number "$min_p" min-p
+check_signed_number "$top_n_sigma" top-nsigma
+check_number "$repeat_penalty" repeat-penalty
+[[ "$top_k" =~ ^-?[0-9]+$ ]] || die "invalid top-k: $top_k"
+[[ "$reasoning_budget" =~ ^-?[0-9]+$ ]] || die "invalid reasoning budget: $reasoning_budget"
+[[ "$timeout" =~ ^[0-9]+$ ]] || die "invalid timeout: $timeout"
+[[ "$retries" =~ ^[0-9]+$ ]] || die "invalid retries: $retries"
+
+if [[ -n "$system_file" ]]; then
+    [[ -r "$system_file" ]] || die "cannot read system file: $system_file"
+    system_prompt=$(<"$system_file")
+    system_explicit=1
+fi
+
+if (( check_only )); then
+    check_endpoint
+    exit 0
+fi
+
+if (( models_only )); then
+    curl -fsS --max-time "$timeout" "$endpoint/v1/models" | jq .
+    exit 0
+fi
+
+if [[ -n "$prompt_file" ]]; then
+    [[ -r "$prompt_file" ]] || die "cannot read prompt file: $prompt_file"
+    prompt=$(<"$prompt_file")
+elif (($# > 0)); then
+    prompt="$*"
+elif [[ ! -t 0 ]]; then
+    prompt=$(cat)
+else
+    die "provide a prompt, --file, or stdin input"
+fi
+
+[[ -n "$prompt" ]] || die "prompt is empty"
+
+if [[ -z "$model" ]]; then
+    model=$(curl -fsS --max-time "$timeout" "$endpoint/v1/models" | jq -r '(.data // .models)[0].id // (.data // .models)[0].name // empty') \
+        || die "could not discover a model from $endpoint/v1/models"
+    [[ -n "$model" ]] || die "no model is exposed by $endpoint/v1/models"
+fi
+
+request=$(jq -n \
+    --arg model "$model" \
+    --arg system "$system_prompt" \
+    --arg prompt "$prompt" \
+    --arg reasoning_format "$reasoning_format" \
+    --arg reasoning_budget_message "$reasoning_budget_message" \
+    --argjson max_tokens "$max_tokens" \
+    --argjson temperature "$temperature" \
+    --argjson top_p "$top_p" \
+    --argjson top_k "$top_k" \
+    --argjson min_p "$min_p" \
+    --argjson top_n_sigma "$top_n_sigma" \
+    --argjson repeat_penalty "$repeat_penalty" \
+    --argjson reasoning_budget_tokens "$reasoning_budget" \
+    --argjson stream "$stream" \
+    --argjson user_only "$user_only" \
+    '{model:$model,
+      messages:(if $user_only == 1 then
+        [{role:"user",content:(if $system == "" then $prompt else $system + "\n\n" + $prompt end)}]
+      else
+        [{role:"system",content:$system},{role:"user",content:$prompt}]
+      end),
+      max_tokens:$max_tokens, temperature:$temperature, top_p:$top_p,
+      top_k:$top_k, min_p:$min_p, top_n_sigma:$top_n_sigma,
+      repeat_penalty:$repeat_penalty, reasoning_format:$reasoning_format,
+      reasoning_budget_tokens:$reasoning_budget_tokens,
+      reasoning_budget_message:$reasoning_budget_message, stream:($stream == 1),
+      stream_options:(if $stream == 1 then {include_usage:true} else null end)}')
+
+(( debug )) && {
+    echo "endpoint: $endpoint/v1/chat/completions" >&2
+    echo "model:    $model" >&2
+    echo "profile:  $profile" >&2
+    echo "messages: $([[ "$user_only" == 1 ]] && echo user-only || echo system+user)" >&2
+    echo "format:   $format" >&2
+}
+
+attempt=0
+response=""
+request_started=$(date +%s%3N)
+if (( stream )); then
+    attempt=1
+    stream_file=$(mktemp "${TMPDIR:-/tmp}/vt-stream.XXXXXX")
+    trap 'rm -f -- "$stream_file"' EXIT
+    if curl -fsSN --max-time "$timeout" "$endpoint/v1/chat/completions" \
+        -H 'Content-Type: application/json' \
+        -d "$request" >"$stream_file"; then
+        aggregate=$(awk '
+            /^data: / {
+                sub(/^data: /, "")
+                if ($0 != "[DONE]") print
+            }
+        ' "$stream_file" | jq -s '
+            reduce .[] as $chunk
+              ({model:"",content:"",reasoning_content:"",usage:{},finish_reason:null};
+               .model = ($chunk.model // .model)
+               | .content += ($chunk.choices[0].delta.content // "")
+               | .reasoning_content += ($chunk.choices[0].delta.reasoning_content // "")
+               | .usage = ($chunk.usage // .usage)
+               | .finish_reason = ($chunk.choices[0].finish_reason // .finish_reason))
+        ' 2>/dev/null || true)
+        if [[ -n "${aggregate:-}" ]] && jq -e '(.content // "") != "" or (.reasoning_content // "") != ""' >/dev/null <<<"$aggregate"; then
+            response=$(jq -n --argjson aggregate "$aggregate" \
+                '{model:$aggregate.model,choices:[{message:{content:$aggregate.content,reasoning_content:$aggregate.reasoning_content},finish_reason:$aggregate.finish_reason}],usage:$aggregate.usage}')
+        fi
+    fi
+else
+    while (( attempt <= retries )); do
+        attempt=$((attempt + 1))
+        if (( debug )); then
+            echo "attempt:   $attempt/$((retries + 1))" >&2
+        fi
+        if response=$(curl -fsS --max-time "$timeout" "$endpoint/v1/chat/completions" \
+            -H 'Content-Type: application/json' \
+            -d "$request"); then
+            if jq -e '(.choices[0].message.content // .choices[0].message.reasoning_content // empty) != ""' >/dev/null <<<"$response"; then
+                break
+            fi
+            (( debug )) && echo "response was empty or missing assistant content" >&2
+        else
+            (( debug )) && echo "HTTP request failed or timed out" >&2
+        fi
+        response=""
+        if (( attempt <= retries )); then
+            sleep 1
+        fi
+    done
+fi
+request_finished=$(date +%s%3N)
+elapsed_ms=$((request_finished - request_started))
+
+if [[ -z "$response" ]]; then
+    echo "vt: request failed after $attempt attempt(s)" >&2
+    exit 1
+fi
+
+if [[ "$format" == raw ]]; then
+    jq . <<<"$response"
+    exit 0
+fi
+
+if ! jq -e '.choices[0].message // empty' >/dev/null <<<"$response"; then
+    echo "vt: response did not contain choices[0].message" >&2
+    (( debug )) && jq . <<<"$response" >&2
+    exit 3
+fi
+
+content=$(jq -r '.choices[0].message.content // empty' <<<"$response")
+reasoning=$(jq -r '.choices[0].message.reasoning_content // empty' <<<"$response")
+if [[ -z "$content" && -z "$reasoning" ]]; then
+    echo "vt: response contained empty assistant content and reasoning" >&2
+    exit 3
+fi
+answer="$content"
+raw_reasoning="$reasoning"
+if [[ "$content" == *'</think>'* ]]; then
+    if [[ -z "$reasoning" ]]; then
+        reasoning="${content%%</think>*}"
+        if [[ "$reasoning" == *'<think>'* ]]; then
+            reasoning="${reasoning#*<think>}"
+        fi
+    fi
+    # A single '#' removes through the first closing tag. This prevents
+    # malformed inline-thinking responses from leaking into user output.
+    answer="${content#*</think>}"
+    # If a broken response contains multiple thinking closers, use the last
+    # completed block's remainder; otherwise a later inline closer could still
+    # leak into normal output after the first split.
+    if [[ "$answer" == *'</think>'* ]]; then
+        answer="${answer##*</think>}"
+    fi
+    answer="${answer//<think>/}"
+    answer="${answer//</think>/}"
+    answer="${answer#"${answer%%[![:space:]]*}"}"
+elif [[ "$content" == *'<think>'* ]]; then
+    echo "vt: response contained an unterminated <think> block" >&2
+    exit 4
+fi
+
+if [[ -z "$answer" ]]; then
+    echo "vt: response contained no final answer after reasoning" >&2
+    exit 4
+fi
+
+# Remove one surrounding Markdown fence when code/patch output was requested.
+if [[ "$format" == code || "$format" == patch ]]; then
+    answer=$(sed -e '1{/^[[:space:]]*```[^`]*[[:space:]]*$/d;}' -e '${/^[[:space:]]*```[[:space:]]*$/d;}' <<<"$answer")
+fi
+
+if [[ "$format" == json ]]; then
+    response_model=$(jq -r '.model // empty' <<<"$response")
+    response_usage=$(jq '.usage // {}' <<<"$response")
+    jq -n \
+        --arg answer "$answer" \
+        --arg reasoning "$reasoning" \
+        --arg raw_content "$content" \
+        --arg raw_reasoning "$raw_reasoning" \
+        --arg model "$response_model" \
+        --argjson usage "$response_usage" \
+        --argjson elapsed_ms "$elapsed_ms" \
+        '{ok:true,model:$model,answer:$answer,reasoning:$reasoning,raw_content:$raw_content,raw_reasoning:$raw_reasoning,usage:$usage,elapsed_ms:$elapsed_ms}'
+else
+    printf '%s\n' "$answer"
+fi

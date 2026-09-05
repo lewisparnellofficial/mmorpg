@@ -1,0 +1,581 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run one bounded VibeThinker task and validate it outside the working tree.
+# The manifest is JSON so jq can parse it without adding a YAML dependency.
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+manifest_file=""
+output_dir="${VT_TASK_OUTPUT_DIR:-/tmp/vt-task-results}"
+source_root=""
+keep_temp=0
+
+usage() {
+    cat <<'EOF'
+Usage:
+  vt-task --manifest PATH [--output-dir PATH] [--source-root PATH]
+          [--keep-temp]
+
+Run one bounded VibeThinker task in a temporary repository copy.
+
+Options:
+  --source-root PATH   Repository state used for context and validation.
+                       Defaults to the repository containing the current
+                       working directory. Orchestrators use this to expose
+                       already integrated dependency artifacts.
+
+Manifest fields:
+  name               Required short task name.
+  task               Required task text sent after gathered context.
+  context_commands   Optional array of {label, command} objects.
+  output_kind        rust_fragment or patch (default: rust_fragment).
+  target_file        Required for rust_fragment; relative repository path.
+  insert_after       Required for rust_fragment; exact line to follow.
+  indent             Optional prefix added to each non-empty fragment line.
+  checks             Optional array of shell commands run in the copy.
+  assertions         Optional machine-checkable required/forbidden files and
+                     text snippets in the candidate copy.
+  allowed_files      Required for patch; exact relative paths the patch may change.
+  format             rustfmt (default for rust_fragment) or none.
+  system             Optional minimal system instruction.
+  max_tokens         Optional VT generation limit (default: 1024).
+  reasoning_budget   Optional VT reasoning limit (default: 256).
+  temperature        Optional VT temperature (default: 0.2).
+  top_p              Optional VT top-p (default: 0.95).
+  top_k              Optional VT top-k (default: 40).
+  min_p              Optional VT min-p (default: 0.05).
+  max_attempts       Optional retry count including the first attempt (default: 1).
+
+When VT_TASK_PLAN_FILE is set, the readable JSON plan metadata at that path
+is included as a short handoff preamble. The executable manifest remains the
+source of truth for context, output shaping, and checks.
+
+The command prints compact JSON. Full prompt, candidate, VT response, and
+check output are saved beneath --output-dir.
+EOF
+}
+
+die() {
+    echo "vt-task: $*" >&2
+    exit 2
+}
+
+need_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+while (($# > 0)); do
+    case "$1" in
+        --manifest)
+            [[ $# -ge 2 ]] || die "--manifest requires a path"
+            manifest_file=$2
+            shift 2
+            ;;
+        --output-dir)
+            [[ $# -ge 2 ]] || die "--output-dir requires a path"
+            output_dir=$2
+            shift 2
+            ;;
+        --source-root)
+            [[ $# -ge 2 ]] || die "--source-root requires a path"
+            source_root=$2
+            shift 2
+            ;;
+        --keep-temp)
+            keep_temp=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "unknown option: $1"
+            ;;
+    esac
+done
+
+[[ -n "$manifest_file" ]] || die "--manifest is required"
+[[ -r "$manifest_file" ]] || die "cannot read manifest: $manifest_file"
+
+if [[ -z "$source_root" ]]; then
+    source_root=$(git rev-parse --show-toplevel 2>/dev/null) ||
+        die "run this command inside a git repository or pass --source-root"
+fi
+[[ -d "$source_root" ]] || die "source root is not a directory: $source_root"
+repo_root=$(cd -- "$source_root" && git rev-parse --show-toplevel 2>/dev/null) ||
+    die "source root is not inside a git repository: $source_root"
+source_root=$(cd -- "$source_root" && pwd)
+[[ "$source_root" == "$repo_root" ]] ||
+    die "source root must be the repository root: $repo_root"
+
+need_command jq
+need_command git
+need_command tar
+need_command awk
+need_command base64
+need_command grep
+[[ -x "$script_dir/vt" ]] || die "cannot execute VT client: $script_dir/vt"
+
+manifest=$(jq -e . "$manifest_file") || die "manifest is not valid JSON"
+name=$(jq -r '.name // empty' <<<"$manifest")
+task=$(jq -r '.task // empty' <<<"$manifest")
+output_kind=$(jq -r '.output_kind // "rust_fragment"' <<<"$manifest")
+system_prompt=$(jq -r '.system // "Return only the requested artifact. Do not explain or add Markdown fences."' <<<"$manifest")
+max_tokens=$(jq -r '.max_tokens // 1024' <<<"$manifest")
+reasoning_budget=$(jq -r '.reasoning_budget // 256' <<<"$manifest")
+temperature=$(jq -r '.temperature // 0.2' <<<"$manifest")
+top_p=$(jq -r '.top_p // 0.95' <<<"$manifest")
+top_k=$(jq -r '.top_k // 40' <<<"$manifest")
+min_p=$(jq -r '.min_p // 0.05' <<<"$manifest")
+max_attempts=$(jq -r '.max_attempts // 1' <<<"$manifest")
+target_file=$(jq -r '.target_file // empty' <<<"$manifest")
+insert_after=$(jq -r '.insert_after // empty' <<<"$manifest")
+indent=$(jq -r '.indent // empty' <<<"$manifest")
+allowed_files_json=$(jq -c '.allowed_files // []' <<<"$manifest")
+format_mode=$(jq -r '.format // (if .output_kind == "rust_fragment" then "rustfmt" else "none" end)' <<<"$manifest")
+plan_file="${VT_TASK_PLAN_FILE:-}"
+
+[[ -n "$name" ]] || die "manifest field 'name' is required"
+[[ -n "$task" ]] || die "manifest field 'task' is required"
+case "$output_kind" in
+    rust_fragment)
+        [[ -n "$target_file" ]] || die "rust_fragment requires 'target_file'"
+        [[ -n "$insert_after" ]] || die "rust_fragment requires 'insert_after'"
+        ;;
+    patch) ;;
+    *) die "unsupported output_kind '$output_kind' (expected rust_fragment or patch)" ;;
+esac
+if [[ "$output_kind" == patch && "$(jq 'length' <<<"$allowed_files_json")" -eq 0 ]]; then
+    die "patch requires a non-empty 'allowed_files' array"
+fi
+if [[ "$output_kind" == rust_fragment ]]; then
+    allowed_files_json=$(jq -cn --arg target "$target_file" '[$target]')
+fi
+case "$target_file" in
+    /*|../*|*/../*) die "target_file must be a relative path inside the repository" ;;
+esac
+[[ "$max_tokens" =~ ^[0-9]+$ ]] || die "max_tokens must be a non-negative integer"
+[[ "$reasoning_budget" =~ ^-?[0-9]+$ ]] || die "reasoning_budget must be an integer"
+[[ "$max_attempts" =~ ^[1-9][0-9]*$ ]] || die "max_attempts must be a positive integer"
+case "$format_mode" in
+    rustfmt|none) ;;
+    *) die "unsupported format '$format_mode' (expected rustfmt or none)" ;;
+esac
+if [[ -n "$plan_file" ]]; then
+    [[ -r "$plan_file" ]] || die "cannot read VT_TASK_PLAN_FILE: $plan_file"
+    plan=$(jq -e . "$plan_file") || die "plan handoff is not valid JSON: $plan_file"
+    plan_description=$(jq -r '.description // empty' <<<"$plan")
+    jq -e '.semantic_constraints // [] | type == "array" and all(.[]; type == "string")' \
+        <<<"$plan" >/dev/null ||
+        die "plan handoff semantic_constraints must be an array of strings"
+else
+    plan='{}'
+    plan_description=""
+fi
+
+timestamp=$(date +%Y%m%d-%H%M%S)
+run_dir="$output_dir/$name-$timestamp-$$"
+mkdir -p "$run_dir"
+task_started_ms=$(date +%s%3N)
+
+temp_root=$(mktemp -d "${TMPDIR:-/tmp}/vt-task.XXXXXX")
+cleanup() {
+    if (( keep_temp )); then
+        echo "vt-task: temporary copy retained at $temp_root" >&2
+    else
+        rm -rf -- "$temp_root"
+    fi
+}
+trap cleanup EXIT
+
+candidate_root="$temp_root/repo"
+base_root="$temp_root/base"
+mkdir -p "$base_root" "$candidate_root"
+# This includes current tracked and untracked source changes but excludes the
+# Git metadata and build output. Nothing in the user's working tree is edited.
+tar --exclude='./.git' --exclude='./target' --exclude='*/target' --exclude='*/target/*' \
+    -cf - -C "$repo_root" . |
+    tar -xf - -C "$base_root"
+(cd "$base_root" &&
+    git init -q &&
+    git add -A &&
+    git -c user.name=vt-task -c user.email=vt-task@localhost commit -qm "temporary validation baseline")
+
+prompt_file="$run_dir/prompt.txt"
+printf '%s\n\n' 'Use only the context below to complete the task.' >"$prompt_file"
+
+context_count=0
+while IFS= read -r encoded; do
+    [[ -n "$encoded" ]] || continue
+    context_json=$(base64 --decode <<<"$encoded")
+    label=$(jq -r '.label // "context"' <<<"$context_json")
+    command=$(jq -r '.command // empty' <<<"$context_json")
+    [[ -n "$command" ]] || die "context command for '$label' is empty"
+    if ! command_output=$(cd "$repo_root" && bash -c "$command" 2>&1); then
+        jq -n --arg name "$name" --arg stage "context" --arg label "$label" \
+            --arg diagnostic "$command_output" \
+            '{ok:false,task:$name,stage:$stage,context:$label,diagnostic:$diagnostic}'
+        exit 1
+    fi
+    {
+        printf '%s\n' "--- $label ---"
+        printf '%s\n\n' "$command_output"
+    } >>"$prompt_file"
+    context_count=$((context_count + 1))
+done < <(jq -r '.context_commands[]? | @base64' <<<"$manifest")
+
+if [[ -n "$plan_file" ]]; then
+    {
+        printf '%s\n' 'Plan handoff:'
+        printf 'Objective: %s\n' "$plan_description"
+        printf '%s\n' 'Semantic constraints:'
+        while IFS= read -r constraint; do
+            printf -- '- %s\n' "$constraint"
+        done < <(jq -r '.semantic_constraints[]?' <<<"$plan")
+        printf '\n'
+    } >>"$prompt_file"
+fi
+
+printf '%s\n\n' 'Task:' >>"$prompt_file"
+printf '%s\n' "$task" >>"$prompt_file"
+
+checks_json=$(jq -c '.checks // []' <<<"$manifest")
+assertions_json=$(jq -c '.assertions // {}' <<<"$manifest")
+jq -e 'type == "object" and
+    ((.required_files // []) | type == "array" and all(.[]; type == "string" and length > 0)) and
+    ((.forbidden_files // []) | type == "array" and all(.[]; type == "string" and length > 0)) and
+    ((.required_text // []) | type == "array" and all(.[];
+        type == "object" and (.file | type) == "string" and
+        (.file | length) > 0 and (.text | type) == "string" and
+        (.text | length) > 0)) and
+    ((.forbidden_text // []) | type == "array" and all(.[];
+        type == "object" and (.file | type) == "string" and
+        (.file | length) > 0 and (.text | type) == "string" and
+        (.text | length) > 0))' <<<"$assertions_json" >/dev/null ||
+    die "manifest assertions have an invalid shape"
+for assertion_group in required_files forbidden_files; do
+    while IFS= read -r assertion_file; do
+        case "$assertion_file" in
+            /*|../*|*/../*) die "assertion file must be a relative path: $assertion_file" ;;
+        esac
+    done < <(jq -r ".${assertion_group}[]?" <<<"$assertions_json")
+done
+for assertion_group in required_text forbidden_text; do
+    while IFS= read -r assertion_file; do
+        case "$assertion_file" in
+            /*|../*|*/../*) die "assertion file must be a relative path: $assertion_file" ;;
+        esac
+    done < <(jq -r ".${assertion_group}[]?.file" <<<"$assertions_json")
+done
+attempt=0
+last_stage=""
+last_diagnostic=""
+passed=0
+attempts_usage='[]'
+
+while (( attempt < max_attempts )); do
+    attempt=$((attempt + 1))
+    rm -rf -- "$candidate_root"
+    mkdir -p "$candidate_root"
+    cp -a "$base_root/." "$candidate_root/"
+    attempt_dir="$run_dir/attempt-$attempt"
+    mkdir -p "$attempt_dir"
+    attempt_response="$attempt_dir/response.json"
+    attempt_candidate="$attempt_dir/candidate.txt"
+    attempt_stderr="$attempt_dir/vt.stderr"
+
+    if "$script_dir/vt" \
+        --format json \
+        --max-tokens "$max_tokens" \
+        --reasoning-budget "$reasoning_budget" \
+        --temperature "$temperature" \
+        --top-p "$top_p" \
+        --top-k "$top_k" \
+        --min-p "$min_p" \
+        --retries 0 \
+        --system "$system_prompt" \
+        --file "$prompt_file" >"$attempt_response" 2>"$attempt_stderr"; then
+        jq -r '.answer // empty' "$attempt_response" >"$attempt_candidate"
+    else
+        last_stage="vt"
+        last_diagnostic=$(tail -n 40 "$attempt_stderr")
+        continue
+    fi
+
+    attempt_usage=$(jq \
+        --argjson attempt "$attempt" \
+        '{attempt:$attempt,usage:(.usage // {}),elapsed_ms:(.elapsed_ms // null)}' \
+        "$attempt_response")
+    attempts_usage=$(jq --argjson item "$attempt_usage" '. + [$item]' <<<"$attempts_usage")
+
+    normalized_candidate="$attempt_dir/normalized-candidate.txt"
+    awk '
+        { lines[++count] = $0 }
+        END {
+            start = 1
+            end = count
+            fence = sprintf("^%c%c%c", 96, 96, 96)
+            if (lines[1] ~ fence) start = 2
+            if (lines[count] ~ fence) end = count - 1
+            for (i = start; i <= end; i++) print lines[i]
+        }
+    ' "$attempt_candidate" >"$normalized_candidate"
+    mv -- "$normalized_candidate" "$attempt_candidate"
+
+    if [[ ! -s "$attempt_candidate" ]]; then
+        last_stage="output-shape"
+        last_diagnostic="VT returned an empty artifact"
+        continue
+    fi
+    if grep -qE '<think>|</think>' "$attempt_candidate"; then
+        last_stage="output-shape"
+        last_diagnostic="VT artifact contained an unparsed thinking tag"
+        continue
+    fi
+    if awk 'substr($0, 1, 3) == sprintf("%c%c%c", 96, 96, 96) { found = 1 } END { exit !found }' "$attempt_candidate"; then
+        last_stage="output-shape"
+        last_diagnostic="VT artifact contained a Markdown fence"
+        continue
+    fi
+
+    if [[ "$output_kind" == patch ]]; then
+        if ! (cd "$candidate_root" && git apply --check --whitespace=error "$attempt_candidate") \
+            >"$attempt_dir/apply-check.txt" 2>&1; then
+            last_stage="patch-check"
+            last_diagnostic=$(tail -n 40 "$attempt_dir/apply-check.txt")
+            continue
+        fi
+        if ! (cd "$candidate_root" && git apply --whitespace=error "$attempt_candidate") \
+            >"$attempt_dir/apply.txt" 2>&1; then
+            last_stage="patch-apply"
+            last_diagnostic=$(tail -n 40 "$attempt_dir/apply.txt")
+            continue
+        fi
+    else
+        current_target="$candidate_root/$target_file"
+        [[ -f "$current_target" ]] || {
+            last_stage="target"
+            last_diagnostic="target file does not exist: $target_file"
+            continue
+        }
+        inserted_target="$attempt_dir/target-with-candidate"
+        if ! awk -v marker="$insert_after" -v insert_file="$attempt_candidate" '
+            {
+                print
+                if (!inserted && $0 == marker) {
+                    while ((getline line < insert_file) > 0) print line
+                    close(insert_file)
+                    inserted = 1
+                }
+            }
+            END {
+                if (!inserted) exit 42
+            }
+        ' "$current_target" >"$inserted_target"; then
+            last_stage="insertion"
+            last_diagnostic="exact insert_after line was not found: $insert_after"
+            continue
+        fi
+        if [[ -n "$indent" ]]; then
+            indented_candidate="$attempt_dir/indented-candidate.txt"
+            awk -v prefix="$indent" '
+                {
+                    lines[NR] = $0
+                    if ($0 ~ /[^[:space:]]/) {
+                        match($0, /^[[:space:]]*/)
+                        if (!have_minimum || RLENGTH < minimum) {
+                            minimum = RLENGTH
+                            have_minimum = 1
+                        }
+                    }
+                }
+                END {
+                    if (!have_minimum) minimum = 0
+                    for (i = 1; i <= NR; i++) {
+                        if (lines[i] ~ /[^[:space:]]/) {
+                            print prefix substr(lines[i], minimum + 1)
+                        } else {
+                            print lines[i]
+                        }
+                    }
+                }
+            ' "$attempt_candidate" >"$indented_candidate"
+            mv -- "$indented_candidate" "$attempt_candidate"
+            if ! awk -v marker="$insert_after" -v insert_file="$attempt_candidate" '
+                {
+                    print
+                    if (!inserted && $0 == marker) {
+                        while ((getline line < insert_file) > 0) print line
+                        close(insert_file)
+                        inserted = 1
+                    }
+                }
+                END {
+                    if (!inserted) exit 42
+                }
+            ' "$current_target" >"$inserted_target"; then
+                last_stage="insertion"
+                last_diagnostic="exact insert_after line was not found after indentation"
+                continue
+            fi
+        fi
+        mv -- "$inserted_target" "$current_target"
+    fi
+
+    if [[ "$format_mode" == rustfmt ]]; then
+        if ! (cd "$candidate_root" && cargo fmt --all) >"$attempt_dir/format.txt" 2>&1; then
+            last_stage="format"
+            last_diagnostic=$(tail -n 60 "$attempt_dir/format.txt")
+            continue
+        fi
+    fi
+
+    changed_files=$(cd "$candidate_root" && git diff --name-only)
+    if [[ -z "$changed_files" ]]; then
+        last_stage="scope"
+        last_diagnostic="candidate produced no repository changes"
+        continue
+    fi
+    scope_failed=0
+    while IFS= read -r changed_file; do
+        [[ -n "$changed_file" ]] || continue
+        if ! jq -e --arg path "$changed_file" 'index($path) != null' <<<"$allowed_files_json" >/dev/null; then
+            scope_failed=1
+            last_stage="scope"
+            last_diagnostic="candidate changed file outside allowed_files: $changed_file"
+            break
+        fi
+    done <<<"$changed_files"
+    if (( scope_failed )); then
+        continue
+    fi
+
+    assertion_failed=0
+    while IFS= read -r assertion_file; do
+        [[ -n "$assertion_file" ]] || continue
+        if [[ ! -e "$candidate_root/$assertion_file" ]]; then
+            assertion_failed=1
+            last_stage="assertion"
+            last_diagnostic="required file is missing: $assertion_file"
+            break
+        fi
+    done < <(jq -r '.required_files[]?' <<<"$assertions_json")
+    if (( ! assertion_failed )); then
+        while IFS= read -r assertion_file; do
+            [[ -n "$assertion_file" ]] || continue
+            if [[ -e "$candidate_root/$assertion_file" ]]; then
+                assertion_failed=1
+                last_stage="assertion"
+                last_diagnostic="forbidden file exists: $assertion_file"
+                break
+            fi
+        done < <(jq -r '.forbidden_files[]?' <<<"$assertions_json")
+    fi
+    if (( ! assertion_failed )); then
+        while IFS= read -r assertion; do
+            [[ -n "$assertion" ]] || continue
+            assertion_file=$(jq -r '.file' <<<"$assertion")
+            assertion_text=$(jq -r '.text' <<<"$assertion")
+            if [[ ! -f "$candidate_root/$assertion_file" ]] ||
+                ! grep -F -q -- "$assertion_text" "$candidate_root/$assertion_file"; then
+                assertion_failed=1
+                last_stage="assertion"
+                last_diagnostic="required text was not found in $assertion_file: $assertion_text"
+                break
+            fi
+        done < <(jq -c '.required_text[]?' <<<"$assertions_json")
+    fi
+    if (( ! assertion_failed )); then
+        while IFS= read -r assertion; do
+            [[ -n "$assertion" ]] || continue
+            assertion_file=$(jq -r '.file' <<<"$assertion")
+            assertion_text=$(jq -r '.text' <<<"$assertion")
+            if [[ -f "$candidate_root/$assertion_file" ]] &&
+                grep -F -q -- "$assertion_text" "$candidate_root/$assertion_file"; then
+                assertion_failed=1
+                last_stage="assertion"
+                last_diagnostic="forbidden text was found in $assertion_file: $assertion_text"
+                break
+            fi
+        done < <(jq -c '.forbidden_text[]?' <<<"$assertions_json")
+    fi
+    if (( assertion_failed )); then
+        continue
+    fi
+
+    check_failed=0
+    check_index=0
+    while IFS= read -r check_command; do
+        check_index=$((check_index + 1))
+        check_output="$attempt_dir/check-$check_index.txt"
+        if ! (cd "$candidate_root" && bash -c "$check_command") >"$check_output" 2>&1; then
+            check_failed=1
+            last_stage="check"
+            last_diagnostic=$(tail -n 60 "$check_output")
+            break
+        fi
+    done < <(jq -r '.[]' <<<"$checks_json")
+    if (( check_failed )); then
+        continue
+    fi
+
+    if ! (cd "$candidate_root" && git diff --check) >"$attempt_dir/diff-check.txt" 2>&1; then
+        last_stage="diff-check"
+        last_diagnostic=$(tail -n 40 "$attempt_dir/diff-check.txt")
+        continue
+    fi
+
+    if [[ "$output_kind" == patch ]]; then
+        cp -- "$attempt_candidate" "$run_dir/candidate.patch"
+    else
+        cp -- "$attempt_candidate" "$run_dir/candidate.rs"
+    fi
+    (cd "$candidate_root" && git diff --binary --no-ext-diff) >"$run_dir/result.patch"
+    response_file="$attempt_response"
+    candidate_file="$attempt_candidate"
+    passed=1
+    break
+done
+
+task_finished_ms=$(date +%s%3N)
+wall_time_ms=$((task_finished_ms - task_started_ms))
+run_usage_json=$(jq '
+    reduce .[] as $item
+      ({attempts: 0, prompt_tokens: 0, completion_tokens: 0, total_tokens: 0,
+        cached_input_tokens: 0, reasoning_tokens: 0, elapsed_ms: 0};
+       .attempts += 1
+       | .prompt_tokens += ($item.usage.prompt_tokens // 0)
+       | .completion_tokens += ($item.usage.completion_tokens // 0)
+       | .total_tokens += ($item.usage.total_tokens // 0)
+       | .cached_input_tokens += ($item.usage.prompt_tokens_details.cached_tokens // 0)
+       | .reasoning_tokens += ($item.usage.completion_tokens_details.reasoning_tokens // $item.usage.reasoning_tokens // 0)
+       | .elapsed_ms += ($item.elapsed_ms // 0))
+    ' <<<"$attempts_usage")
+
+if (( passed )); then
+    usage_json=$(jq '.usage // {}' "$response_file")
+    jq -n \
+        --arg name "$name" \
+        --arg artifact "$run_dir/result.patch" \
+        --arg candidate "$candidate_file" \
+        --argjson usage "$usage_json" \
+        --argjson run_usage "$run_usage_json" \
+        --argjson wall_time_ms "$wall_time_ms" \
+        --argjson attempts "$attempt" \
+        --argjson context_commands "$context_count" \
+        '{ok:true,task:$name,attempts:$attempts,context_commands:$context_commands,artifact:$artifact,candidate:$candidate,usage:$usage,run_usage:$run_usage,wall_time_ms:$wall_time_ms}'
+else
+    jq -n \
+        --arg name "$name" \
+        --arg stage "$last_stage" \
+        --arg diagnostic "$last_diagnostic" \
+        --arg run_dir "$run_dir" \
+        --argjson run_usage "$run_usage_json" \
+        --argjson wall_time_ms "$wall_time_ms" \
+        --argjson attempts "$attempt" \
+        --argjson context_commands "$context_count" \
+        '{ok:false,task:$name,attempts:$attempts,context_commands:$context_commands,stage:$stage,diagnostic:$diagnostic,run_dir:$run_dir,run_usage:$run_usage,wall_time_ms:$wall_time_ms}'
+    exit 1
+fi

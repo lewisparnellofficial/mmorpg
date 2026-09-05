@@ -1,0 +1,20 @@
+{
+  "name": "parser-empty-command-smoke",
+  "output_kind": "rust_fragment",
+  "target_file": "crates/mmorpg-server/src/main.rs",
+  "insert_after": "    use super::*;",
+  "indent": "    ",
+  "task": "Return exactly this Rust fragment, character-for-character, with no explanation or Markdown fences:\n#[test]\nfn parser_rejects_empty_command() {\n    assert!(matches!(parse_line(\"\", None), Err(message) if message == \"empty command\"));\n}",
+  "system": "Copy the requested artifact exactly. Return only the artifact.",
+  "max_tokens": 256,
+  "reasoning_budget": 0,
+  "temperature": 0.1,
+  "top_p": 0.95,
+  "top_k": 40,
+  "min_p": 0.05,
+  "max_attempts": 1,
+  "checks": [
+    "cargo fmt --manifest-path crates/mmorpg-server/Cargo.toml -- --check",
+    "cargo test -p mmorpg-server"
+  ]
+}

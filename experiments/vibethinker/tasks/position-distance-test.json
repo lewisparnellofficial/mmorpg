@@ -1,0 +1,26 @@
+{
+  "name": "position-distance-test",
+  "output_kind": "rust_fragment",
+  "target_file": "crates/mmorpg-core/src/lib.rs",
+  "insert_after": "    use super::*;",
+  "indent": "    ",
+  "context_commands": [
+    {
+      "label": "position implementation",
+      "command": "sed -n '211,230p' crates/mmorpg-core/src/lib.rs"
+    }
+  ],
+  "task": "Write exactly one Rust test function named position_distance_squared_uses_euclidean_distance. Construct Position::new(0.0, 0.0) and Position::new(3.0, 4.0), call distance_squared, and assert that the result is 25.0 using assert!((actual - 25.0).abs() < f32::EPSILON). Return only the #[test] function, with no Markdown fences or explanation.",
+  "system": "Return only the requested Rust test function. Do not explain.",
+  "max_tokens": 512,
+  "reasoning_budget": 256,
+  "temperature": 0.2,
+  "top_p": 0.95,
+  "top_k": 40,
+  "min_p": 0.05,
+  "max_attempts": 2,
+  "checks": [
+    "cargo fmt --manifest-path crates/mmorpg-core/Cargo.toml -- --check",
+    "cargo test -p mmorpg-core"
+  ]
+}

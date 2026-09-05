@@ -1,0 +1,26 @@
+{
+  "name": "position-distance-suite",
+  "output_kind": "rust_fragment",
+  "target_file": "crates/mmorpg-core/src/lib.rs",
+  "insert_after": "    use super::*;",
+  "indent": "    ",
+  "context_commands": [
+    {
+      "label": "position implementation",
+      "command": "sed -n '211,230p' crates/mmorpg-core/src/lib.rs"
+    }
+  ],
+  "task": "Write exactly three Rust test functions. Test 1 must be named position_distance_squared_same_point and assert that Position::new(2.0, 3.0).distance_squared(Position::new(2.0, 3.0)) equals 0.0. Test 2 must be named position_distance_squared_three_four_five and assert that Position::new(0.0, 0.0).distance_squared(Position::new(3.0, 4.0)) equals 25.0. Test 3 must be named position_distance_squared_is_symmetric and assert that distance_squared gives the same result in both directions for Position::new(1.0, 2.0) and Position::new(4.0, 6.0). For all three, use assert!((actual - expected).abs() < f32::EPSILON). Return only the three #[test] functions, with no Markdown fences or explanation.",
+  "system": "Return only the requested Rust test functions. Do not explain.",
+  "max_tokens": 1024,
+  "reasoning_budget": 512,
+  "temperature": 0.2,
+  "top_p": 0.95,
+  "top_k": 40,
+  "min_p": 0.05,
+  "max_attempts": 2,
+  "checks": [
+    "cargo fmt --manifest-path crates/mmorpg-core/Cargo.toml -- --check",
+    "cargo test -p mmorpg-core"
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "name": "inline-plan-smoke",
+  "feature": "Exercise a complete leaf task declared inside the feature plan.",
+  "acceptance_checks": [
+    "The generated leaf manifest is validated before execution.",
+    "The combined artifact passes the focused server tests."
+  ],
+  "feature_checks": [
+    "cargo fmt --manifest-path crates/mmorpg-server/Cargo.toml -- --check",
+    "cargo test -p mmorpg-server"
+  ],
+  "tasks": [
+    {
+      "id": "parser-inline",
+      "description": "Add one deterministic parser regression test from an inline leaf specification.",
+      "task": "Return exactly this Rust fragment, character-for-character, with no explanation or Markdown fences:\n#[test]\nfn parser_rejects_empty_command() {\n    assert!(matches!(parse_line(\"\", None), Err(message) if message == \"empty command\"));\n}",
+      "target_files": ["crates/mmorpg-server/src/main.rs"],
+      "context_commands": [],
+      "output_kind": "rust_fragment",
+      "insert_after": "    use super::*;",
+      "indent": "    ",
+      "acceptance_checks": [
+        "cargo fmt --manifest-path crates/mmorpg-server/Cargo.toml -- --check",
+        "cargo test -p mmorpg-server"
+      ],
+      "semantic_constraints": [
+        "Return only the requested test fragment.",
+        "Do not modify parser production code."
+      ],
+      "assertions": {
+        "required_text": [
+          {
+            "file": "crates/mmorpg-server/src/main.rs",
+            "text": "parse_line(\"\", None)"
+          }
+        ],
+        "forbidden_text": [
+          {
+            "file": "crates/mmorpg-server/src/main.rs",
+            "text": "TODO: generated parser test"
+          }
+        ]
+      },
+      "system": "Copy the requested artifact exactly. Return only the artifact.",
+      "max_tokens": 256,
+      "reasoning_budget": 0,
+      "temperature": 0.1,
+      "top_p": 0.95,
+      "top_k": 40,
+      "min_p": 0.05,
+      "max_attempts": 1
+    }
+  ]
+}

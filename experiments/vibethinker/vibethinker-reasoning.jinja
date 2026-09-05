@@ -1,0 +1,23 @@
+{#
+  VibeThinker-3B is a thinking-only Qwen-style model. Always opening an
+  explicit think block keeps the prompt in the model's intended distribution;
+  llama-server with --reasoning-format deepseek then routes that block to
+  message.reasoning_content instead of normal message.content.
+#}
+{%- if messages and messages[0]['role'] == 'system' -%}
+    {{- '<|im_start|>system\n' + messages[0]['content'] + '<|im_end|>\n' -}}
+{%- else -%}
+    {{- '<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n' -}}
+{%- endif -%}
+{%- for message in messages -%}
+    {%- if message['role'] != 'system' -%}
+        {%- if message['role'] == 'assistant' and message['reasoning_content'] is defined and message['reasoning_content'] is not none and message['reasoning_content'] != '' -%}
+            {{- '<|im_start|>assistant\n<think>\n' + message['reasoning_content'] + '\n</think>\n' + message['content'] + '<|im_end|>\n' -}}
+        {%- else -%}
+            {{- '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n' -}}
+        {%- endif -%}
+    {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{- '<|im_start|>assistant\n<think>\n' -}}
+{%- endif -%}

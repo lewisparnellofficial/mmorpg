@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "name": "position-suite",
+  "feature": "Add focused distance_squared coverage to the authoritative Position type and retain a parser smoke task.",
+  "acceptance_checks": [
+    "Every bounded task is accepted by vt-task.",
+    "The combined artifact passes formatting and focused tests.",
+    "No artifact is applied to the real working tree."
+  ],
+  "feature_checks": [
+    "cargo fmt --all -- --check",
+    "cargo test -p mmorpg-core",
+    "cargo test -p mmorpg-server"
+  ],
+  "max_parallel": 2,
+  "tasks": [
+    {
+      "id": "position-single",
+      "description": "Add one focused Euclidean distance-squared regression test without changing production code.",
+      "manifest": "experiments/vibethinker/tasks/position-distance-test.json",
+      "target_files": ["crates/mmorpg-core/src/lib.rs"],
+      "context_commands": [
+        {
+          "label": "position implementation",
+          "command": "sed -n '211,230p' crates/mmorpg-core/src/lib.rs"
+        }
+      ],
+      "output_kind": "rust_fragment",
+      "acceptance_checks": [
+        "cargo fmt --manifest-path crates/mmorpg-core/Cargo.toml -- --check",
+        "cargo test -p mmorpg-core"
+      ],
+      "semantic_constraints": [
+        "Return exactly one test function.",
+        "Do not modify Position or other production methods."
+      ]
+    },
+    {
+      "id": "parser-copy",
+      "description": "Copy a deterministic parser regression test into the server test module.",
+      "manifest": "experiments/vibethinker/tasks/parser-empty-command-smoke.json",
+      "target_files": ["crates/mmorpg-server/src/main.rs"],
+      "context_commands": [],
+      "output_kind": "rust_fragment",
+      "acceptance_checks": [
+        "cargo fmt --manifest-path crates/mmorpg-server/Cargo.toml -- --check",
+        "cargo test -p mmorpg-server"
+      ],
+      "semantic_constraints": [
+        "Copy the requested fragment character-for-character.",
+        "Do not change parser production code."
+      ]
+    },
+    {
+      "id": "position-related-suite",
+      "description": "Add same-point, three-four-five, and symmetry distance-squared regression tests after the single test succeeds.",
+      "manifest": "experiments/vibethinker/tasks/position-distance-suite.json",
+      "depends_on": ["position-single", "parser-copy"],
+      "target_files": ["crates/mmorpg-core/src/lib.rs"],
+      "context_commands": [
+        {
+          "label": "position implementation",
+          "command": "sed -n '211,230p' crates/mmorpg-core/src/lib.rs"
+        }
+      ],
+      "output_kind": "rust_fragment",
+      "acceptance_checks": [
+        "cargo fmt --manifest-path crates/mmorpg-core/Cargo.toml -- --check",
+        "cargo test -p mmorpg-core"
+      ],
+      "semantic_constraints": [
+        "Return exactly three test functions with the requested names.",
+        "Do not modify Position or other production methods."
+      ]
+    }
+  ]
+}

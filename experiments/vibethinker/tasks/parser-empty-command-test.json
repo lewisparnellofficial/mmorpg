@@ -1,0 +1,25 @@
+{
+  "name": "parser-empty-command-test",
+  "output_kind": "rust_fragment",
+  "target_file": "crates/mmorpg-server/src/main.rs",
+  "insert_after": "    use super::*;",
+  "context_commands": [
+    {
+      "label": "parser entry point",
+      "command": "sed -n '628,636p' crates/mmorpg-server/src/main.rs"
+    }
+  ],
+  "task": "Write exactly one Rust test function named parser_rejects_empty_command. It must assert that parse_line(\"\", None) returns Err(\"empty command\".to_owned()). Return only the #[test] function, with no Markdown fences or explanation.",
+  "system": "Return only the requested Rust test function. Do not explain.",
+  "max_tokens": 512,
+  "reasoning_budget": 128,
+  "temperature": 0.2,
+  "top_p": 0.95,
+  "top_k": 40,
+  "min_p": 0.05,
+  "max_attempts": 2,
+  "checks": [
+    "cargo fmt --manifest-path crates/mmorpg-server/Cargo.toml -- --check",
+    "cargo test -p mmorpg-server"
+  ]
+}

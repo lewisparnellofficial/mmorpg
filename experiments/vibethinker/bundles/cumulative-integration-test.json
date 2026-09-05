@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "name": "cumulative-integration-test",
+  "feature": "Prove that a dependent leaf sees and extends its prerequisite's integrated artifact.",
+  "acceptance_checks": [
+    "The second task observes the first task's integrated source state.",
+    "The final artifact contains both changes."
+  ],
+  "feature_checks": [
+    "grep -Fqx 'dependency-a' experiments/vibethinker/tests/fixtures/cumulative.txt",
+    "grep -Fqx 'dependency-b' experiments/vibethinker/tests/fixtures/cumulative.txt"
+  ],
+  "max_parallel": 2,
+  "tasks": [
+    {
+      "id": "dependency_a",
+      "description": "Add the prerequisite marker.",
+      "task": "The deterministic test runner supplies this artifact.",
+      "target_files": ["experiments/vibethinker/tests/fixtures/cumulative.txt"],
+      "context_commands": [],
+      "output_kind": "patch",
+      "acceptance_checks": [],
+      "semantic_constraints": ["The artifact must be integrated before dependency_b runs."]
+    },
+    {
+      "id": "dependency_b",
+      "description": "Observe the prerequisite marker and add the dependent marker.",
+      "task": "The deterministic test runner verifies dependency visibility and supplies this artifact.",
+      "depends_on": ["dependency_a"],
+      "target_files": ["experiments/vibethinker/tests/fixtures/cumulative.txt"],
+      "context_commands": [],
+      "output_kind": "patch",
+      "acceptance_checks": [],
+      "semantic_constraints": ["The source root must already contain dependency-a."]
+    }
+  ]
+}

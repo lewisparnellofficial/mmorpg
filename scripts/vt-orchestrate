@@ -1,0 +1,817 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run a dependency-aware bundle of bounded VibeThinker tasks. Each task is
+# delegated to vt-task, which performs leaf validation. Accepted artifacts are
+# composed in an isolated integration repository. This scheduler never edits
+# the real working tree.
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "vt-orchestrate: run this command inside a git repository" >&2
+    exit 2
+}
+
+bundle_file=""
+output_dir="${VT_ORCHESTRATE_OUTPUT_DIR:-/tmp/vt-orchestrate-results}"
+runner="${VT_TASK_RUNNER:-$script_dir/vt-task}"
+max_parallel="${VT_ORCHESTRATE_MAX_PARALLEL:-4}"
+max_parallel_cli=0
+validate_only=0
+
+usage() {
+    cat <<'EOF'
+Usage:
+  vt-orchestrate --bundle PATH [--output-dir PATH] [--max-parallel N]
+                 [--runner PATH] [--validate-only]
+
+Validate and run a dependency-aware bundle of bounded VibeThinker task
+manifests. A bundle is the handoff format for a Codex feature decomposition.
+
+Bundle fields:
+  schema_version Integer schema version (currently 1; defaults to 1).
+  name          Required short bundle name.
+  feature       Required high-level feature or ticket being decomposed.
+  acceptance_checks
+                Optional human-readable feature acceptance statements.
+  feature_checks
+                Optional shell commands executed against the combined
+                integration candidate after every leaf is integrated.
+  max_parallel  Optional concurrent-task limit (default: 4).
+  tasks         Required array of:
+                  id            Unique task identifier (task_id is accepted as
+                                an alias; do not provide both differently).
+                  description   Required bounded task objective.
+                  manifest      Optional repository-relative vt-task manifest
+                                path. Omit this when the leaf is inline.
+                  depends_on    Optional array of task IDs.
+                  task          Required when manifest is omitted: VT task text.
+                  target_files  Required files declared by the task.
+                  context_commands
+                                Required context commands; must match the
+                                executable manifest.
+                  output_kind   Required rust_fragment or patch; must match
+                                the executable manifest.
+                  acceptance_checks
+                                Required array matching manifest.checks.
+                  semantic_constraints
+                                Required non-empty statements that automated
+                                checks cannot express.
+                  assertions    Optional machine-checkable file/text
+                                assertions passed to vt-task.
+
+Each task is run as:
+  RUNNER --manifest REPOSITORY/MANIFEST --output-dir RUN_DIRECTORY \
+         --source-root INTEGRATION_REPOSITORY
+
+Use --validate-only to inspect the normalized plan without invoking VT.
+The command prints compact JSON. Per-task stdout, stderr, and runner results
+remain under the run directory. Exit status is zero only when every task is
+accepted and integrated and every feature check passes. Rejected, failed,
+skipped, invalid, conflicting, or cyclic bundles exit 1 or 2.
+EOF
+}
+
+die() {
+    echo "vt-orchestrate: $*" >&2
+    exit 2
+}
+
+need_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+while (($# > 0)); do
+    case "$1" in
+        --bundle)
+            [[ $# -ge 2 ]] || die "--bundle requires a path"
+            bundle_file=$2
+            shift 2
+            ;;
+        --output-dir)
+            [[ $# -ge 2 ]] || die "--output-dir requires a path"
+            output_dir=$2
+            shift 2
+            ;;
+        --max-parallel)
+            [[ $# -ge 2 ]] || die "--max-parallel requires a value"
+            max_parallel=$2
+            max_parallel_cli=1
+            shift 2
+            ;;
+        --runner)
+            [[ $# -ge 2 ]] || die "--runner requires a path"
+            runner=$2
+            shift 2
+            ;;
+        --validate-only)
+            validate_only=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "unknown option: $1"
+            ;;
+    esac
+done
+
+[[ -n "$bundle_file" ]] || die "--bundle is required"
+[[ -r "$bundle_file" ]] || die "cannot read bundle: $bundle_file"
+[[ -x "$runner" ]] || die "task runner is not executable: $runner"
+
+need_command jq
+need_command git
+need_command ps
+need_command tar
+
+bundle=$(jq -e . "$bundle_file") || die "bundle is not valid JSON: $bundle_file"
+schema_version=$(jq -r '.schema_version // 1' <<<"$bundle")
+[[ "$schema_version" == 1 ]] || die "unsupported bundle schema_version: $schema_version"
+bundle_name=$(jq -r '.name // "vt-bundle"' <<<"$bundle")
+feature=$(jq -r '.feature // empty' <<<"$bundle")
+jq -e '.feature | type == "string" and length > 0' <<<"$bundle" >/dev/null ||
+    die "bundle.feature must be a non-empty string"
+acceptance_checks=$(jq -c '.acceptance_checks // []' <<<"$bundle")
+jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' \
+    <<<"$acceptance_checks" >/dev/null ||
+    die "bundle.acceptance_checks must be an array of non-empty strings"
+feature_checks=$(jq -c '.feature_checks // []' <<<"$bundle")
+jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' \
+    <<<"$feature_checks" >/dev/null ||
+    die "bundle.feature_checks must be an array of non-empty strings"
+task_count=$(jq -r '.tasks | if type == "array" then length else -1 end' <<<"$bundle")
+[[ "$task_count" =~ ^[1-9][0-9]*$ ]] || die "bundle.tasks must be a non-empty array"
+[[ "$bundle_name" =~ ^[A-Za-z0-9._-]+$ ]] || die "bundle name contains unsupported characters: $bundle_name"
+if (( ! max_parallel_cli )); then
+    bundle_max_parallel=$(jq -r '.max_parallel // empty' <<<"$bundle")
+    if [[ -n "$bundle_max_parallel" ]]; then
+        max_parallel=$bundle_max_parallel
+    fi
+fi
+[[ "$max_parallel" =~ ^[1-9][0-9]*$ ]] || die "max parallel must be a positive integer"
+
+timestamp=$(date +%Y%m%d-%H%M%S)
+run_dir="$output_dir/$bundle_name-$timestamp-$$"
+
+declare -a task_ids
+declare -A task_manifest task_manifest_source task_manifest_file task_generated task_leaf_json
+declare -A task_deps task_status task_pid task_dir task_result_file
+declare -A task_description task_target_files task_context_commands
+declare -A task_output_kind task_acceptance_checks task_constraints task_assertions
+
+validate_string_array() {
+    local value=$1
+    local label=$2
+    jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' \
+        <<<"$value" >/dev/null || die "$label must be an array of non-empty strings"
+}
+
+validate_context_commands() {
+    local value=$1
+    local label=$2
+    jq -e 'type == "array" and all(.[];
+        type == "object" and
+        (.label | type) == "string" and (.label | length) > 0 and
+        (.command | type) == "string" and (.command | length) > 0)' \
+        <<<"$value" >/dev/null ||
+        die "$label must be an array of {label, command} objects"
+}
+
+validate_relative_paths() {
+    local value=$1
+    local label=$2
+    jq -e 'type == "array" and length > 0 and all(.[];
+        type == "string" and length > 0 and
+        (startswith("/") | not) and
+        (test("(^|/)\\.\\.?(/|$)") | not))' \
+        <<<"$value" >/dev/null ||
+        die "$label must be a non-empty array of repository-relative paths"
+}
+
+validate_assertions() {
+    local value=$1
+    local label=$2
+    jq -e 'type == "object" and
+        ((.required_files // []) | type == "array" and
+            all(.[]; type == "string" and length > 0)) and
+        ((.forbidden_files // []) | type == "array" and
+            all(.[]; type == "string" and length > 0)) and
+        ((.required_text // []) | type == "array" and all(.[];
+            type == "object" and (.file | type) == "string" and
+            (.file | length) > 0 and (.text | type) == "string" and
+            (.text | length) > 0)) and
+        ((.forbidden_text // []) | type == "array" and all(.[];
+            type == "object" and (.file | type) == "string" and
+            (.file | length) > 0 and (.text | type) == "string" and
+            (.text | length) > 0))' \
+        <<<"$value" >/dev/null || die "$label has an invalid assertion shape"
+    for path_group in required_files forbidden_files; do
+        paths=$(jq -c ".${path_group} // []" <<<"$value")
+        if [[ "$(jq 'length' <<<"$paths")" -gt 0 ]]; then
+            validate_relative_paths "$paths" "$label.$path_group"
+        fi
+    done
+    for text_group in required_text forbidden_text; do
+        while IFS= read -r assertion; do
+            [[ -n "$assertion" ]] || continue
+            assertion_file=$(jq -r '.file' <<<"$assertion")
+            validate_relative_paths "[$(jq -Rn --arg path "$assertion_file" '$path')]" \
+                "$label.$text_group.file"
+        done < <(jq -c ".${text_group}[]?" <<<"$value")
+    done
+}
+
+plan_tasks_json='[]'
+
+while IFS= read -r task_json; do
+    id=$(jq -r '.id // .task_id // empty' <<<"$task_json")
+    explicit_id=$(jq -r '.id // empty' <<<"$task_json")
+    alias_id=$(jq -r '.task_id // empty' <<<"$task_json")
+    if [[ -n "$explicit_id" && -n "$alias_id" && "$explicit_id" != "$alias_id" ]]; then
+        die "task '$id' has conflicting id and task_id"
+    fi
+    description=$(jq -r '.description // empty' <<<"$task_json")
+    manifest_path=$(jq -r '.manifest // empty' <<<"$task_json")
+    inline_task=$(jq -r '.task // empty' <<<"$task_json")
+    deps=$(jq -c '.depends_on // []' <<<"$task_json")
+    [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || die "task id contains unsupported characters: $id"
+    jq -e 'has("description") and has("target_files") and
+        has("context_commands") and has("output_kind") and
+        has("acceptance_checks") and has("semantic_constraints")' \
+        <<<"$task_json" >/dev/null ||
+        die "task '$id' is missing one or more required plan fields"
+    jq -e '.description | type == "string" and length > 0' <<<"$task_json" >/dev/null ||
+        die "task '$id' description must be a non-empty string"
+    if [[ -n "$manifest_path" ]]; then
+        case "$manifest_path" in
+            /*|../*|*/../*) die "task '$id' manifest must be repository-relative: $manifest_path" ;;
+        esac
+        [[ -r "$repo_root/$manifest_path" ]] || die "task '$id' manifest is not readable: $manifest_path"
+    else
+        [[ -n "$inline_task" ]] ||
+            die "task '$id' must provide either manifest or task"
+    fi
+    jq -e 'type == "array" and all(.[]; type == "string")' <<<"$deps" >/dev/null ||
+        die "task '$id' depends_on must be an array of strings"
+    [[ -z "${task_status[$id]+present}" ]] || die "duplicate task id: $id"
+
+    target_files=$(jq -c '.target_files // []' <<<"$task_json")
+    context_commands=$(jq -c '.context_commands // []' <<<"$task_json")
+    output_kind=$(jq -r '.output_kind // empty' <<<"$task_json")
+    declared_checks=$(jq -c '.acceptance_checks // []' <<<"$task_json")
+    constraints=$(jq -c '.semantic_constraints // []' <<<"$task_json")
+    assertions=$(jq -c '.assertions // {}' <<<"$task_json")
+    validate_relative_paths "$target_files" "task '$id'.target_files"
+    validate_context_commands "$context_commands" "task '$id'.context_commands"
+    [[ "$output_kind" == rust_fragment || "$output_kind" == patch ]] ||
+        die "task '$id'.output_kind must be rust_fragment or patch"
+    validate_string_array "$declared_checks" "task '$id'.acceptance_checks"
+    validate_string_array "$constraints" "task '$id'.semantic_constraints"
+    validate_assertions "$assertions" "task '$id'.assertions"
+
+    if [[ -n "$manifest_path" ]]; then
+        manifest_json=$(jq -e . "$repo_root/$manifest_path") ||
+            die "task '$id' manifest is not valid JSON: $manifest_path"
+        generated_manifest=false
+        manifest_label=$manifest_path
+    else
+        generated_manifest=true
+        manifest_label="<inline task>"
+        if [[ "$output_kind" == rust_fragment ]]; then
+            [[ "$(jq 'length' <<<"$target_files")" -eq 1 ]] ||
+                die "inline rust_fragment task '$id' must declare exactly one target file"
+            inline_target=$(jq -r '.[0]' <<<"$target_files")
+            inline_insert_after=$(jq -r '.insert_after // empty' <<<"$task_json")
+            [[ -n "$inline_insert_after" ]] ||
+                die "inline rust_fragment task '$id' requires insert_after"
+            manifest_target_json=$(jq -cn --arg target "$inline_target" '[$target]')
+        else
+            manifest_target_json="$target_files"
+        fi
+        manifest_json=$(jq -n \
+            --arg name "$id" \
+            --arg task "$inline_task" \
+            --argjson context_commands "$context_commands" \
+            --argjson task_spec "$task_json" \
+            --arg output_kind "$output_kind" \
+            --argjson target_files "$manifest_target_json" \
+            --arg insert_after "${inline_insert_after:-}" \
+            --arg indent "$(jq -r '.indent // empty' <<<"$task_json")" \
+            --argjson checks "$declared_checks" \
+            --argjson assertions "$assertions" \
+            '{name:$name,task:$task,context_commands:$context_commands,
+              output_kind:$output_kind,checks:$checks,assertions:$assertions}
+             + (if $output_kind == "rust_fragment" then
+                  {target_file:$target_files[0],insert_after:$insert_after,
+                   indent:$indent}
+                else {allowed_files:$target_files} end)
+             + (if ($task_spec | has("system")) then {system:$task_spec.system} else {} end)
+             + (if ($task_spec | has("max_tokens")) then {max_tokens:$task_spec.max_tokens} else {} end)
+             + (if ($task_spec | has("reasoning_budget")) then {reasoning_budget:$task_spec.reasoning_budget} else {} end)
+             + (if ($task_spec | has("temperature")) then {temperature:$task_spec.temperature} else {} end)
+             + (if ($task_spec | has("top_p")) then {top_p:$task_spec.top_p} else {} end)
+             + (if ($task_spec | has("top_k")) then {top_k:$task_spec.top_k} else {} end)
+             + (if ($task_spec | has("min_p")) then {min_p:$task_spec.min_p} else {} end)
+             + (if ($task_spec | has("max_attempts")) then {max_attempts:$task_spec.max_attempts} else {} end)
+             + (if ($task_spec | has("format")) then {format:$task_spec.format} else {} end)' \
+            <<<"$task_json")
+    fi
+    manifest_kind=$(jq -r '.output_kind // "rust_fragment"' <<<"$manifest_json")
+    [[ "$output_kind" == "$manifest_kind" ]] ||
+        die "task '$id' output_kind does not match manifest ($output_kind != $manifest_kind)"
+    if [[ "$manifest_kind" == rust_fragment ]]; then
+        manifest_target=$(jq -r '.target_file // empty' <<<"$manifest_json")
+        expected_targets=$(jq -cn --arg target "$manifest_target" '[$target]')
+    else
+        expected_targets=$(jq -c '.allowed_files // []' <<<"$manifest_json")
+    fi
+    jq -n -e --argjson actual "$target_files" --argjson expected "$expected_targets" \
+        '$actual == $expected' >/dev/null ||
+        die "task '$id' target_files does not match the executable manifest"
+    manifest_context=$(jq -c '.context_commands // []' <<<"$manifest_json")
+    jq -n -e --argjson actual "$context_commands" --argjson expected "$manifest_context" \
+        '$actual == $expected' >/dev/null ||
+        die "task '$id' context_commands do not match the executable manifest"
+    manifest_checks=$(jq -c '.checks // []' <<<"$manifest_json")
+    jq -n -e --argjson actual "$declared_checks" --argjson expected "$manifest_checks" \
+        '$actual == $expected' >/dev/null ||
+        die "task '$id' acceptance_checks do not match manifest.checks"
+    manifest_assertions=$(jq -c '.assertions // {}' <<<"$manifest_json")
+    jq -n -e --argjson actual "$assertions" --argjson expected "$manifest_assertions" \
+        '$actual == $expected' >/dev/null ||
+        die "task '$id' assertions do not match the executable manifest"
+
+    task_ids+=("$id")
+    task_manifest["$id"]=$manifest_label
+    task_manifest_source["$id"]=$manifest_path
+    task_generated["$id"]=$generated_manifest
+    task_leaf_json["$id"]=$manifest_json
+    task_deps["$id"]=$deps
+    task_description["$id"]=$description
+    task_target_files["$id"]=$target_files
+    task_context_commands["$id"]=$context_commands
+    task_output_kind["$id"]=$output_kind
+    task_acceptance_checks["$id"]=$declared_checks
+    task_constraints["$id"]=$constraints
+    task_assertions["$id"]=$assertions
+    task_status["$id"]="pending"
+
+    plan_tasks_json=$(jq -n \
+        --argjson tasks "$plan_tasks_json" \
+        --arg id "$id" \
+        --arg description "$description" \
+        --arg manifest "$manifest_path" \
+        --argjson depends_on "$deps" \
+        --argjson target_files "$target_files" \
+        --argjson context_commands "$context_commands" \
+        --arg output_kind "$output_kind" \
+        --argjson acceptance_checks "$declared_checks" \
+        --argjson semantic_constraints "$constraints" \
+        --argjson assertions "$assertions" \
+        '$tasks + [{id:$id,description:$description,
+          manifest:(if $manifest == "" then null else $manifest end),
+          depends_on:$depends_on,target_files:$target_files,
+          context_commands:$context_commands,output_kind:$output_kind,
+          acceptance_checks:$acceptance_checks,
+          semantic_constraints:$semantic_constraints,assertions:$assertions}]')
+done < <(jq -c '.tasks[]' <<<"$bundle")
+
+for id in "${task_ids[@]}"; do
+    while IFS= read -r dep; do
+        [[ -n "$dep" ]] || continue
+        [[ -n "${task_status[$dep]+present}" ]] || die "task '$id' depends on unknown task: $dep"
+        [[ "$dep" != "$id" ]] || die "task '$id' cannot depend on itself"
+    done < <(jq -r '.[]' <<<"${task_deps[$id]}")
+done
+
+declare -A visit_state
+visit_task() {
+    local id=$1
+    local dep
+    case "${visit_state[$id]:-unvisited}" in
+        visiting) die "bundle contains a dependency cycle involving task '$id'" ;;
+        visited) return ;;
+    esac
+    visit_state["$id"]="visiting"
+    while IFS= read -r dep; do
+        [[ -n "$dep" ]] || continue
+        visit_task "$dep"
+    done < <(jq -r '.[]' <<<"${task_deps[$id]}")
+    visit_state["$id"]="visited"
+}
+
+task_depends_on() {
+    local child=$1
+    local ancestor=$2
+    local dep
+    while IFS= read -r dep; do
+        [[ -n "$dep" ]] || continue
+        if [[ "$dep" == "$ancestor" ]] || task_depends_on "$dep" "$ancestor"; then
+            return 0
+        fi
+    done < <(jq -r '.[]' <<<"${task_deps[$child]}")
+    return 1
+}
+
+for id in "${task_ids[@]}"; do
+    visit_task "$id"
+done
+
+# Two tasks that may run concurrently must not own the same file. Tasks in a
+# dependency chain are serialized and may intentionally refine the same file.
+for ((left_index = 0; left_index < task_count; left_index++)); do
+    left_id=${task_ids[$left_index]}
+    for ((right_index = left_index + 1; right_index < task_count; right_index++)); do
+        right_id=${task_ids[$right_index]}
+        if jq -n -e \
+            --argjson left "${task_target_files[$left_id]}" \
+            --argjson right "${task_target_files[$right_id]}" \
+            '$left | any(. as $path | $right | index($path) != null)' >/dev/null &&
+            ! task_depends_on "$left_id" "$right_id" &&
+            ! task_depends_on "$right_id" "$left_id"; then
+            die "tasks '$left_id' and '$right_id' have overlapping target_files but no dependency ordering"
+        fi
+    done
+done
+
+if (( validate_only )); then
+    jq -n \
+        --arg bundle "$bundle_name" \
+        --arg feature "$feature" \
+        --argjson schema_version "$schema_version" \
+        --argjson acceptance_checks "$acceptance_checks" \
+        --argjson feature_checks "$feature_checks" \
+        --argjson tasks "$plan_tasks_json" \
+        --argjson max_parallel "$max_parallel" \
+        '{ok:true,mode:"validate-only",schema_version:$schema_version,
+          bundle:$bundle,feature:$feature,acceptance_checks:$acceptance_checks,
+          feature_checks:$feature_checks,
+          max_parallel:$max_parallel,tasks:$tasks}'
+    exit 0
+fi
+
+mkdir -p "$run_dir/tasks"
+run_dir=$(cd -- "$run_dir" && pwd)
+
+integration_temp=$(mktemp -d "${TMPDIR:-/tmp}/vt-orchestrate.XXXXXX")
+integration_root="$integration_temp/repo"
+mkdir -p "$integration_root"
+tar --exclude='./.git' --exclude='./target' --exclude='*/target' --exclude='*/target/*' \
+    -cf - -C "$repo_root" . |
+    tar -xf - -C "$integration_root"
+(cd "$integration_root" &&
+    git init -q &&
+    git add -A &&
+    git -c user.name=vt-orchestrate -c user.email=vt-orchestrate@localhost \
+        commit -qm "temporary feature baseline")
+source_commit=$(git -C "$repo_root" rev-parse HEAD)
+
+for id in "${task_ids[@]}"; do
+    task_dir["$id"]="$run_dir/tasks/$id"
+    mkdir -p "${task_dir[$id]}"
+    if [[ "${task_generated[$id]}" == true ]]; then
+        task_manifest_file["$id"]="${task_dir[$id]}/manifest.json"
+        printf '%s\n' "${task_leaf_json[$id]}" >"${task_manifest_file[$id]}"
+    else
+        task_manifest_file["$id"]="$repo_root/${task_manifest_source[$id]}"
+    fi
+    jq -n \
+        --arg id "$id" \
+        --arg description "${task_description[$id]}" \
+        --arg manifest "${task_manifest[$id]}" \
+        --argjson depends_on "${task_deps[$id]}" \
+        --argjson target_files "${task_target_files[$id]}" \
+        --argjson context_commands "${task_context_commands[$id]}" \
+        --arg output_kind "${task_output_kind[$id]}" \
+        --argjson acceptance_checks "${task_acceptance_checks[$id]}" \
+        --argjson semantic_constraints "${task_constraints[$id]}" \
+        --argjson assertions "${task_assertions[$id]}" \
+        '{id:$id,description:$description,manifest:$manifest,depends_on:$depends_on,
+          target_files:$target_files,context_commands:$context_commands,
+          output_kind:$output_kind,acceptance_checks:$acceptance_checks,
+          semantic_constraints:$semantic_constraints,assertions:$assertions}' \
+        >"${task_dir[$id]}/plan.json"
+done
+
+cleanup_children() {
+    for id in "${task_ids[@]}"; do
+        if [[ "${task_status[$id]}" == running ]]; then
+            kill "${task_pid[$id]}" 2>/dev/null || true
+        fi
+    done
+    rm -rf -- "$integration_temp"
+}
+trap cleanup_children EXIT INT TERM
+
+write_summary() {
+    local id=$1
+    local status=$2
+    local result_file=${3:-}
+    local blocked_by=${4:-[]}
+    local result='null'
+    if [[ -n "$result_file" && -s "$result_file" ]] && jq -e . "$result_file" >/dev/null 2>&1; then
+        result=$(<"$result_file")
+    fi
+    jq -n \
+        --arg id "$id" \
+        --arg status "$status" \
+        --arg manifest "${task_manifest[$id]}" \
+        --arg manifest_file "${task_manifest_file[$id]}" \
+        --arg task_dir "${task_dir[$id]}" \
+        --arg plan_file "${task_dir[$id]}/plan.json" \
+        --arg description "${task_description[$id]}" \
+        --arg output_kind "${task_output_kind[$id]}" \
+        --argjson target_files "${task_target_files[$id]}" \
+        --argjson context_commands "${task_context_commands[$id]}" \
+        --argjson acceptance_checks "${task_acceptance_checks[$id]}" \
+        --argjson semantic_constraints "${task_constraints[$id]}" \
+        --argjson assertions "${task_assertions[$id]}" \
+        --argjson blocked_by "$blocked_by" \
+        --argjson result "$result" \
+        '{id:$id,status:$status,manifest:$manifest,manifest_file:$manifest_file,
+          task_dir:$task_dir,
+          plan_file:$plan_file,
+          plan:{description:$description,target_files:$target_files,
+            context_commands:$context_commands,output_kind:$output_kind,
+            acceptance_checks:$acceptance_checks,
+            semantic_constraints:$semantic_constraints,assertions:$assertions},
+          blocked_by:$blocked_by,result:$result}' \
+        >"${task_dir[$id]}/summary.json"
+}
+
+running=0
+completed=0
+fatal_error=""
+
+collect_task() {
+    local id=$1
+    local rc=0
+    local result_file
+    if wait "${task_pid[$id]}"; then
+        rc=0
+    else
+        rc=$?
+    fi
+    unset 'task_pid[$id]'
+    running=$((running - 1))
+
+    result_file="${task_dir[$id]}/result.json"
+    if [[ ! -s "$result_file" && -s "${task_dir[$id]}/runner.stdout" ]]; then
+        cp -- "${task_dir[$id]}/runner.stdout" "$result_file"
+    fi
+    if [[ "$rc" -eq 0 ]] && jq -e '.ok == true' "$result_file" >/dev/null 2>&1; then
+        task_status["$id"]="validated"
+        task_result_file["$id"]=$result_file
+    else
+        task_status["$id"]="rejected"
+        completed=$((completed + 1))
+        if [[ "$rc" -eq 0 ]]; then
+            printf '%s\n' 'runner returned malformed or non-accepted JSON' >"${task_dir[$id]}/runner-status.txt"
+        else
+            printf 'runner exit status: %s\n' "$rc" >"${task_dir[$id]}/runner-status.txt"
+        fi
+        write_summary "$id" rejected "$result_file"
+    fi
+}
+
+fail_integration() {
+    local id=$1
+    local diagnostic=$2
+    local result_file=${task_result_file[$id]}
+    local integration_result="${task_dir[$id]}/integration-result.json"
+    jq --arg diagnostic "$diagnostic" \
+        '. + {ok:false,stage:"integration",diagnostic:$diagnostic,
+              integration:{ok:false,diagnostic:$diagnostic}}' \
+        "$result_file" >"$integration_result"
+    printf '%s\n' "$diagnostic" >"${task_dir[$id]}/integration.txt"
+    task_status["$id"]="failed"
+    task_result_file["$id"]=$integration_result
+    completed=$((completed + 1))
+    write_summary "$id" failed "$integration_result"
+}
+
+integrate_validated_tasks() {
+    local id artifact patch_paths path diagnostic integration_result
+    local scope_failed
+    for id in "${task_ids[@]}"; do
+        [[ "${task_status[$id]}" == validated ]] || continue
+        artifact=$(jq -r '.artifact // empty' "${task_result_file[$id]}")
+        if [[ -z "$artifact" || ! -r "$artifact" ]]; then
+            fail_integration "$id" "runner accepted the task without a readable artifact"
+            made_progress=1
+            continue
+        fi
+        if ! patch_paths=$(cd "$integration_root" && git apply --numstat "$artifact" 2>&1); then
+            fail_integration "$id" "artifact is not a readable patch: $patch_paths"
+            made_progress=1
+            continue
+        fi
+        if [[ -z "$patch_paths" ]]; then
+            fail_integration "$id" "artifact patch contains no file changes"
+            made_progress=1
+            continue
+        fi
+        scope_failed=0
+        while IFS=$'\t' read -r _added _deleted path; do
+            [[ -n "$path" ]] || continue
+            if ! jq -e --arg path "$path" 'index($path) != null' \
+                <<<"${task_target_files[$id]}" >/dev/null; then
+                diagnostic="artifact changes file outside target_files: $path"
+                scope_failed=1
+                break
+            fi
+        done <<<"$patch_paths"
+        if (( scope_failed )); then
+            fail_integration "$id" "$diagnostic"
+            made_progress=1
+            continue
+        fi
+        if ! diagnostic=$(cd "$integration_root" &&
+            git apply --check --whitespace=error "$artifact" 2>&1); then
+            fail_integration "$id" "artifact does not apply to the integrated feature state: $diagnostic"
+            made_progress=1
+            continue
+        fi
+        if ! diagnostic=$(cd "$integration_root" &&
+            git apply --whitespace=error "$artifact" 2>&1); then
+            fail_integration "$id" "artifact failed while applying to the integrated feature state: $diagnostic"
+            made_progress=1
+            continue
+        fi
+        integration_result="${task_dir[$id]}/integration-result.json"
+        jq '. + {integration:{ok:true}}' "${task_result_file[$id]}" >"$integration_result"
+        task_result_file["$id"]=$integration_result
+        task_status["$id"]="accepted"
+        completed=$((completed + 1))
+        write_summary "$id" accepted "$integration_result"
+        made_progress=1
+    done
+}
+
+while (( completed < task_count )); do
+    made_progress=0
+
+    if (( running == 0 )); then
+        integrate_validated_tasks
+    fi
+
+    for id in "${task_ids[@]}"; do
+        [[ "${task_status[$id]}" == pending ]] || continue
+        ready=1
+        blocked_by=()
+        while IFS= read -r dep; do
+            [[ -n "$dep" ]] || continue
+            case "${task_status[$dep]}" in
+                accepted) ;;
+                rejected|failed|skipped) blocked_by+=("$dep") ;;
+                *) ready=0 ;;
+            esac
+        done < <(jq -r '.[]' <<<"${task_deps[$id]}")
+
+        if ((${#blocked_by[@]} > 0)); then
+            task_status["$id"]="skipped"
+            blocked_json=$(printf '%s\n' "${blocked_by[@]}" | jq -R . | jq -s .)
+            write_summary "$id" skipped "" "$blocked_json"
+            completed=$((completed + 1))
+            made_progress=1
+            continue
+        fi
+        (( ready )) || continue
+        (( running < max_parallel )) || continue
+
+        VT_TASK_PLAN_FILE="${task_dir[$id]}/plan.json" "$runner" \
+            --manifest "${task_manifest_file[$id]}" \
+            --output-dir "${task_dir[$id]}" \
+            --source-root "$integration_root" \
+            >"${task_dir[$id]}/runner.stdout" \
+            2>"${task_dir[$id]}/runner.stderr" &
+        task_pid["$id"]=$!
+        task_status["$id"]="running"
+        running=$((running + 1))
+        made_progress=1
+    done
+
+    if (( running > 0 )); then
+        collected=0
+        for id in "${task_ids[@]}"; do
+            [[ "${task_status[$id]}" == running ]] || continue
+            process_state=$(ps -o stat= -p "${task_pid[$id]}" 2>/dev/null || true)
+            if [[ -z "$process_state" || "$process_state" == Z* ]]; then
+                collect_task "$id"
+                collected=1
+                made_progress=1
+            fi
+        done
+        (( collected )) || sleep 0.05
+    elif (( ! made_progress )); then
+        fatal_error="dependency cycle or unresolved task state"
+        for id in "${task_ids[@]}"; do
+            [[ "${task_status[$id]}" == pending ]] || continue
+            task_status["$id"]="failed"
+            write_summary "$id" failed "" "[]"
+            completed=$((completed + 1))
+        done
+    fi
+done
+
+task_json=$(jq -s 'map({key:.id,value:.}) | from_entries' "$run_dir"/tasks/*/summary.json)
+summary_json=$(jq -n --argjson tasks "$task_json" '
+    [$tasks | to_entries[] | .value.status] as $statuses |
+    {total:($statuses|length),
+     accepted:([$statuses[]|select(. == "accepted")]|length),
+     rejected:([$statuses[]|select(. == "rejected")]|length),
+     skipped:([$statuses[]|select(. == "skipped")]|length),
+     failed:([$statuses[]|select(. == "failed")]|length)}')
+usage_json=$(jq -n --argjson tasks "$task_json" '
+    [$tasks | to_entries[] | .value.result.run_usage? | select(. != null)] as $runs |
+    reduce $runs[] as $run
+      ({attempts:0,prompt_tokens:0,completion_tokens:0,total_tokens:0,
+        cached_input_tokens:0,reasoning_tokens:0,elapsed_ms:0};
+       .attempts += ($run.attempts // 0)
+       | .prompt_tokens += ($run.prompt_tokens // 0)
+       | .completion_tokens += ($run.completion_tokens // 0)
+       | .total_tokens += ($run.total_tokens // 0)
+       | .cached_input_tokens += ($run.cached_input_tokens // 0)
+       | .reasoning_tokens += ($run.reasoning_tokens // 0)
+       | .elapsed_ms += ($run.elapsed_ms // 0))')
+
+task_ok_bool=$(jq -r '.accepted == .total and .rejected == 0 and .skipped == 0 and .failed == 0' <<<"$summary_json")
+final_artifact="$run_dir/result.patch"
+(cd "$integration_root" && git diff --binary --no-ext-diff) >"$final_artifact"
+
+feature_results='[]'
+feature_ok=true
+feature_diagnostic=""
+feature_failed_index=null
+if [[ "$task_ok_bool" == true ]]; then
+    feature_index=0
+    if ! (cd "$integration_root" && git diff --check) >"$run_dir/feature-diff-check.txt" 2>&1; then
+        feature_ok=false
+        feature_diagnostic=$(tail -n 60 "$run_dir/feature-diff-check.txt")
+    fi
+    while [[ "$feature_ok" == true ]] && IFS= read -r feature_command; do
+        feature_index=$((feature_index + 1))
+        feature_output="$run_dir/feature-check-$feature_index.txt"
+        if (cd "$integration_root" && bash -c "$feature_command") >"$feature_output" 2>&1; then
+            check_ok=true
+        else
+            check_ok=false
+            feature_ok=false
+            feature_failed_index=$feature_index
+            feature_diagnostic=$(tail -n 60 "$feature_output")
+        fi
+        feature_results=$(jq -n \
+            --argjson results "$feature_results" \
+            --arg command "$feature_command" \
+            --arg output "$feature_output" \
+            --argjson ok "$check_ok" \
+            '$results + [{command:$command,ok:$ok,output:$output}]')
+    done < <(jq -r '.[]' <<<"$feature_checks")
+else
+    feature_ok=false
+    feature_diagnostic="feature checks were skipped because one or more leaf tasks were not integrated"
+fi
+
+feature_validation=$(jq -n \
+    --argjson ok "$feature_ok" \
+    --argjson checks "$feature_results" \
+    --arg diagnostic "$feature_diagnostic" \
+    --argjson failed_index "$feature_failed_index" \
+    '{ok:$ok,checks:$checks} +
+     (if $diagnostic == "" then {} else {diagnostic:$diagnostic} end) +
+     (if $failed_index == null then {} else {failed_check:$failed_index} end)')
+
+if [[ "$task_ok_bool" == true && "$feature_ok" == true ]]; then
+    ok_bool=true
+    ok_json=true
+else
+    ok_bool=false
+    ok_json=false
+fi
+jq -n \
+    --arg bundle "$bundle_name" \
+    --arg feature "$feature" \
+    --argjson schema_version "$schema_version" \
+    --argjson acceptance_checks "$acceptance_checks" \
+    --argjson feature_checks "$feature_checks" \
+    --argjson feature_validation "$feature_validation" \
+    --arg run_dir "$run_dir" \
+    --arg runner "$runner" \
+    --arg source_commit "$source_commit" \
+    --arg artifact "$final_artifact" \
+    --argjson ok "$ok_json" \
+    --argjson summary "$summary_json" \
+    --argjson tasks "$task_json" \
+    --argjson usage "$usage_json" \
+    --arg fatal_error "$fatal_error" \
+    '{ok:$ok,schema_version:$schema_version,bundle:$bundle,feature:$feature,
+      acceptance_checks:$acceptance_checks,feature_checks:$feature_checks,
+      feature_validation:$feature_validation,source_commit:$source_commit,
+      artifact:$artifact,run_dir:$run_dir,runner:$runner,
+      summary:$summary,tasks:$tasks,run_usage:$usage} +
+     (if $fatal_error == "" then {} else {error:$fatal_error} end)'
+
+[[ "$ok_bool" == true ]] || exit 1

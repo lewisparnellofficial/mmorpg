@@ -32,6 +32,11 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [AI/respawn experiment](../experiments/ai-respawn/README.md) — deterministic patrol, aggro, leash, death, and respawn behavior model.
 - [Persistence and recovery research](research/persistence-and-recovery.md) — durable state, idempotency, snapshots, journals, and crash recovery.
 - [Content validation tool](../tools/README.md) — current starter-catalog validation command and future authoring-tool boundary.
+- [VibeThinker bounded task catalog](experiments/vibethinker-task-catalog.md) — handoff format and initial local-model coding experiments.
+- [VibeThinker experiment inputs](../experiments/vibethinker/README.md) — organized prompts and captured-result location for local-model trials.
+- [VibeThinker task orchestrator](../scripts/vt-orchestrate) — schema-validating Codex feature-plan handoff, dependency-aware VT dispatch, cumulative integration, and combined feature validation.
+- [VibeThinker token accounting](experiments/vibethinker-token-accounting.md) — local Codex/VT telemetry and the matched direct-vs-orchestrated trial protocol.
+- [VibeThinker/Codex A/B trial](experiments/vibethinker-codex-ab-2026-09-04.md) — first matched direct and delegated result, including token, latency, and semantic-acceptance measurements.
 
 ## Status vocabulary
 

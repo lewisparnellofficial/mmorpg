@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Read-only observer for local Codex session token telemetry.
+# Codex records cumulative usage in its local state database and writes a
+# detailed token_count event to each rollout JSONL file. This script reads
+# those records; it never changes Codex state or the repository.
+
+usage() {
+    cat <<'EOF'
+Usage:
+  codex-usage [--thread ID | --cwd PATH] [--json]
+  codex-usage [--thread ID | --cwd PATH] --watch SECONDS [--json]
+
+Select a Codex thread and print its latest local token telemetry.
+
+Options:
+  --thread ID       Observe this exact Codex thread ID.
+  --cwd PATH        Select the newest unarchived thread for this directory.
+                    Defaults to the current Git repository (or current dir).
+  --watch SECONDS   Poll repeatedly at the given interval.
+  --json            Print one JSON object, or JSONL when watching.
+  -h, --help        Show this help.
+
+The JSON usage object includes input_tokens, cached_input_tokens,
+output_tokens, reasoning_output_tokens, and total_tokens when Codex has
+written a token_count event for the selected rollout. The thread's
+tokens_used database field is also included as database_tokens_used.
+
+For a before/after measurement, run this command once before and once after
+the Codex task and subtract total_tokens (or database_tokens_used). The
+Codex CLI's --json event stream can also be saved for archival inspection,
+but this observer is useful for an already-running interactive session.
+EOF
+}
+
+die() {
+    echo "codex-usage: $*" >&2
+    exit 2
+}
+
+need_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+need_command jq
+need_command sqlite3
+need_command date
+
+thread_id=""
+cwd=""
+watch_seconds=""
+json_mode=0
+
+while (($# > 0)); do
+    case "$1" in
+        --thread)
+            (($# >= 2)) || die "--thread requires an ID"
+            thread_id=$2
+            shift 2
+            ;;
+        --cwd)
+            (($# >= 2)) || die "--cwd requires a path"
+            cwd=$2
+            shift 2
+            ;;
+        --watch)
+            (($# >= 2)) || die "--watch requires seconds"
+            watch_seconds=$2
+            shift 2
+            ;;
+        --json)
+            json_mode=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "unknown option: $1"
+            ;;
+    esac
+done
+
+if [[ -n "$watch_seconds" && ! "$watch_seconds" =~ ^[1-9][0-9]*$ ]]; then
+    die "watch interval must be a positive integer number of seconds"
+fi
+if [[ -n "$thread_id" && -n "$cwd" ]]; then
+    die "use either --thread or --cwd, not both"
+fi
+
+if [[ -z "$cwd" ]]; then
+    cwd=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
+fi
+[[ -d "$cwd" ]] || die "directory does not exist: $cwd"
+
+codex_home_dir=${CODEX_HOME:-${HOME:-}/.codex}
+[[ -d "$codex_home_dir" ]] || die "Codex home does not exist: $codex_home_dir"
+
+sql_quote() {
+    local value=$1
+    value=${value//\'/\'\'}
+    printf "%s" "$value"
+}
+
+find_thread() {
+    local escaped_cwd
+    escaped_cwd=$(sql_quote "$cwd")
+    local db
+    local rows=""
+    for db in "$codex_home_dir"/state_*.sqlite; do
+        [[ -f "$db" ]] || continue
+        sqlite3 -json "$db" \
+            "select id, rollout_path, created_at_ms, updated_at_ms, tokens_used,
+                    model, reasoning_effort, cwd, title
+             from threads
+             where archived = 0 and cwd = '$escaped_cwd'" 2>/dev/null || true
+    done | jq -s 'add | sort_by(.updated_at_ms // 0) | last // empty'
+}
+
+read_thread() {
+    local escaped_id
+    escaped_id=$(sql_quote "$thread_id")
+    local db
+    for db in "$codex_home_dir"/state_*.sqlite; do
+        [[ -f "$db" ]] || continue
+        sqlite3 -json "$db" \
+            "select id, rollout_path, created_at_ms, updated_at_ms, tokens_used,
+                    model, reasoning_effort, cwd, title
+             from threads where id = '$escaped_id'" 2>/dev/null || true
+    done | jq -s 'add | sort_by(.updated_at_ms // 0) | last // empty'
+}
+
+snapshot() {
+    local thread
+    if [[ -n "$thread_id" ]]; then
+        thread=$(read_thread)
+    else
+        thread=$(find_thread)
+    fi
+    [[ -n "$thread" ]] || {
+        if [[ -n "$thread_id" ]]; then
+            die "thread not found: $thread_id"
+        fi
+        die "no unarchived Codex thread found for: $cwd"
+    }
+
+    local rollout_path
+    rollout_path=$(jq -r '.rollout_path // empty' <<<"$thread")
+    local rollout_usage='{}'
+    local last_usage='{}'
+    if [[ -n "$rollout_path" && -r "$rollout_path" ]]; then
+        # The latest event is sufficient and avoids loading the entire rollout
+        # history into memory. Tail is intentionally generous for tool-heavy
+        # turns where several events may follow the token_count event.
+        local token_event
+        token_event=$(tail -n 400 "$rollout_path" | jq -s '
+            map(select(.type == "event_msg"
+                and .payload.type == "token_count"
+                and .payload.info.total_token_usage != null))
+            | last
+            | .payload.info // {}' 2>/dev/null || printf '{}')
+        rollout_usage=$(jq '.total_token_usage // {}' <<<"$token_event")
+        last_usage=$(jq '.last_token_usage // {}' <<<"$token_event")
+    fi
+
+    jq -n \
+        --arg observed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --argjson thread "$thread" \
+        --argjson usage "$rollout_usage" \
+        --argjson last_usage "$last_usage" \
+        '{ok:true,observed_at:$observed_at,thread_id:$thread.id,title:$thread.title,
+          cwd:$thread.cwd,model:$thread.model,reasoning_effort:$thread.reasoning_effort,
+          created_at_ms:$thread.created_at_ms,updated_at_ms:$thread.updated_at_ms,
+          rollout_path:$thread.rollout_path,database_tokens_used:$thread.tokens_used,
+          usage:$usage,last_usage:$last_usage}'
+}
+
+print_snapshot() {
+    local current=$1
+    if (( json_mode )); then
+        printf '%s\n' "$current"
+        return
+    fi
+    jq -r '
+        "\(.observed_at) thread=\(.thread_id) model=\(.model // "?") " +
+        "total=\(.usage.total_tokens // .database_tokens_used // 0) " +
+        "input=\(.usage.input_tokens // 0) cached=\(.usage.cached_input_tokens // 0) " +
+        "output=\(.usage.output_tokens // 0) reasoning=\(.usage.reasoning_output_tokens // 0)"' \
+        <<<"$current"
+}
+
+while :; do
+    current=$(snapshot)
+    print_snapshot "$current"
+    [[ -n "$watch_seconds" ]] || break
+    sleep "$watch_seconds"
+done
