@@ -34,6 +34,12 @@ Manifest fields:
   insert_after       Required for rust_fragment; exact line to follow.
   indent             Optional prefix added to each non-empty fragment line.
   checks             Optional array of shell commands run in the copy.
+  baseline_checks    Optional commands that must fail on the unmodified
+                     source state. A passing baseline command rejects the
+                     task before VT is called.
+  mutations          Optional semantic test oracles. Each mutation declares
+                     name, patch_file, allowed_files, setup_checks, and one
+                     kill_check that must fail after the mutation is applied.
   assertions         Optional machine-checkable required/forbidden files and
                      text snippets in the candidate copy.
   allowed_files      Required for patch; exact relative paths the patch may change.
@@ -242,7 +248,39 @@ printf '%s\n\n' 'Task:' >>"$prompt_file"
 printf '%s\n' "$task" >>"$prompt_file"
 
 checks_json=$(jq -c '.checks // []' <<<"$manifest")
+baseline_checks_json=$(jq -c '.baseline_checks // []' <<<"$manifest")
+mutations_json=$(jq -c '.mutations // []' <<<"$manifest")
 assertions_json=$(jq -c '.assertions // {}' <<<"$manifest")
+jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' \
+    <<<"$checks_json" >/dev/null || die "manifest checks must be an array of non-empty strings"
+jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' \
+    <<<"$baseline_checks_json" >/dev/null ||
+    die "manifest baseline_checks must be an array of non-empty strings"
+jq -e 'type == "array" and all(.[];
+    type == "object" and
+    (.name | type) == "string" and (.name | length) > 0 and
+    (.patch_file | type) == "string" and (.patch_file | length) > 0 and
+    (.allowed_files | type) == "array" and (.allowed_files | length) > 0 and
+    all(.allowed_files[]; type == "string" and length > 0) and
+    (.setup_checks | type) == "array" and (.setup_checks | length) > 0 and
+    all(.setup_checks[]; type == "string" and length > 0) and
+    (.kill_check | type) == "string" and (.kill_check | length) > 0)' \
+    <<<"$mutations_json" >/dev/null ||
+    die "manifest mutations have an invalid shape"
+while IFS= read -r mutation; do
+    [[ -n "$mutation" ]] || continue
+    mutation_patch_file=$(jq -r '.patch_file' <<<"$mutation")
+    case "$mutation_patch_file" in
+        /*|../*|*/../*) die "mutation patch_file must be repository-relative: $mutation_patch_file" ;;
+    esac
+    [[ -r "$repo_root/$mutation_patch_file" ]] ||
+        die "mutation patch_file is not readable: $mutation_patch_file"
+    while IFS= read -r mutation_allowed_file; do
+        case "$mutation_allowed_file" in
+            /*|../*|*/../*) die "mutation allowed_file must be repository-relative: $mutation_allowed_file" ;;
+        esac
+    done < <(jq -r '.allowed_files[]' <<<"$mutation")
+done < <(jq -c '.[]' <<<"$mutations_json")
 jq -e 'type == "object" and
     ((.required_files // []) | type == "array" and all(.[]; type == "string" and length > 0)) and
     ((.forbidden_files // []) | type == "array" and all(.[]; type == "string" and length > 0)) and
@@ -269,11 +307,42 @@ for assertion_group in required_text forbidden_text; do
         esac
     done < <(jq -r ".${assertion_group}[]?.file" <<<"$assertions_json")
 done
+
+baseline_results='[]'
+baseline_index=0
+while IFS= read -r baseline_command; do
+    baseline_index=$((baseline_index + 1))
+    baseline_output="$run_dir/baseline-check-$baseline_index.txt"
+    if (cd "$base_root" && bash -c "$baseline_command") >"$baseline_output" 2>&1; then
+        task_finished_ms=$(date +%s%3N)
+        wall_time_ms=$((task_finished_ms - task_started_ms))
+        jq -n \
+            --arg name "$name" \
+            --arg stage "baseline-check" \
+            --arg diagnostic "baseline check unexpectedly passed: $baseline_command" \
+            --arg command "$baseline_command" \
+            --arg output "$baseline_output" \
+            --argjson wall_time_ms "$wall_time_ms" \
+            '{ok:false,task:$name,stage:$stage,diagnostic:$diagnostic,
+              baseline_check:{command:$command,output:$output},
+              run_usage:{attempts:0,prompt_tokens:0,completion_tokens:0,
+                total_tokens:0,cached_input_tokens:0,reasoning_tokens:0,
+                elapsed_ms:0},wall_time_ms:$wall_time_ms}'
+        exit 1
+    fi
+    baseline_results=$(jq -n \
+        --argjson results "$baseline_results" \
+        --arg command "$baseline_command" \
+        --arg output "$baseline_output" \
+        '$results + [{command:$command,failed_as_expected:true,output:$output}]')
+done < <(jq -r '.[]' <<<"$baseline_checks_json")
+
 attempt=0
 last_stage=""
 last_diagnostic=""
 passed=0
 attempts_usage='[]'
+successful_mutation_results='[]'
 
 while (( attempt < max_attempts )); do
     attempt=$((attempt + 1))
@@ -285,6 +354,21 @@ while (( attempt < max_attempts )); do
     attempt_response="$attempt_dir/response.json"
     attempt_candidate="$attempt_dir/candidate.txt"
     attempt_stderr="$attempt_dir/vt.stderr"
+    mutation_results='[]'
+    attempt_prompt="$prompt_file"
+    if (( attempt > 1 )); then
+        attempt_prompt="$attempt_dir/prompt.txt"
+        cp -- "$prompt_file" "$attempt_prompt"
+        {
+            printf '\n%s\n' 'The previous candidate was rejected by the validator.'
+            printf 'Failure stage: %s\n' "$last_stage"
+            printf '%s\n' 'Validator diagnostic:'
+            printf '%s\n' "$last_diagnostic" | tail -n 20
+            printf '%s\n' 'Repair rules: reproduce literal code required by the original task character-for-character.'
+            printf '%s\n' 'Ignore diagnostic suggestions that conflict with the original signature or output constraints.'
+            printf '%s\n' 'Return a new artifact that corrects this failure while preserving every original constraint.'
+        } >>"$attempt_prompt"
+    fi
 
     if "$script_dir/vt" \
         --format json \
@@ -296,7 +380,7 @@ while (( attempt < max_attempts )); do
         --min-p "$min_p" \
         --retries 0 \
         --system "$system_prompt" \
-        --file "$prompt_file" >"$attempt_response" 2>"$attempt_stderr"; then
+        --file "$attempt_prompt" >"$attempt_response" 2>"$attempt_stderr"; then
         jq -r '.answer // empty' "$attempt_response" >"$attempt_candidate"
     else
         last_stage="vt"
@@ -527,6 +611,95 @@ while (( attempt < max_attempts )); do
         continue
     fi
 
+    mutation_failed=0
+    mutation_index=0
+    while IFS= read -r mutation; do
+        [[ -n "$mutation" ]] || continue
+        mutation_index=$((mutation_index + 1))
+        mutation_name=$(jq -r '.name' <<<"$mutation")
+        mutation_patch_file=$(jq -r '.patch_file' <<<"$mutation")
+        mutation_allowed_files=$(jq -c '.allowed_files' <<<"$mutation")
+        mutation_kill_check=$(jq -r '.kill_check' <<<"$mutation")
+        mutation_root="$attempt_dir/mutation-$mutation_index"
+        mkdir -p "$mutation_root"
+        cp -a "$candidate_root/." "$mutation_root/"
+
+        if ! mutation_paths=$(cd "$mutation_root" &&
+            git apply --numstat "$repo_root/$mutation_patch_file" 2>&1); then
+            mutation_failed=1
+            last_stage="mutation-setup"
+            last_diagnostic="mutation '$mutation_name' patch is unreadable: $mutation_paths"
+            break
+        fi
+        mutation_scope_failed=0
+        while IFS=$'\t' read -r _added _deleted mutation_path; do
+            [[ -n "$mutation_path" ]] || continue
+            if ! jq -e --arg path "$mutation_path" 'index($path) != null' \
+                <<<"$mutation_allowed_files" >/dev/null; then
+                mutation_scope_failed=1
+                last_stage="mutation-setup"
+                last_diagnostic="mutation '$mutation_name' changes file outside allowed_files: $mutation_path"
+                break
+            fi
+        done <<<"$mutation_paths"
+        if (( mutation_scope_failed )); then
+            mutation_failed=1
+            break
+        fi
+        if ! mutation_diagnostic=$(cd "$mutation_root" &&
+            git apply --check --whitespace=error "$repo_root/$mutation_patch_file" 2>&1); then
+            mutation_failed=1
+            last_stage="mutation-setup"
+            last_diagnostic="mutation '$mutation_name' does not apply: $mutation_diagnostic"
+            break
+        fi
+        if ! mutation_diagnostic=$(cd "$mutation_root" &&
+            git apply --whitespace=error "$repo_root/$mutation_patch_file" 2>&1); then
+            mutation_failed=1
+            last_stage="mutation-setup"
+            last_diagnostic="mutation '$mutation_name' failed while applying: $mutation_diagnostic"
+            break
+        fi
+
+        mutation_setup_index=0
+        mutation_setup_failed=0
+        while IFS= read -r mutation_setup_check; do
+            mutation_setup_index=$((mutation_setup_index + 1))
+            mutation_setup_output="$attempt_dir/mutation-$mutation_index-setup-$mutation_setup_index.txt"
+            if ! (cd "$mutation_root" && bash -c "$mutation_setup_check") \
+                >"$mutation_setup_output" 2>&1; then
+                mutation_setup_failed=1
+                mutation_failed=1
+                last_stage="mutation-setup"
+                last_diagnostic="mutation '$mutation_name' setup check failed: $(tail -n 40 "$mutation_setup_output")"
+                break
+            fi
+        done < <(jq -r '.setup_checks[]?' <<<"$mutation")
+        if (( mutation_setup_failed )); then
+            break
+        fi
+
+        mutation_output="$attempt_dir/mutation-$mutation_index-kill-check.txt"
+        if (cd "$mutation_root" && bash -c "$mutation_kill_check") \
+            >"$mutation_output" 2>&1; then
+            mutation_failed=1
+            last_stage="mutation"
+            last_diagnostic="mutation '$mutation_name' survived because its kill_check passed"
+            break
+        fi
+        mutation_results=$(jq -n \
+            --argjson results "$mutation_results" \
+            --arg name "$mutation_name" \
+            --arg patch_file "$mutation_patch_file" \
+            --arg kill_check "$mutation_kill_check" \
+            --arg output "$mutation_output" \
+            '$results + [{name:$name,patch_file:$patch_file,killed:true,
+                          kill_check:$kill_check,output:$output}]')
+    done < <(jq -c '.[]' <<<"$mutations_json")
+    if (( mutation_failed )); then
+        continue
+    fi
+
     if [[ "$output_kind" == patch ]]; then
         cp -- "$attempt_candidate" "$run_dir/candidate.patch"
     else
@@ -535,6 +708,7 @@ while (( attempt < max_attempts )); do
     (cd "$candidate_root" && git diff --binary --no-ext-diff) >"$run_dir/result.patch"
     response_file="$attempt_response"
     candidate_file="$attempt_candidate"
+    successful_mutation_results=$mutation_results
     passed=1
     break
 done
@@ -565,7 +739,13 @@ if (( passed )); then
         --argjson wall_time_ms "$wall_time_ms" \
         --argjson attempts "$attempt" \
         --argjson context_commands "$context_count" \
-        '{ok:true,task:$name,attempts:$attempts,context_commands:$context_commands,artifact:$artifact,candidate:$candidate,usage:$usage,run_usage:$run_usage,wall_time_ms:$wall_time_ms}'
+        --argjson baseline_checks "$baseline_results" \
+        --argjson mutations "$successful_mutation_results" \
+        '{ok:true,task:$name,attempts:$attempts,
+          context_commands:$context_commands,artifact:$artifact,
+          candidate:$candidate,baseline_checks:$baseline_checks,
+          mutations:$mutations,usage:$usage,run_usage:$run_usage,
+          wall_time_ms:$wall_time_ms}'
 else
     jq -n \
         --arg name "$name" \
@@ -576,6 +756,11 @@ else
         --argjson wall_time_ms "$wall_time_ms" \
         --argjson attempts "$attempt" \
         --argjson context_commands "$context_count" \
-        '{ok:false,task:$name,attempts:$attempts,context_commands:$context_commands,stage:$stage,diagnostic:$diagnostic,run_dir:$run_dir,run_usage:$run_usage,wall_time_ms:$wall_time_ms}'
+        --argjson baseline_checks "$baseline_results" \
+        '{ok:false,task:$name,attempts:$attempts,
+          context_commands:$context_commands,stage:$stage,
+          diagnostic:$diagnostic,baseline_checks:$baseline_checks,
+          run_dir:$run_dir,run_usage:$run_usage,
+          wall_time_ms:$wall_time_ms}'
     exit 1
 fi

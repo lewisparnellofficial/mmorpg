@@ -30,8 +30,42 @@
         "cargo fmt --manifest-path crates/mmorpg-core/Cargo.toml -- --check",
         "cargo test -p mmorpg-core"
       ],
+      "baseline_checks": [
+        "grep -Fq 'fn position_distance_squared_uses_euclidean_distance' crates/mmorpg-core/src/lib.rs"
+      ],
+      "mutations": [
+        {
+          "name": "distance-must-use-squared-euclidean-length",
+          "patch_file": "experiments/vibethinker/mutations/position-distance-manhattan.patch",
+          "allowed_files": [
+            "crates/mmorpg-core/src/lib.rs"
+          ],
+          "setup_checks": [
+            "cargo check -p mmorpg-core"
+          ],
+          "kill_check": "cargo test -p mmorpg-core position_distance_squared_uses_euclidean_distance"
+        }
+      ],
+      "assertions": {
+        "required_text": [
+          {
+            "file": "crates/mmorpg-core/src/lib.rs",
+            "text": "fn position_distance_squared_uses_euclidean_distance()"
+          },
+          {
+            "file": "crates/mmorpg-core/src/lib.rs",
+            "text": "assert!((actual - 25.0).abs() < f32::EPSILON);"
+          }
+        ],
+        "forbidden_text": [
+          {
+            "file": "crates/mmorpg-core/src/lib.rs",
+            "text": "pub fn position_distance_squared_uses_euclidean_distance"
+          }
+        ]
+      },
       "semantic_constraints": [
-        "Return exactly one test function.",
+        "Copy the requested test fragment character-for-character.",
         "Do not modify Position or other production methods."
       ]
     },
@@ -46,16 +80,37 @@
         "cargo fmt --manifest-path crates/mmorpg-server/Cargo.toml -- --check",
         "cargo test -p mmorpg-server"
       ],
+      "baseline_checks": [
+        "grep -Fq 'fn parser_rejects_empty_command' crates/mmorpg-server/src/main.rs"
+      ],
+      "assertions": {
+        "required_text": [
+          {
+            "file": "crates/mmorpg-server/src/main.rs",
+            "text": "fn parser_rejects_empty_command()"
+          },
+          {
+            "file": "crates/mmorpg-server/src/main.rs",
+            "text": "assert!(matches!(parse_line(\"\", None), Err(message) if message == \"empty command\"));"
+          }
+        ],
+        "forbidden_text": [
+          {
+            "file": "crates/mmorpg-server/src/main.rs",
+            "text": "pub fn parser_rejects_empty_command"
+          }
+        ]
+      },
       "semantic_constraints": [
         "Copy the requested fragment character-for-character.",
         "Do not change parser production code."
       ]
     },
     {
-      "id": "position-related-suite",
-      "description": "Add same-point, three-four-five, and symmetry distance-squared regression tests after the single test succeeds.",
-      "manifest": "experiments/vibethinker/tasks/position-distance-suite.json",
-      "depends_on": ["position-single", "parser-copy"],
+      "id": "position-same-point",
+      "description": "Add one same-point distance-squared regression test after the Euclidean-distance test succeeds.",
+      "manifest": "experiments/vibethinker/tasks/position-distance-same-point-test.json",
+      "depends_on": ["position-single"],
       "target_files": ["crates/mmorpg-core/src/lib.rs"],
       "context_commands": [
         {
@@ -66,10 +121,98 @@
       "output_kind": "rust_fragment",
       "acceptance_checks": [
         "cargo fmt --manifest-path crates/mmorpg-core/Cargo.toml -- --check",
-        "cargo test -p mmorpg-core"
+        "cargo test -p mmorpg-core position_distance_squared_same_point"
       ],
+      "baseline_checks": [
+        "grep -Fq 'fn position_distance_squared_same_point' crates/mmorpg-core/src/lib.rs"
+      ],
+      "mutations": [
+        {
+          "name": "same-point-distance-must-be-zero",
+          "patch_file": "experiments/vibethinker/mutations/position-distance-offset.patch",
+          "allowed_files": [
+            "crates/mmorpg-core/src/lib.rs"
+          ],
+          "setup_checks": [
+            "cargo check -p mmorpg-core"
+          ],
+          "kill_check": "cargo test -p mmorpg-core position_distance_squared_same_point"
+        }
+      ],
+      "assertions": {
+        "required_text": [
+          {
+            "file": "crates/mmorpg-core/src/lib.rs",
+            "text": "fn position_distance_squared_same_point()"
+          },
+          {
+            "file": "crates/mmorpg-core/src/lib.rs",
+            "text": "assert!((actual - 0.0).abs() < f32::EPSILON);"
+          }
+        ],
+        "forbidden_text": [
+          {
+            "file": "crates/mmorpg-core/src/lib.rs",
+            "text": "pub fn position_distance_squared_same_point"
+          }
+        ]
+      },
       "semantic_constraints": [
-        "Return exactly three test functions with the requested names.",
+        "Copy the requested test fragment character-for-character.",
+        "Do not modify Position or other production methods."
+      ]
+    },
+    {
+      "id": "position-symmetry",
+      "description": "Add one mutation-checked symmetry regression test after the same-point test succeeds.",
+      "manifest": "experiments/vibethinker/tasks/position-distance-symmetry-test.json",
+      "depends_on": ["position-same-point"],
+      "target_files": ["crates/mmorpg-core/src/lib.rs"],
+      "context_commands": [
+        {
+          "label": "position implementation",
+          "command": "sed -n '211,230p' crates/mmorpg-core/src/lib.rs"
+        }
+      ],
+      "output_kind": "rust_fragment",
+      "acceptance_checks": [
+        "grep -Fq 'fn position_distance_squared_is_symmetric' crates/mmorpg-core/src/lib.rs",
+        "cargo fmt --manifest-path crates/mmorpg-core/Cargo.toml -- --check",
+        "cargo test -p mmorpg-core position_distance_squared_is_symmetric"
+      ],
+      "baseline_checks": [
+        "grep -Fq 'fn position_distance_squared_is_symmetric' crates/mmorpg-core/src/lib.rs"
+      ],
+      "mutations": [
+        {
+          "name": "distance-must-be-symmetric",
+          "patch_file": "experiments/vibethinker/mutations/position-distance-asymmetric.patch",
+          "allowed_files": ["crates/mmorpg-core/src/lib.rs"],
+          "setup_checks": ["cargo check -p mmorpg-core"],
+          "kill_check": "cargo test -p mmorpg-core position_distance_squared_is_symmetric"
+        }
+      ],
+      "assertions": {
+        "required_text": [
+          {
+            "file": "crates/mmorpg-core/src/lib.rs",
+            "text": "fn position_distance_squared_is_symmetric()"
+          },
+          {
+            "file": "crates/mmorpg-core/src/lib.rs",
+            "text": "assert!((forward - reverse).abs() < f32::EPSILON);"
+          }
+        ],
+        "forbidden_text": [
+          {
+            "file": "crates/mmorpg-core/src/lib.rs",
+            "text": "pub fn position_distance_squared_is_symmetric"
+          }
+        ]
+      },
+      "semantic_constraints": [
+        "Copy the requested test fragment character-for-character.",
+        "Call distance_squared in both directions.",
         "Do not modify Position or other production methods."
       ]
     }

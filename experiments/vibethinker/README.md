@@ -18,8 +18,14 @@ experiments/vibethinker/
 ├── tasks/
 │   ├── position-distance-suite.json
 │   ├── position-distance-test.json
+│   ├── position-distance-same-point-test.json
+│   ├── position-distance-symmetry-test.json
 │   ├── parser-empty-command-smoke.json
 │   └── parser-empty-command-test.json
+├── mutations/
+│   ├── position-distance-asymmetric.patch
+│   ├── position-distance-manhattan.patch
+│   └── position-distance-offset.patch
 ├── bundles/
 │   ├── position-suite.json
 │   ├── orchestrator-test.json
@@ -30,6 +36,7 @@ experiments/vibethinker/
 │   ├── test-vt-live-separation.sh
 │   ├── test-vt-response-separation.sh
 │   ├── test-vt-creator-profile.sh
+│   ├── test-vt-task-oracles.sh
 │   └── test-vt-orchestrate.sh
 └── results/
     └── .gitkeep
@@ -278,10 +285,42 @@ commands and temporary validation. It defaults to the current repository.
 `vt-orchestrate` sets it to the cumulative integration repository so a
 dependent leaf can see artifacts that its prerequisites introduced.
 
+Two optional oracle fields let the runner reject plausible but semantically
+weak output:
+
+- `baseline_checks` are commands that must fail in the unmodified source
+  snapshot. If one passes, the task is rejected before VT is called. This
+  establishes that the declared oracle can distinguish the baseline from the
+  desired result. A nonzero exit can also represent an infrastructure failure,
+  so these commands should be small, deterministic probes whose failure mode
+  is unambiguous.
+- `mutations` apply a bounded, planner-supplied patch to a copy of an otherwise
+  accepted candidate. Each mutation's `setup_checks` must pass, proving the
+  mutant still compiles or is otherwise valid, and its `kill_check` must fail.
+  A generated test that lets the deliberately faulty behavior pass is rejected
+  at the `mutation` stage. Setup checks rule out malformed or uncompilable
+  mutants, but the kill check should still be narrowly focused so an unrelated
+  failure cannot masquerade as a killed mutant.
+
+Run the deterministic positive and negative oracle cases with:
+
+```bash
+./experiments/vibethinker/tests/test-vt-task-oracles.sh
+```
+
 Successful and failed results include `run_usage` (the sum of every VT
 attempt), `usage` for the final attempt when one succeeded, and
 `wall_time_ms`. This makes retries and validation overhead visible instead of
 counting only the final answer.
+
+When an attempt fails, the next attempt receives the original prompt plus the
+failure stage and the last 20 diagnostic lines. It explicitly prioritizes
+literal snippets and original output constraints over conflicting compiler
+suggestions. The bounded feedback is saved as `attempt-N/prompt.txt`; it does
+not expose an unrestricted shell or ask the model to diagnose the repository.
+This repaired compiler errors in a live same-point and symmetry trial, and the
+deterministic oracle test verifies that the second prompt contains the
+rejection feedback.
 
 When `vt-orchestrate` invokes `vt-task`, it sets `VT_TASK_PLAN_FILE` to the
 task's normalized `plan.json`. `vt-task` adds that plan's objective and
@@ -318,13 +357,24 @@ candidate. Every task must provide:
   ],
   "output_kind": "rust_fragment",
   "acceptance_checks": ["cargo test -p example"],
+  "baseline_checks": ["cargo test -p example focused_test"],
+  "mutations": [
+    {
+      "name": "focused-behavior-regression",
+      "patch_file": "experiments/vibethinker/mutations/example.patch",
+      "allowed_files": ["crates/example/src/lib.rs"],
+      "setup_checks": ["cargo check -p example"],
+      "kill_check": "cargo test -p example focused_test"
+    }
+  ],
   "semantic_constraints": ["Do not modify production behavior."]
 }
 ```
 
 `manifest` is optional. When present, it points to an existing executable
 leaf specification and the orchestrator requires the plan's `target_files`,
-`context_commands`, `output_kind`, and `acceptance_checks` to match it. When
+`context_commands`, `output_kind`, `acceptance_checks`, `baseline_checks`, and
+`mutations` to match it. When
 omitted, the task's `task`, `insert_after`, and output fields are materialized
 into a temporary manifest inside the execution directory. This lets Codex
 emit one self-contained feature plan without manually creating a second
@@ -375,9 +425,12 @@ generated from the state produced by the earlier task. The deterministic
 scheduler test uses `--runner` to inject a fake task runner; normal operation
 uses `scripts/vt-task`.
 The runnable `position-suite.json` is the canonical example of the complete
-plan format; `inline-plan-smoke.json` demonstrates a self-contained leaf
-without a separate manifest; `orchestrator-test.json` exercises rejection and
-dependency blocking; `cumulative-integration-test.json` proves that dependency
-state is visible; and `integration-conflict-test.json` proves that stale
-artifacts are rejected. These deterministic test bundles do not invoke the
-model.
+plan format. Its leaf prompts intentionally use complete exact-copy skeletons
+with zero reasoning budget because broader live synthesis remained stochastic
+even with diagnostic retries. The baseline, exact-text, mutation, and combined
+checks remain independent of that model contract. `inline-plan-smoke.json`
+demonstrates a self-contained leaf without a separate manifest;
+`orchestrator-test.json` exercises rejection and dependency blocking;
+`cumulative-integration-test.json` proves that dependency state is visible;
+and `integration-conflict-test.json` proves that stale artifacts are rejected.
+These deterministic test bundles do not invoke the model.

@@ -13,6 +13,27 @@
   "top_k": 40,
   "min_p": 0.05,
   "max_attempts": 1,
+  "assertions": {
+    "required_text": [
+      {
+        "file": "crates/mmorpg-server/src/main.rs",
+        "text": "fn parser_rejects_empty_command()"
+      },
+      {
+        "file": "crates/mmorpg-server/src/main.rs",
+        "text": "assert!(matches!(parse_line(\"\", None), Err(message) if message == \"empty command\"));"
+      }
+    ],
+    "forbidden_text": [
+      {
+        "file": "crates/mmorpg-server/src/main.rs",
+        "text": "pub fn parser_rejects_empty_command"
+      }
+    ]
+  },
+  "baseline_checks": [
+    "grep -Fq 'fn parser_rejects_empty_command' crates/mmorpg-server/src/main.rs"
+  ],
   "checks": [
     "cargo fmt --manifest-path crates/mmorpg-server/Cargo.toml -- --check",
     "cargo test -p mmorpg-server"

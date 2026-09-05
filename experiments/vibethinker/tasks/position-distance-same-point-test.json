@@ -1,5 +1,5 @@
 {
-  "name": "position-distance-test",
+  "name": "position-distance-same-point-test",
   "output_kind": "rust_fragment",
   "target_file": "crates/mmorpg-core/src/lib.rs",
   "insert_after": "    use super::*;",
@@ -10,7 +10,7 @@
       "command": "sed -n '211,230p' crates/mmorpg-core/src/lib.rs"
     }
   ],
-  "task": "Return exactly this Rust fragment, character-for-character, with no explanation or Markdown fences:\n#[test]\nfn position_distance_squared_uses_euclidean_distance() {\n    let first = Position::new(0.0, 0.0);\n    let second = Position::new(3.0, 4.0);\n    let actual = first.distance_squared(second);\n    assert!((actual - 25.0).abs() < f32::EPSILON);\n}",
+  "task": "Return exactly this Rust fragment, character-for-character, with no explanation or Markdown fences:\n#[test]\nfn position_distance_squared_same_point() {\n    let position = Position::new(2.0, 3.0);\n    let actual = position.distance_squared(position);\n    assert!((actual - 0.0).abs() < f32::EPSILON);\n}",
   "system": "Copy the requested artifact exactly. Return only the artifact.",
   "max_tokens": 256,
   "reasoning_budget": 0,
@@ -23,34 +23,34 @@
     "required_text": [
       {
         "file": "crates/mmorpg-core/src/lib.rs",
-        "text": "fn position_distance_squared_uses_euclidean_distance()"
+        "text": "fn position_distance_squared_same_point()"
       },
       {
         "file": "crates/mmorpg-core/src/lib.rs",
-        "text": "assert!((actual - 25.0).abs() < f32::EPSILON);"
+        "text": "assert!((actual - 0.0).abs() < f32::EPSILON);"
       }
     ],
     "forbidden_text": [
       {
         "file": "crates/mmorpg-core/src/lib.rs",
-        "text": "pub fn position_distance_squared_uses_euclidean_distance"
+        "text": "pub fn position_distance_squared_same_point"
       }
     ]
   },
   "baseline_checks": [
-    "grep -Fq 'fn position_distance_squared_uses_euclidean_distance' crates/mmorpg-core/src/lib.rs"
+    "grep -Fq 'fn position_distance_squared_same_point' crates/mmorpg-core/src/lib.rs"
   ],
   "mutations": [
     {
-      "name": "distance-must-use-squared-euclidean-length",
-      "patch_file": "experiments/vibethinker/mutations/position-distance-manhattan.patch",
+      "name": "same-point-distance-must-be-zero",
+      "patch_file": "experiments/vibethinker/mutations/position-distance-offset.patch",
       "allowed_files": ["crates/mmorpg-core/src/lib.rs"],
       "setup_checks": ["cargo check -p mmorpg-core"],
-      "kill_check": "cargo test -p mmorpg-core position_distance_squared_uses_euclidean_distance"
+      "kill_check": "cargo test -p mmorpg-core position_distance_squared_same_point"
     }
   ],
   "checks": [
     "cargo fmt --manifest-path crates/mmorpg-core/Cargo.toml -- --check",
-    "cargo test -p mmorpg-core"
+    "cargo test -p mmorpg-core position_distance_squared_same_point"
   ]
 }

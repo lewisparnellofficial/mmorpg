@@ -1,0 +1,15 @@
+diff --git a/crates/mmorpg-core/src/lib.rs b/crates/mmorpg-core/src/lib.rs
+--- a/crates/mmorpg-core/src/lib.rs
++++ b/crates/mmorpg-core/src/lib.rs
+@@ -224,5 +224,10 @@ impl Position {
+     fn distance_squared(self, other: Self) -> f32 {
+         let dx = self.x - other.x;
+         let dy = self.y - other.y;
+-        dx * dx + dy * dy
++        let squared_distance = dx * dx + dy * dy;
++        if self.x > other.x {
++            squared_distance + 1.0
++        } else {
++            squared_distance
++        }
+     }

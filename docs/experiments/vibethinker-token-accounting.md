@@ -156,6 +156,32 @@ passed the focused test. A parser test that required more inference failed the
 runner's format/compiler checks even after two attempts. These are local
 measurements, not a general claim about VT or Codex.
 
+A later semantic-oracle run added baseline-failure checks and a compiling
+asymmetric mutant for the generated symmetry test. The original three-test
+leaf remained stochastic and failed one live bundle after returning `-> bool`
+test functions twice. Splitting it into three one-function leaves produced a
+mechanically successful four-task bundle with 2,230 total VT tokens and 16,671
+ms end-to-end wall time, but artifact review found an unintended public test
+signature. After adding structural assertions, another compiling artifact used
+a tautology instead of checking the expected distance; the symmetry-only
+mutant could not detect that error.
+
+The first trial with a distinct compiling mutant for every distance leaf
+accepted all four leaves on their first attempt, killed all three mutants,
+passed combined core/server checks, used 2,301 total VT tokens, and took 18,588
+ms end to end. Two immediate synthesis-mode reruns then failed on malformed
+symmetry and same-point tests despite bounded diagnostic feedback, confirming
+that the successful sample was not a reliability estimate.
+
+The canonical bundle was narrowed to complete exact-copy skeletons with a zero
+reasoning budget—the only mode that the preceding context experiment had shown
+to be consistent. Its final live run accepted 4/4 leaves on their first
+attempts, passed four baseline probes and four exact-text contracts, killed all
+three mutants, and passed combined checks. It used 1,431 total VT tokens and
+12,855 ms end to end. This supports measuring semantically accepted integrated
+features, and it makes the present limitation explicit: broader code synthesis
+is not yet reliable enough to be the canonical handoff.
+
 ## Current limitation
 
 The token watcher is intentionally read-only and local. It does not change

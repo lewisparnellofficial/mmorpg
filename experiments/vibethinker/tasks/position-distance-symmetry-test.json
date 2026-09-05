@@ -1,0 +1,57 @@
+{
+  "name": "position-distance-symmetry-test",
+  "output_kind": "rust_fragment",
+  "target_file": "crates/mmorpg-core/src/lib.rs",
+  "insert_after": "    use super::*;",
+  "indent": "    ",
+  "context_commands": [
+    {
+      "label": "position implementation",
+      "command": "sed -n '211,230p' crates/mmorpg-core/src/lib.rs"
+    }
+  ],
+  "task": "Return exactly this Rust fragment, character-for-character, with no explanation or Markdown fences:\n#[test]\nfn position_distance_squared_is_symmetric() {\n    let first = Position::new(1.0, 2.0);\n    let second = Position::new(4.0, 6.0);\n    let forward = first.distance_squared(second);\n    let reverse = second.distance_squared(first);\n    assert!((forward - reverse).abs() < f32::EPSILON);\n}",
+  "system": "Copy the requested artifact exactly. Return only the artifact.",
+  "max_tokens": 256,
+  "reasoning_budget": 0,
+  "temperature": 0.2,
+  "top_p": 0.95,
+  "top_k": 40,
+  "min_p": 0.05,
+  "max_attempts": 2,
+  "assertions": {
+    "required_text": [
+      {
+        "file": "crates/mmorpg-core/src/lib.rs",
+        "text": "fn position_distance_squared_is_symmetric()"
+      },
+      {
+        "file": "crates/mmorpg-core/src/lib.rs",
+        "text": "assert!((forward - reverse).abs() < f32::EPSILON);"
+      }
+    ],
+    "forbidden_text": [
+      {
+        "file": "crates/mmorpg-core/src/lib.rs",
+        "text": "pub fn position_distance_squared_is_symmetric"
+      }
+    ]
+  },
+  "baseline_checks": [
+    "grep -Fq 'fn position_distance_squared_is_symmetric' crates/mmorpg-core/src/lib.rs"
+  ],
+  "mutations": [
+    {
+      "name": "distance-must-be-symmetric",
+      "patch_file": "experiments/vibethinker/mutations/position-distance-asymmetric.patch",
+      "allowed_files": ["crates/mmorpg-core/src/lib.rs"],
+      "setup_checks": ["cargo check -p mmorpg-core"],
+      "kill_check": "cargo test -p mmorpg-core position_distance_squared_is_symmetric"
+    }
+  ],
+  "checks": [
+    "grep -Fq 'fn position_distance_squared_is_symmetric' crates/mmorpg-core/src/lib.rs",
+    "cargo fmt --manifest-path crates/mmorpg-core/Cargo.toml -- --check",
+    "cargo test -p mmorpg-core position_distance_squared_is_symmetric"
+  ]
+}

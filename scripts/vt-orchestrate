@@ -54,6 +54,11 @@ Bundle fields:
                                 the executable manifest.
                   acceptance_checks
                                 Required array matching manifest.checks.
+                  baseline_checks
+                                Optional commands that must fail before VT is
+                                called; must match manifest.baseline_checks.
+                  mutations     Optional semantic test oracles matching
+                                manifest.mutations.
                   semantic_constraints
                                 Required non-empty statements that automated
                                 checks cannot express.
@@ -153,6 +158,7 @@ if (( ! max_parallel_cli )); then
 fi
 [[ "$max_parallel" =~ ^[1-9][0-9]*$ ]] || die "max parallel must be a positive integer"
 
+bundle_started_ms=$(date +%s%3N)
 timestamp=$(date +%Y%m%d-%H%M%S)
 run_dir="$output_dir/$bundle_name-$timestamp-$$"
 
@@ -160,7 +166,8 @@ declare -a task_ids
 declare -A task_manifest task_manifest_source task_manifest_file task_generated task_leaf_json
 declare -A task_deps task_status task_pid task_dir task_result_file
 declare -A task_description task_target_files task_context_commands
-declare -A task_output_kind task_acceptance_checks task_constraints task_assertions
+declare -A task_output_kind task_acceptance_checks task_baseline_checks
+declare -A task_mutations task_constraints task_assertions
 
 validate_string_array() {
     local value=$1
@@ -224,6 +231,32 @@ validate_assertions() {
     done
 }
 
+validate_mutations() {
+    local value=$1
+    local label=$2
+    local mutation patch_file allowed_files
+    jq -e 'type == "array" and all(.[];
+        type == "object" and
+        (.name | type) == "string" and (.name | length) > 0 and
+        (.patch_file | type) == "string" and (.patch_file | length) > 0 and
+        (.allowed_files | type) == "array" and (.allowed_files | length) > 0 and
+        all(.allowed_files[]; type == "string" and length > 0) and
+        (.setup_checks | type) == "array" and (.setup_checks | length) > 0 and
+        all(.setup_checks[]; type == "string" and length > 0) and
+        (.kill_check | type) == "string" and (.kill_check | length) > 0)' \
+        <<<"$value" >/dev/null || die "$label has an invalid mutation shape"
+    while IFS= read -r mutation; do
+        [[ -n "$mutation" ]] || continue
+        patch_file=$(jq -r '.patch_file' <<<"$mutation")
+        validate_relative_paths "[$(jq -Rn --arg path "$patch_file" '$path')]" \
+            "$label.patch_file"
+        [[ -r "$repo_root/$patch_file" ]] ||
+            die "$label patch_file is not readable: $patch_file"
+        allowed_files=$(jq -c '.allowed_files' <<<"$mutation")
+        validate_relative_paths "$allowed_files" "$label.allowed_files"
+    done < <(jq -c '.[]' <<<"$value")
+}
+
 plan_tasks_json='[]'
 
 while IFS= read -r task_json; do
@@ -262,6 +295,8 @@ while IFS= read -r task_json; do
     context_commands=$(jq -c '.context_commands // []' <<<"$task_json")
     output_kind=$(jq -r '.output_kind // empty' <<<"$task_json")
     declared_checks=$(jq -c '.acceptance_checks // []' <<<"$task_json")
+    baseline_checks=$(jq -c '.baseline_checks // []' <<<"$task_json")
+    mutations=$(jq -c '.mutations // []' <<<"$task_json")
     constraints=$(jq -c '.semantic_constraints // []' <<<"$task_json")
     assertions=$(jq -c '.assertions // {}' <<<"$task_json")
     validate_relative_paths "$target_files" "task '$id'.target_files"
@@ -269,6 +304,8 @@ while IFS= read -r task_json; do
     [[ "$output_kind" == rust_fragment || "$output_kind" == patch ]] ||
         die "task '$id'.output_kind must be rust_fragment or patch"
     validate_string_array "$declared_checks" "task '$id'.acceptance_checks"
+    validate_string_array "$baseline_checks" "task '$id'.baseline_checks"
+    validate_mutations "$mutations" "task '$id'.mutations"
     validate_string_array "$constraints" "task '$id'.semantic_constraints"
     validate_assertions "$assertions" "task '$id'.assertions"
 
@@ -301,9 +338,13 @@ while IFS= read -r task_json; do
             --arg insert_after "${inline_insert_after:-}" \
             --arg indent "$(jq -r '.indent // empty' <<<"$task_json")" \
             --argjson checks "$declared_checks" \
+            --argjson baseline_checks "$baseline_checks" \
+            --argjson mutations "$mutations" \
             --argjson assertions "$assertions" \
             '{name:$name,task:$task,context_commands:$context_commands,
-              output_kind:$output_kind,checks:$checks,assertions:$assertions}
+              output_kind:$output_kind,checks:$checks,
+              baseline_checks:$baseline_checks,mutations:$mutations,
+              assertions:$assertions}
              + (if $output_kind == "rust_fragment" then
                   {target_file:$target_files[0],insert_after:$insert_after,
                    indent:$indent}
@@ -339,6 +380,15 @@ while IFS= read -r task_json; do
     jq -n -e --argjson actual "$declared_checks" --argjson expected "$manifest_checks" \
         '$actual == $expected' >/dev/null ||
         die "task '$id' acceptance_checks do not match manifest.checks"
+    manifest_baseline_checks=$(jq -c '.baseline_checks // []' <<<"$manifest_json")
+    jq -n -e --argjson actual "$baseline_checks" \
+        --argjson expected "$manifest_baseline_checks" \
+        '$actual == $expected' >/dev/null ||
+        die "task '$id' baseline_checks do not match manifest.baseline_checks"
+    manifest_mutations=$(jq -c '.mutations // []' <<<"$manifest_json")
+    jq -n -e --argjson actual "$mutations" --argjson expected "$manifest_mutations" \
+        '$actual == $expected' >/dev/null ||
+        die "task '$id' mutations do not match manifest.mutations"
     manifest_assertions=$(jq -c '.assertions // {}' <<<"$manifest_json")
     jq -n -e --argjson actual "$assertions" --argjson expected "$manifest_assertions" \
         '$actual == $expected' >/dev/null ||
@@ -355,6 +405,8 @@ while IFS= read -r task_json; do
     task_context_commands["$id"]=$context_commands
     task_output_kind["$id"]=$output_kind
     task_acceptance_checks["$id"]=$declared_checks
+    task_baseline_checks["$id"]=$baseline_checks
+    task_mutations["$id"]=$mutations
     task_constraints["$id"]=$constraints
     task_assertions["$id"]=$assertions
     task_status["$id"]="pending"
@@ -369,13 +421,16 @@ while IFS= read -r task_json; do
         --argjson context_commands "$context_commands" \
         --arg output_kind "$output_kind" \
         --argjson acceptance_checks "$declared_checks" \
+        --argjson baseline_checks "$baseline_checks" \
+        --argjson mutations "$mutations" \
         --argjson semantic_constraints "$constraints" \
         --argjson assertions "$assertions" \
         '$tasks + [{id:$id,description:$description,
           manifest:(if $manifest == "" then null else $manifest end),
           depends_on:$depends_on,target_files:$target_files,
           context_commands:$context_commands,output_kind:$output_kind,
-          acceptance_checks:$acceptance_checks,
+          acceptance_checks:$acceptance_checks,baseline_checks:$baseline_checks,
+          mutations:$mutations,
           semantic_constraints:$semantic_constraints,assertions:$assertions}]')
 done < <(jq -c '.tasks[]' <<<"$bundle")
 
@@ -487,11 +542,14 @@ for id in "${task_ids[@]}"; do
         --argjson context_commands "${task_context_commands[$id]}" \
         --arg output_kind "${task_output_kind[$id]}" \
         --argjson acceptance_checks "${task_acceptance_checks[$id]}" \
+        --argjson baseline_checks "${task_baseline_checks[$id]}" \
+        --argjson mutations "${task_mutations[$id]}" \
         --argjson semantic_constraints "${task_constraints[$id]}" \
         --argjson assertions "${task_assertions[$id]}" \
         '{id:$id,description:$description,manifest:$manifest,depends_on:$depends_on,
           target_files:$target_files,context_commands:$context_commands,
           output_kind:$output_kind,acceptance_checks:$acceptance_checks,
+          baseline_checks:$baseline_checks,mutations:$mutations,
           semantic_constraints:$semantic_constraints,assertions:$assertions}' \
         >"${task_dir[$id]}/plan.json"
 done
@@ -527,6 +585,8 @@ write_summary() {
         --argjson target_files "${task_target_files[$id]}" \
         --argjson context_commands "${task_context_commands[$id]}" \
         --argjson acceptance_checks "${task_acceptance_checks[$id]}" \
+        --argjson baseline_checks "${task_baseline_checks[$id]}" \
+        --argjson mutations "${task_mutations[$id]}" \
         --argjson semantic_constraints "${task_constraints[$id]}" \
         --argjson assertions "${task_assertions[$id]}" \
         --argjson blocked_by "$blocked_by" \
@@ -537,6 +597,7 @@ write_summary() {
           plan:{description:$description,target_files:$target_files,
             context_commands:$context_commands,output_kind:$output_kind,
             acceptance_checks:$acceptance_checks,
+            baseline_checks:$baseline_checks,mutations:$mutations,
             semantic_constraints:$semantic_constraints,assertions:$assertions},
           blocked_by:$blocked_by,result:$result}' \
         >"${task_dir[$id]}/summary.json"
@@ -791,6 +852,8 @@ else
     ok_bool=false
     ok_json=false
 fi
+bundle_finished_ms=$(date +%s%3N)
+wall_time_ms=$((bundle_finished_ms - bundle_started_ms))
 jq -n \
     --arg bundle "$bundle_name" \
     --arg feature "$feature" \
@@ -802,6 +865,7 @@ jq -n \
     --arg runner "$runner" \
     --arg source_commit "$source_commit" \
     --arg artifact "$final_artifact" \
+    --argjson wall_time_ms "$wall_time_ms" \
     --argjson ok "$ok_json" \
     --argjson summary "$summary_json" \
     --argjson tasks "$task_json" \
@@ -811,7 +875,8 @@ jq -n \
       acceptance_checks:$acceptance_checks,feature_checks:$feature_checks,
       feature_validation:$feature_validation,source_commit:$source_commit,
       artifact:$artifact,run_dir:$run_dir,runner:$runner,
-      summary:$summary,tasks:$tasks,run_usage:$usage} +
+      summary:$summary,tasks:$tasks,run_usage:$usage,
+      wall_time_ms:$wall_time_ms} +
      (if $fatal_error == "" then {} else {error:$fatal_error} end)'
 
 [[ "$ok_bool" == true ]] || exit 1

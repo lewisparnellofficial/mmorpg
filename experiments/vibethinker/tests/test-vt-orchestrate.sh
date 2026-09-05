@@ -163,4 +163,15 @@ if [[ -e "$tmp_dir/invalid-results" ]]; then
     exit 1
 fi
 
+oracle_bundle="$repo_root/experiments/vibethinker/bundles/position-suite.json"
+oracle_drift_bundle="$tmp_dir/oracle-drift-plan.json"
+jq '(.tasks[] | select(.id == "position-symmetry") | .mutations) = []' \
+    "$oracle_bundle" >"$oracle_drift_bundle"
+if "$orchestrator" --bundle "$oracle_drift_bundle" --runner "$fake_runner" \
+    --output-dir "$tmp_dir/oracle-drift-results" --validate-only \
+    >"$tmp_dir/oracle-drift.stdout" 2>"$tmp_dir/oracle-drift.stderr"; then
+    echo 'FAIL: plan/manifest oracle drift unexpectedly passed validation' >&2
+    exit 1
+fi
+
 echo 'PASS: scheduling, cumulative integration, conflicts, and feature validation'

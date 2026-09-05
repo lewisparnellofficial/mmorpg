@@ -54,9 +54,12 @@ For each returned implementation:
 3. Reject an unterminated thinking block, malformed output, or unrequested
    file path.
 4. Review the proposed code against the task's invariants.
-5. Apply only in a temporary worktree or temporary copy when testing.
-6. Run focused formatting, compilation, and tests.
-7. Record the result as accepted, rejected, or requiring revision.
+5. Require declared `baseline_checks` to fail before spending a VT request.
+6. Apply only in a temporary worktree or temporary copy when testing.
+7. Run focused formatting, compilation, and tests.
+8. For generated tests, apply compiling known-bad mutations and require the
+   generated test to kill them.
+9. Record the result as accepted, rejected, or requiring revision.
 
 The VibeThinker model card cautions that the model was not trained for
 tool-calling or autonomous coding agents. These tasks therefore deliberately
@@ -360,3 +363,23 @@ thing, as demonstrated by the A/B record. This infrastructure therefore
 supports cumulative decomposition, integration, and cheap rejection; it does
 not make VibeThinker an autonomous feature implementer or prove requirements
 that are absent from executable feature checks.
+
+Each semantic leaf needs its own oracle. A live decomposed position bundle
+initially protected only the symmetry leaf; another leaf compiled with a
+tautological assertion and passed the combined suite. Separate Manhattan,
+constant-offset, and asymmetric mutants were needed to verify the 3-4-5,
+same-point, and symmetry requirements respectively. One strong oracle on a
+neighboring task does not confer semantic coverage on the whole feature.
+
+Retries now include bounded validator feedback: the original prompt is
+repeated with the failed stage and the final 20 diagnostic lines. Live compiler
+errors in same-point and symmetry tests were repaired on the second attempt.
+The retry is still subject to the same attempt cap and output contract, and
+every attempt remains visible in `run_usage` and the task artifact directory.
+
+Those repairs were not stable across immediate reruns: later attempts repeated
+a malformed assertion or invented an extra method argument. The canonical
+position leaves consequently provide complete test skeletons and use VT in the
+exact-copy mode that passed the earlier controlled trials. This is deliberately
+conservative. A planner should expand VT's freedom only when a task family has
+repeatedly passed its independent oracle, not merely because one sample worked.
