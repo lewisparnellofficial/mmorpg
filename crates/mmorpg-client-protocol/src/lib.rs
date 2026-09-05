@@ -217,9 +217,10 @@ impl CommandLine {
 
 /// A decoded line from the temporary development server.
 ///
-/// This is intentionally limited to the state and events needed to bootstrap
-/// the graphical client. Lines such as `WELCOME`, `HELP`, `ITEM`, and `QUEST`
-/// remain unsupported until they receive an explicit schema here.
+/// This is intentionally limited to the state and events needed by the
+/// graphical client. Human-oriented lines such as `WELCOME`, `HELP`, `ITEM`,
+/// and `QUEST` remain unsupported until they receive an explicit schema here;
+/// the machine-readable `EVENT` forms are decoded below.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServerLine {
     SnapshotBegin { version: u32 },
@@ -640,6 +641,27 @@ pub struct NpcState {
     pub max_health: u32,
 }
 
+/// One vendor listing carried by a temporary authoritative event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VendorListingState {
+    pub item_id: ItemId,
+    pub name: String,
+    pub unit_price: u32,
+    pub remaining_quantity: u32,
+    pub max_stack: u32,
+}
+
+/// A quest offer carried by a temporary authoritative event.
+///
+/// The event intentionally carries only the stable ID and display name. The
+/// client can resolve the description from its matching validated content
+/// package instead of treating server-provided prose as executable data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuestOfferState {
+    pub quest_id: QuestId,
+    pub name: String,
+}
+
 /// The connection-to-player binding emitted after a successful join.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConnectedState {
@@ -655,6 +677,9 @@ pub enum ServerEvent {
         name: String,
         role: Role,
         position: Position,
+    },
+    PlayerLeft {
+        player_id: EntityId,
     },
     PlayerMoved {
         id: EntityId,
@@ -673,6 +698,61 @@ pub enum ServerEvent {
     },
     EnemyDefeated {
         enemy_id: EntityId,
+    },
+    VendorListed {
+        player_id: EntityId,
+        vendor_id: EntityId,
+        listings: Vec<VendorListingState>,
+    },
+    ItemPurchased {
+        player_id: EntityId,
+        vendor_id: EntityId,
+        item_id: ItemId,
+        quantity: u32,
+        total_price: u32,
+        gold_remaining: u32,
+    },
+    LootRewarded {
+        player_id: EntityId,
+        enemy_id: EntityId,
+        item_id: ItemId,
+        quantity: u32,
+    },
+    TransactionRejected {
+        player_id: EntityId,
+        reason: String,
+    },
+    QuestOffersListed {
+        player_id: EntityId,
+        npc_id: EntityId,
+        quests: Vec<QuestOfferState>,
+    },
+    QuestAccepted {
+        player_id: EntityId,
+        npc_id: EntityId,
+        quest_id: QuestId,
+    },
+    QuestProgressed {
+        player_id: EntityId,
+        quest_id: QuestId,
+        progress: u32,
+        required_count: u32,
+    },
+    QuestCompleted {
+        player_id: EntityId,
+        quest_id: QuestId,
+    },
+    QuestRewarded {
+        player_id: EntityId,
+        quest_id: QuestId,
+        gold: u32,
+        item_id: Option<ItemId>,
+        item_quantity: u32,
+        gold_remaining: u32,
+    },
+    QuestRejected {
+        player_id: EntityId,
+        reason: String,
     },
     CommandRejected {
         reason: String,
@@ -990,10 +1070,41 @@ fn decode_connected(mut fields: BTreeMap<String, String>) -> Result<ServerLine, 
 fn decode_event(event_name: &str, tokens: Vec<&str>) -> Result<ServerLine, DecodeError> {
     let (allowed, free_field): (&[&str], Option<&str>) = match event_name {
         "player_joined" => (&["id", "name", "role", "pos"], Some("name")),
+        "player_left" => (&["id"], None),
         "player_moved" => (&["id", "pos", "area"], None),
         "target_selected" => (&["player", "target"], None),
         "attack" => (&["player", "target", "damage", "target_hp"], None),
         "enemy_defeated" => (&["id"], None),
+        "vendor_listed" => (&["player", "vendor", "listings"], Some("listings")),
+        "item_purchased" => (
+            &[
+                "player",
+                "vendor",
+                "item",
+                "quantity",
+                "total_price",
+                "gold",
+            ],
+            None,
+        ),
+        "loot_rewarded" => (&["player", "enemy", "item", "quantity"], None),
+        "transaction_rejected" => (&["player", "reason"], Some("reason")),
+        "quest_offers" => (&["player", "npc", "quests"], Some("quests")),
+        "quest_accepted" => (&["player", "npc", "quest"], None),
+        "quest_progressed" => (&["player", "quest", "progress"], None),
+        "quest_completed" => (&["player", "quest"], None),
+        "quest_rewarded" => (
+            &[
+                "player",
+                "quest",
+                "gold",
+                "item",
+                "quantity",
+                "gold_remaining",
+            ],
+            None,
+        ),
+        "quest_rejected" => (&["player", "reason"], Some("reason")),
         "rejected" => (&["reason"], Some("reason")),
         other => {
             return Err(DecodeError::UnsupportedEvent {
@@ -1008,6 +1119,9 @@ fn decode_event(event_name: &str, tokens: Vec<&str>) -> Result<ServerLine, Decod
             name: parse_string(take(&mut fields, "name")?, "name", MAX_SERVER_NAME_BYTES)?,
             role: parse_role(take(&mut fields, "role")?, "role")?,
             position: parse_position(take(&mut fields, "pos")?, "pos")?,
+        },
+        "player_left" => ServerEvent::PlayerLeft {
+            player_id: parse_entity_id(take(&mut fields, "id")?, "id")?,
         },
         "player_moved" => ServerEvent::PlayerMoved {
             id: parse_entity_id(take(&mut fields, "id")?, "id")?,
@@ -1027,6 +1141,86 @@ fn decode_event(event_name: &str, tokens: Vec<&str>) -> Result<ServerLine, Decod
         "enemy_defeated" => ServerEvent::EnemyDefeated {
             enemy_id: parse_entity_id(take(&mut fields, "id")?, "id")?,
         },
+        "vendor_listed" => ServerEvent::VendorListed {
+            player_id: parse_entity_id(take(&mut fields, "player")?, "player")?,
+            vendor_id: parse_entity_id(take(&mut fields, "vendor")?, "vendor")?,
+            listings: parse_vendor_listings(take(&mut fields, "listings")?)?,
+        },
+        "item_purchased" => ServerEvent::ItemPurchased {
+            player_id: parse_entity_id(take(&mut fields, "player")?, "player")?,
+            vendor_id: parse_entity_id(take(&mut fields, "vendor")?, "vendor")?,
+            item_id: parse_item_id(take(&mut fields, "item")?, "item")?,
+            quantity: parse_positive_u32(take(&mut fields, "quantity")?, "quantity")?,
+            total_price: parse_u32(take(&mut fields, "total_price")?, "total_price")?,
+            gold_remaining: parse_u32(take(&mut fields, "gold")?, "gold")?,
+        },
+        "loot_rewarded" => ServerEvent::LootRewarded {
+            player_id: parse_entity_id(take(&mut fields, "player")?, "player")?,
+            enemy_id: parse_entity_id(take(&mut fields, "enemy")?, "enemy")?,
+            item_id: parse_item_id(take(&mut fields, "item")?, "item")?,
+            quantity: parse_positive_u32(take(&mut fields, "quantity")?, "quantity")?,
+        },
+        "transaction_rejected" => ServerEvent::TransactionRejected {
+            player_id: parse_entity_id(take(&mut fields, "player")?, "player")?,
+            reason: parse_string(
+                take(&mut fields, "reason")?,
+                "reason",
+                MAX_SERVER_REASON_BYTES,
+            )?,
+        },
+        "quest_offers" => ServerEvent::QuestOffersListed {
+            player_id: parse_entity_id(take(&mut fields, "player")?, "player")?,
+            npc_id: parse_entity_id(take(&mut fields, "npc")?, "npc")?,
+            quests: parse_quest_offers(take(&mut fields, "quests")?)?,
+        },
+        "quest_accepted" => ServerEvent::QuestAccepted {
+            player_id: parse_entity_id(take(&mut fields, "player")?, "player")?,
+            npc_id: parse_entity_id(take(&mut fields, "npc")?, "npc")?,
+            quest_id: parse_quest_id(take(&mut fields, "quest")?, "quest")?,
+        },
+        "quest_progressed" => {
+            let (progress, required_count) =
+                parse_progress(take(&mut fields, "progress")?, "progress")?;
+            ServerEvent::QuestProgressed {
+                player_id: parse_entity_id(take(&mut fields, "player")?, "player")?,
+                quest_id: parse_quest_id(take(&mut fields, "quest")?, "quest")?,
+                progress,
+                required_count,
+            }
+        }
+        "quest_completed" => ServerEvent::QuestCompleted {
+            player_id: parse_entity_id(take(&mut fields, "player")?, "player")?,
+            quest_id: parse_quest_id(take(&mut fields, "quest")?, "quest")?,
+        },
+        "quest_rewarded" => {
+            let item = take(&mut fields, "item")?;
+            let item_id = (item != "none")
+                .then(|| parse_item_id(item, "item"))
+                .transpose()?;
+            let item_quantity = parse_u32(take(&mut fields, "quantity")?, "quantity")?;
+            if item_id.is_none() && item_quantity != 0 {
+                return Err(DecodeError::InvalidValue { field: "quantity" });
+            }
+            if item_id.is_some() && item_quantity == 0 {
+                return Err(DecodeError::InvalidValue { field: "quantity" });
+            }
+            ServerEvent::QuestRewarded {
+                player_id: parse_entity_id(take(&mut fields, "player")?, "player")?,
+                quest_id: parse_quest_id(take(&mut fields, "quest")?, "quest")?,
+                gold: parse_u32(take(&mut fields, "gold")?, "gold")?,
+                item_id,
+                item_quantity,
+                gold_remaining: parse_u32(take(&mut fields, "gold_remaining")?, "gold_remaining")?,
+            }
+        }
+        "quest_rejected" => ServerEvent::QuestRejected {
+            player_id: parse_entity_id(take(&mut fields, "player")?, "player")?,
+            reason: parse_string(
+                take(&mut fields, "reason")?,
+                "reason",
+                MAX_SERVER_REASON_BYTES,
+            )?,
+        },
         "rejected" => ServerEvent::CommandRejected {
             reason: parse_string(
                 take(&mut fields, "reason")?,
@@ -1037,6 +1231,61 @@ fn decode_event(event_name: &str, tokens: Vec<&str>) -> Result<ServerLine, Decod
         _ => unreachable!("event name was validated above"),
     };
     Ok(ServerLine::Event(event))
+}
+
+fn parse_vendor_listings(value: String) -> Result<Vec<VendorListingState>, DecodeError> {
+    value
+        .split(';')
+        .map(|entry| {
+            let mut fields = parse_fields(
+                entry.split_whitespace().collect(),
+                &["item", "name", "price", "stock", "max_stack"],
+                None,
+            )?;
+            let max_stack = parse_positive_u32(take(&mut fields, "max_stack")?, "max_stack")?;
+            Ok(VendorListingState {
+                item_id: parse_item_id(take(&mut fields, "item")?, "item")?,
+                name: parse_display_name(take(&mut fields, "name")?, "name")?,
+                unit_price: parse_u32(take(&mut fields, "price")?, "price")?,
+                remaining_quantity: parse_u32(take(&mut fields, "stock")?, "stock")?,
+                max_stack,
+            })
+        })
+        .collect()
+}
+
+fn parse_quest_offers(value: String) -> Result<Vec<QuestOfferState>, DecodeError> {
+    value
+        .split(';')
+        .map(|entry| {
+            let mut fields =
+                parse_fields(entry.split_whitespace().collect(), &["id", "name"], None)?;
+            Ok(QuestOfferState {
+                quest_id: parse_quest_id(take(&mut fields, "id")?, "id")?,
+                name: parse_display_name(take(&mut fields, "name")?, "name")?,
+            })
+        })
+        .collect()
+}
+
+fn parse_display_name(value: String, field: &'static str) -> Result<String, DecodeError> {
+    let value = value.replace('_', " ");
+    parse_string(value, field, MAX_SERVER_FIELD_BYTES)
+}
+
+fn parse_progress(value: String, field: &'static str) -> Result<(u32, u32), DecodeError> {
+    let Some((progress, required_count)) = value.split_once('/') else {
+        return Err(DecodeError::InvalidValue { field });
+    };
+    if required_count.contains('/') {
+        return Err(DecodeError::InvalidValue { field });
+    }
+    let progress = parse_u32(progress.to_owned(), field)?;
+    let required_count = parse_positive_u32(required_count.to_owned(), field)?;
+    if progress > required_count {
+        return Err(DecodeError::InvalidValue { field });
+    }
+    Ok((progress, required_count))
 }
 
 fn parse_fields(
@@ -1072,7 +1321,12 @@ fn parse_fields(
         let mut value = initial_value.to_owned();
         index += 1;
         if free_field == Some(key) {
-            while index < tokens.len() && !tokens[index].contains('=') {
+            // Compound fields contain their own key/value pairs, so their
+            // inner `name=` tokens must not terminate the outer field.
+            let consumes_remaining_tokens = matches!(key, "listings" | "quests");
+            while index < tokens.len()
+                && (consumes_remaining_tokens || !tokens[index].contains('='))
+            {
                 value.push(' ');
                 value.push_str(tokens[index]);
                 index += 1;
@@ -1135,6 +1389,21 @@ fn parse_u32(value: String, field: &'static str) -> Result<u32, DecodeError> {
     value
         .parse()
         .map_err(|_| DecodeError::InvalidValue { field })
+}
+
+fn parse_positive_u32(value: String, field: &'static str) -> Result<u32, DecodeError> {
+    let value = parse_u32(value, field)?;
+    (value > 0)
+        .then_some(value)
+        .ok_or(DecodeError::InvalidValue { field })
+}
+
+fn parse_item_id(value: String, field: &'static str) -> Result<ItemId, DecodeError> {
+    Ok(ItemId(parse_positive_u32(value, field)?))
+}
+
+fn parse_quest_id(value: String, field: &'static str) -> Result<QuestId, DecodeError> {
+    Ok(QuestId(parse_positive_u32(value, field)?))
 }
 
 fn parse_snapshot_string(
@@ -1554,6 +1823,12 @@ mod tests {
             }))
         );
         assert_eq!(
+            decode_server_line("EVENT player_left id=5"),
+            Ok(ServerLine::Event(ServerEvent::PlayerLeft {
+                player_id: EntityId(5),
+            }))
+        );
+        assert_eq!(
             decode_server_line("EVENT target_selected player=5 target=9"),
             Ok(ServerLine::Event(ServerEvent::TargetSelected {
                 player_id: EntityId(5),
@@ -1573,6 +1848,117 @@ mod tests {
             decode_server_line("EVENT enemy_defeated id=9"),
             Ok(ServerLine::Event(ServerEvent::EnemyDefeated {
                 enemy_id: EntityId(9),
+            }))
+        );
+        assert_eq!(
+            decode_server_line(
+                "EVENT vendor_listed player=5 vendor=1 listings=item=2 name=Town_Ration price=2 stock=98 max_stack=20;item=3 name=Minor_Healing_Potion price=8 stock=10 max_stack=5",
+            ),
+            Ok(ServerLine::Event(ServerEvent::VendorListed {
+                player_id: EntityId(5),
+                vendor_id: EntityId(1),
+                listings: vec![
+                    VendorListingState {
+                        item_id: ItemId(2),
+                        name: "Town Ration".to_owned(),
+                        unit_price: 2,
+                        remaining_quantity: 98,
+                        max_stack: 20,
+                    },
+                    VendorListingState {
+                        item_id: ItemId(3),
+                        name: "Minor Healing Potion".to_owned(),
+                        unit_price: 8,
+                        remaining_quantity: 10,
+                        max_stack: 5,
+                    },
+                ],
+            }))
+        );
+        assert_eq!(
+            decode_server_line(
+                "EVENT item_purchased player=5 vendor=1 item=2 quantity=2 total_price=4 gold=16",
+            ),
+            Ok(ServerLine::Event(ServerEvent::ItemPurchased {
+                player_id: EntityId(5),
+                vendor_id: EntityId(1),
+                item_id: ItemId(2),
+                quantity: 2,
+                total_price: 4,
+                gold_remaining: 16,
+            }))
+        );
+        assert_eq!(
+            decode_server_line("EVENT loot_rewarded player=5 enemy=9 item=1 quantity=1"),
+            Ok(ServerLine::Event(ServerEvent::LootRewarded {
+                player_id: EntityId(5),
+                enemy_id: EntityId(9),
+                item_id: ItemId(1),
+                quantity: 1,
+            }))
+        );
+        assert_eq!(
+            decode_server_line("EVENT transaction_rejected player=5 reason=inventory is full"),
+            Ok(ServerLine::Event(ServerEvent::TransactionRejected {
+                player_id: EntityId(5),
+                reason: "inventory is full".to_owned(),
+            }))
+        );
+        assert_eq!(
+            decode_server_line(
+                "EVENT quest_offers player=5 npc=1 quests=id=1 name=Clear_the_Field",
+            ),
+            Ok(ServerLine::Event(ServerEvent::QuestOffersListed {
+                player_id: EntityId(5),
+                npc_id: EntityId(1),
+                quests: vec![QuestOfferState {
+                    quest_id: QuestId(1),
+                    name: "Clear the Field".to_owned(),
+                }],
+            }))
+        );
+        assert_eq!(
+            decode_server_line("EVENT quest_accepted player=5 npc=1 quest=1"),
+            Ok(ServerLine::Event(ServerEvent::QuestAccepted {
+                player_id: EntityId(5),
+                npc_id: EntityId(1),
+                quest_id: QuestId(1),
+            }))
+        );
+        assert_eq!(
+            decode_server_line("EVENT quest_progressed player=5 quest=1 progress=2/3"),
+            Ok(ServerLine::Event(ServerEvent::QuestProgressed {
+                player_id: EntityId(5),
+                quest_id: QuestId(1),
+                progress: 2,
+                required_count: 3,
+            }))
+        );
+        assert_eq!(
+            decode_server_line("EVENT quest_completed player=5 quest=1"),
+            Ok(ServerLine::Event(ServerEvent::QuestCompleted {
+                player_id: EntityId(5),
+                quest_id: QuestId(1),
+            }))
+        );
+        assert_eq!(
+            decode_server_line(
+                "EVENT quest_rewarded player=5 quest=1 gold=10 item=2 quantity=5 gold_remaining=30",
+            ),
+            Ok(ServerLine::Event(ServerEvent::QuestRewarded {
+                player_id: EntityId(5),
+                quest_id: QuestId(1),
+                gold: 10,
+                item_id: Some(ItemId(2)),
+                item_quantity: 5,
+                gold_remaining: 30,
+            }))
+        );
+        assert_eq!(
+            decode_server_line("EVENT quest_rejected player=5 reason=quest is not complete"),
+            Ok(ServerLine::Event(ServerEvent::QuestRejected {
+                player_id: EntityId(5),
+                reason: "quest is not complete".to_owned(),
             }))
         );
         assert_eq!(
@@ -1618,6 +2004,28 @@ mod tests {
             Err(DecodeError::UnsupportedEvent {
                 name: "unknown".to_owned(),
             })
+        );
+        assert_eq!(
+            decode_server_line(
+                "EVENT item_purchased player=5 vendor=1 item=2 quantity=0 total_price=0 gold=20"
+            ),
+            Err(DecodeError::InvalidValue { field: "quantity" })
+        );
+        assert_eq!(
+            decode_server_line("EVENT quest_progressed player=5 quest=1 progress=4/3"),
+            Err(DecodeError::InvalidValue { field: "progress" })
+        );
+        assert_eq!(
+            decode_server_line(
+                "EVENT quest_rewarded player=5 quest=1 gold=10 item=none quantity=1 gold_remaining=30"
+            ),
+            Err(DecodeError::InvalidValue { field: "quantity" })
+        );
+        assert_eq!(
+            decode_server_line(
+                "EVENT vendor_listed player=5 vendor=1 listings=item=2 name=Ration price=1 stock=1 max_stack=0"
+            ),
+            Err(DecodeError::InvalidValue { field: "max_stack" })
         );
         assert_eq!(
             decode_server_line("TEMP_SNAPSHOT WEATHER rain=true"),

@@ -48,6 +48,8 @@ architecture and research remain in `docs/architecture/` and
   snapshot bootstrap, keyboard movement, target cycling, attack input, and a
   compact status HUD.
 - Temporary machine-readable snapshot decoder for the graphical client path.
+- Typed temporary-protocol decoder for the complete starter economy, loot,
+  and quest event vocabulary.
 - Bounded stream-level snapshot assembly with atomic publication, duplicate
   detection, count validation, truncation handling, and stale-entity removal.
 - Bounded graphical-client command/deferred queues and connection timeout.
