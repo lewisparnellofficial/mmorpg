@@ -62,10 +62,14 @@ impl TryFrom<u8> for RoleCode {
 /// Typed client intent payload carried inside a command envelope.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClientCommand {
+    Authenticate {
+        token: String,
+    },
     Join {
         name: String,
         role: RoleCode,
     },
+    EnterWorld,
     Move {
         dx: f32,
         dy: f32,
@@ -104,12 +108,18 @@ impl ClientCommand {
     pub fn encode_payload(&self) -> Result<Vec<u8>, CommandCodecError> {
         let mut payload = Vec::new();
         match self {
+            Self::Authenticate { token } => {
+                let token = validate_command_name(token)?;
+                payload.push(12);
+                put_string(&mut payload, token);
+            }
             Self::Join { name, role } => {
                 let name = validate_command_name(name)?;
                 payload.push(1);
                 put_string(&mut payload, name);
                 payload.push(*role as u8);
             }
+            Self::EnterWorld => payload.push(13),
             Self::Move { dx, dy } => {
                 validate_finite(*dx, "dx")?;
                 validate_finite(*dy, "dy")?;
@@ -159,10 +169,14 @@ impl ClientCommand {
         }
         let mut decoder = CommandDecoder { payload, offset: 0 };
         let command = match decoder.take_u8()? {
+            12 => Self::Authenticate {
+                token: decoder.take_string("token")?,
+            },
             1 => Self::Join {
                 name: decoder.take_string("name")?,
                 role: decoder.take_u8()?.try_into()?,
             },
+            13 => Self::EnterWorld,
             2 => Self::Move {
                 dx: f32::from_bits(decoder.take_u32("dx")?),
                 dy: f32::from_bits(decoder.take_u32("dy")?),
@@ -510,6 +524,7 @@ pub enum ServerMessage {
     Error { message: String },
     Event(ServerEvent),
     Snapshot(WorldSnapshot),
+    Authenticated { account_id: u64, session_id: u64 },
 }
 
 /// Typed authoritative event payloads corresponding to the current core
@@ -649,6 +664,14 @@ impl ServerMessage {
                 encoder.put_u8(5);
                 encode_snapshot(&mut encoder, snapshot)?;
             }
+            Self::Authenticated {
+                account_id,
+                session_id,
+            } => {
+                encoder.put_u8(6);
+                encoder.put_u64(*account_id, "account_id")?;
+                encoder.put_u64(*session_id, "session_id")?;
+            }
         }
         Ok(encoder.bytes)
     }
@@ -672,6 +695,10 @@ impl ServerMessage {
             },
             4 => Self::Event(decode_server_event(&mut decoder)?),
             5 => Self::Snapshot(decode_snapshot(&mut decoder)?),
+            6 => Self::Authenticated {
+                account_id: decoder.take_nonzero_u64("account_id")?,
+                session_id: decoder.take_nonzero_u64("session_id")?,
+            },
             opcode => return Err(ServerCodecError::UnknownOpcode(opcode)),
         };
         if decoder.offset != payload.len() {
@@ -1751,10 +1778,14 @@ mod tests {
     #[test]
     fn typed_client_commands_round_trip_through_payload_codec() {
         let commands = [
+            ClientCommand::Authenticate {
+                token: "dev-local".to_owned(),
+            },
             ClientCommand::Join {
                 name: "Aria".to_owned(),
                 role: RoleCode::DamageDealer,
             },
+            ClientCommand::EnterWorld,
             ClientCommand::Move { dx: -2.5, dy: 4.0 },
             ClientCommand::SelectTarget { target_id: 9 },
             ClientCommand::BasicAttack,
@@ -1881,6 +1912,10 @@ mod tests {
             ServerMessage::Connected {
                 player_id: 7,
                 role: RoleCode::DamageDealer,
+            },
+            ServerMessage::Authenticated {
+                account_id: 1,
+                session_id: 11,
             },
             ServerMessage::Error {
                 message: "connect first".to_owned(),

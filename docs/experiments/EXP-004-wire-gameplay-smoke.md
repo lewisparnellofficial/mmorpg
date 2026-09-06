@@ -10,15 +10,18 @@ vertical slice.
 
 1. Start `mmorpg-server` with the line listener and optional wire listener.
 2. Run `experiments/wire-gameplay-smoke` against the wire address.
-3. The tool joins, requests a typed snapshot, buys one vendor item, accepts
-   the starter quest, defeats and loots all three field wolves, and turns in
-   the quest.
+3. The tool verifies that a legacy wire join is rejected before
+   authentication, authenticates with the loopback-only development token,
+   enters the fixed development character, requests a typed snapshot, buys
+   one vendor item, accepts the starter quest, defeats and loots all three
+   field wolves, and turns in the quest.
 
 ## Evidence produced
 
 The tool passes only when it decodes and validates:
 
-- welcome and connection messages;
+- welcome, unauthenticated-command rejection, authentication, and connection
+  messages;
 - a snapshot containing one player, one vendor, and three enemies;
 - vendor listings and a successful purchase;
 - quest offers and acceptance;
@@ -33,8 +36,9 @@ The tool passes only when it decodes and validates:
 - Project-specific inference: the current starter loop is reachable through
   the same typed intent and event boundary that the client uses in wire mode.
 - Not demonstrated: thousands of connected clients, 200-player activity,
-  persistence, authentication, encryption, interest management, or production
-  backpressure.
+  production authentication, encryption, interest management, or production
+  backpressure. The development authentication path is covered only as a
+  loopback smoke-test boundary.
 
 ## Reproduction
 

@@ -36,8 +36,9 @@ bytes.
 
 `ClientCommand::encode_payload` and `ClientCommand::decode_payload` define the
 first structured application payload above the envelope. The schema currently
-covers join, movement, target selection, attack, vendor listing and purchase,
-loot, quest offers/acceptance/turn-in, and snapshot request. Numeric IDs are
+covers development authentication, world entry, join compatibility decoding,
+movement, target selection, attack, vendor listing and purchase, loot, quest
+offers/acceptance/turn-in, and snapshot request. Numeric IDs are
 big-endian, movement values are IEEE-754 `f32` bit patterns, names are bounded
 UTF-8 strings, and zero IDs/quantities or non-finite movement values are
 rejected. The server session adapter now consumes these commands on its
@@ -46,8 +47,9 @@ contract until a stable external compatibility document is accepted.
 
 ## Typed server messages
 
-`ServerMessage` encodes welcome/connect/error responses, every current
-authoritative gameplay event, and a bounded bootstrap `WorldSnapshot`. Player
+`ServerMessage` encodes welcome, development-authentication, connect/error
+responses, every current authoritative gameplay event, and a bounded bootstrap
+`WorldSnapshot`. Player
 state includes inventory stacks and quest progress; NPCs, vendor listings, and
 quest offers use explicit bounded collections. IDs, enum values, strings,
 floats, collection counts, and trailing bytes are validated during both encode
@@ -80,7 +82,8 @@ debugging, but it is not a safe or stable production protocol:
   rather than stable IDs and typed fields.
 
 This prototype addresses framing, envelope metadata, typed command payloads,
-and typed server event/snapshot payloads. It does not yet provide
+and typed server event/snapshot payloads. It has only a loopback-only
+development authentication message; it does not yet provide production
 authentication, encryption, compression,
 capability negotiation, replay protection, sequencing, acknowledgements,
 interest-managed replication, or socket ownership. A future network adapter

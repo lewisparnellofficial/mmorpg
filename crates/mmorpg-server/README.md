@@ -59,6 +59,22 @@ It emits typed server-message payloads for welcome/connect/error responses,
 gameplay events, and the bootstrap snapshot. The line listener remains
 available for terminal debugging and graphical-client migration.
 
+Wire clients must authenticate before sending gameplay commands:
+
+```text
+Authenticate { token: "dev-local" }
+Authenticated { account_id: 1, session_id: <server-assigned> }
+EnterWorld
+Connected { player_id: <server-assigned>, ... }
+```
+
+The server rejects unauthenticated commands and the legacy wire `Join` command.
+The `dev-local` token is accepted only on a loopback-bound wire listener, and
+all authenticated clients currently enter the fixed `Aria` damage-dealer
+development profile. This is intentionally a local protocol smoke-test
+handshake; it is not production authentication, authorization, encryption, or
+account/character persistence.
+
 The optional explicit player ID on `move` is checked against the player bound
 to the connection. It exists for debugging and does not grant authority over
 another player.

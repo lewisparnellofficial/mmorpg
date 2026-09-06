@@ -224,6 +224,7 @@ pub fn apply_wire_message(
             Ok(())
         }
         ServerMessage::Welcome { .. }
+        | ServerMessage::Authenticated { .. }
         | ServerMessage::Connected { .. }
         | ServerMessage::Error { .. } => Ok(()),
     }

@@ -29,6 +29,7 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [Client protocol adapter](../crates/mmorpg-client-protocol/README.md) — typed helpers for the temporary development command line.
 - [Client transport spike](../crates/mmorpg-client-transport/README.md) — bounded loopback/TCP adapter for sending development commands.
 - [Wire envelope spike](../crates/mmorpg-wire/README.md) — versioned length-prefixed framing prototype for the future machine-readable protocol.
+- [Development authentication decision](decisions/ADR-005-development-authentication-boundary.md) — loopback-only typed session handshake for the current wire/client slice.
 - [AI/respawn experiment](../experiments/ai-respawn/README.md) — deterministic patrol, aggro, leash, death, and respawn behavior model.
 - [Persistence and recovery research](research/persistence-and-recovery.md) — durable state, idempotency, snapshots, journals, and crash recovery.
 - [Content validation tool](../tools/README.md) — current starter-catalog validation command and future authoring-tool boundary.

@@ -10,7 +10,6 @@ use mmorpg_wire::{ClientCommand, ServerEvent, ServerMessage, WorldSnapshot};
 use std::env;
 
 const DEFAULT_ADDRESS: &str = "127.0.0.1:4001";
-const PLAYER_NAME: &str = "WireSmoke";
 
 fn main() {
     let address = env::args()
@@ -24,10 +23,40 @@ fn main() {
     });
     connection
         .send_typed_command(&ClientCommand::Join {
-            name: PLAYER_NAME.to_owned(),
+            name: "WireSmoke".to_owned(),
             role: mmorpg_wire::RoleCode::DamageDealer,
         })
-        .expect("join command should encode and send");
+        .expect("legacy join command should encode and send");
+    match expect_message(
+        &mut connection,
+        "unauthenticated join rejection",
+        |message| matches!(message, ServerMessage::Error { .. }),
+    ) {
+        ServerMessage::Error { message } => {
+            assert_eq!(message, "authenticate before sending wire commands");
+        }
+        _ => unreachable!("predicate selected an error message"),
+    }
+    connection
+        .send_typed_command(&ClientCommand::Authenticate {
+            token: "dev-local".to_owned(),
+        })
+        .expect("authentication command should encode and send");
+    match expect_message(&mut connection, "authenticated", |message| {
+        matches!(message, ServerMessage::Authenticated { .. })
+    }) {
+        ServerMessage::Authenticated {
+            account_id,
+            session_id,
+        } => {
+            assert_eq!(account_id, 1);
+            assert_ne!(session_id, 0);
+        }
+        _ => unreachable!("predicate selected authenticated message"),
+    }
+    connection
+        .send_typed_command(&ClientCommand::EnterWorld)
+        .expect("enter-world command should encode and send");
     let player_id = match expect_message(&mut connection, "connected", |message| {
         matches!(message, ServerMessage::Connected { .. })
     }) {

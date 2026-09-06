@@ -35,10 +35,12 @@ cargo run --manifest-path crates/mmorpg-client/Cargo.toml -- \
   127.0.0.1:4000 --wire-address 127.0.0.1:4001
 ```
 
-In wire mode the background worker sends typed `mmorpg-wire::ClientCommand`
-frames, requests a typed bootstrap snapshot after connection, and passes
-typed `ServerMessage` values through `mmorpg-client-adapter`. The default line
-mode remains available while the two paths are compared locally.
+In wire mode the background worker sends the loopback-only development token,
+waits for the typed `Authenticated` response, enters the fixed development
+character, requests a typed bootstrap snapshot, and passes typed
+`ServerMessage` values through `mmorpg-client-adapter`. The default line mode
+remains available while the two paths are compared locally. This handshake is
+not production authentication or an internet-safe credential flow.
 
 The window can be closed using the normal window controls. With the server
 running in another terminal, use `WASD` to move, `Tab` to select the next
@@ -56,11 +58,12 @@ distributions; consult the Bevy setup documentation for the selected host.
 
 ## Deliberate limitations
 
-- The connection uses a temporary development TCP adapter and does not yet
-  provide authentication, encryption, reconnection, replication interest
-  management, or production backpressure. The local spike does use bounded
-  input, deferred-command, and wire-frame queues plus a five-second connection
-  timeout.
+- The connection uses a temporary development TCP adapter. Wire mode has a
+  loopback-only development token handshake, but the project does not yet
+  provide production authentication, encryption, reconnection, replication
+  interest management, or production backpressure. The local spike does use
+  bounded input, deferred-command, and wire-frame queues plus a five-second
+  connection timeout.
 - The client has only a fixed camera, keyboard input, basic targeting, and a
   compact starter-loop UI. It does not yet provide a full character
   controller, persistence, or addon scripting.

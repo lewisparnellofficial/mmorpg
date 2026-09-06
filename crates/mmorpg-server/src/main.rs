@@ -13,6 +13,10 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_ADDRESS: &str = "127.0.0.1:4000";
 const DEFAULT_TICK_HZ: u64 = 20;
+const DEV_AUTH_TOKEN: &str = "dev-local";
+const DEV_ACCOUNT_ID: u64 = 1;
+const DEV_PLAYER_NAME: &str = "Aria";
+const DEV_PLAYER_ROLE: Role = Role::DamageDealer;
 const MAX_WIRE_INPUT_BYTES: usize = mmorpg_wire::MAX_FRAME_SIZE * 2;
 const MAX_WIRE_OUTPUT_BYTES: usize = 256 * 1024;
 
@@ -50,6 +54,7 @@ struct WireClient {
     stream: TcpStream,
     input: Vec<u8>,
     output: VecDeque<u8>,
+    authenticated: Option<AuthenticatedSession>,
     player_id: Option<EntityId>,
     closed: bool,
 }
@@ -61,6 +66,7 @@ impl WireClient {
             stream,
             input: Vec::new(),
             output: VecDeque::new(),
+            authenticated: None,
             player_id: None,
             closed: false,
         }
@@ -94,6 +100,12 @@ impl WireClient {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AuthenticatedSession {
+    account_id: u64,
+    session_id: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ClientOrigin {
     Line(u64),
     Wire(u64),
@@ -110,12 +122,14 @@ struct Server {
     wire_clients: Vec<WireClient>,
     commands: VecDeque<PendingCommand>,
     next_client_id: u64,
+    next_session_id: u64,
+    dev_auth_enabled: bool,
     tick_interval: Duration,
     next_tick: Instant,
 }
 
 impl Server {
-    fn new(tick_hz: u64) -> Self {
+    fn new(tick_hz: u64, dev_auth_enabled: bool) -> Self {
         let tick_hz = tick_hz.max(1);
         let tick_interval = Duration::from_secs_f64(1.0 / tick_hz as f64);
         Self {
@@ -124,6 +138,8 @@ impl Server {
             wire_clients: Vec::new(),
             commands: VecDeque::new(),
             next_client_id: 1,
+            next_session_id: 1,
+            dev_auth_enabled,
             tick_interval,
             next_tick: Instant::now() + tick_interval,
         }
@@ -268,8 +284,43 @@ impl Server {
         else {
             return;
         };
+        if let WireCommand::Authenticate { token } = command {
+            if self.wire_clients[client_index].authenticated.is_some() {
+                self.queue_wire_error(client_id, "already authenticated".to_owned());
+                return;
+            }
+            if let Err(error) = validate_dev_auth(self.dev_auth_enabled, &token) {
+                self.queue_wire_error(client_id, error.to_owned());
+                return;
+            }
+            let session_id = self.next_session_id;
+            self.next_session_id = self.next_session_id.saturating_add(1);
+            self.wire_clients[client_index].authenticated = Some(AuthenticatedSession {
+                account_id: DEV_ACCOUNT_ID,
+                session_id,
+            });
+            self.wire_clients[client_index].queue_server_message(&ServerMessage::Authenticated {
+                account_id: DEV_ACCOUNT_ID,
+                session_id,
+            });
+            return;
+        }
+        if self.wire_clients[client_index].authenticated.is_none() {
+            self.queue_wire_error(
+                client_id,
+                "authenticate before sending wire commands".to_owned(),
+            );
+            return;
+        }
         let bound_player = self.wire_clients[client_index].player_id;
-        if let WireCommand::Join { name, role } = command {
+        if matches!(command, WireCommand::Join { .. }) {
+            self.queue_wire_error(
+                client_id,
+                "wire join is disabled; use enter-world after authentication".to_owned(),
+            );
+            return;
+        }
+        if matches!(command, WireCommand::EnterWorld) {
             let already_pending = self.commands.iter().any(|pending| {
                 pending.origin == ClientOrigin::Wire(client_id)
                     && matches!(pending.command, Command::JoinPlayer { .. })
@@ -278,18 +329,23 @@ impl Server {
                 self.queue_wire_error(client_id, "already connected".to_owned());
                 return;
             }
-            let role = match role {
-                mmorpg_wire::RoleCode::Tank => Role::Tank,
-                mmorpg_wire::RoleCode::Healer => Role::Healer,
-                mmorpg_wire::RoleCode::DamageDealer => Role::DamageDealer,
-            };
             self.commands.push_back(PendingCommand {
                 origin: ClientOrigin::Wire(client_id),
-                command: Command::JoinPlayer { name, role },
+                command: Command::JoinPlayer {
+                    name: DEV_PLAYER_NAME.to_owned(),
+                    role: DEV_PLAYER_ROLE,
+                },
             });
             return;
         }
         if matches!(command, WireCommand::Snapshot) {
+            if bound_player.is_none() {
+                self.queue_wire_error(
+                    client_id,
+                    "enter-world before requesting snapshot".to_owned(),
+                );
+                return;
+            }
             self.send_wire_machine_snapshot(client_id);
             return;
         }
@@ -673,6 +729,16 @@ impl Server {
             }
         }
     }
+}
+
+fn validate_dev_auth(enabled: bool, token: &str) -> Result<(), &'static str> {
+    if !enabled {
+        return Err("development authentication is only available on loopback");
+    }
+    if token != DEV_AUTH_TOKEN {
+        return Err("invalid development token");
+    }
+    Ok(())
 }
 
 fn wire_role(role: Role) -> mmorpg_wire::RoleCode {
@@ -1406,7 +1472,10 @@ fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Com
             npc_id: EntityId(npc_id),
             quest_id: QuestId(quest_id),
         },
-        WireCommand::Join { .. } | WireCommand::Snapshot => {
+        WireCommand::Authenticate { .. }
+        | WireCommand::Join { .. }
+        | WireCommand::EnterWorld
+        | WireCommand::Snapshot => {
             return Err("command is not valid in a bound session".to_owned());
         }
     })
@@ -1443,10 +1512,17 @@ fn main() -> io::Result<()> {
     if let Some(listener) = &wire_listener {
         listener.set_nonblocking(true)?;
     }
-    let mut server = Server::new(DEFAULT_TICK_HZ);
+    let dev_auth_enabled = wire_listener.as_ref().is_some_and(|listener| {
+        listener
+            .local_addr()
+            .map(|address| address.ip().is_loopback())
+            .unwrap_or(false)
+    });
+    let mut server = Server::new(DEFAULT_TICK_HZ, dev_auth_enabled);
     println!("server_listening address={address} tick_hz={DEFAULT_TICK_HZ}");
     if let Some(address) = wire_address {
         println!("wire_server_listening address={address}");
+        println!("wire_dev_auth_enabled={dev_auth_enabled}");
     }
 
     loop {
@@ -1660,6 +1736,19 @@ mod tests {
         assert_eq!(
             encode_snapshot_text("Name with\tcontrols%"),
             "Name%20with%09controls%25"
+        );
+    }
+
+    #[test]
+    fn development_authentication_requires_loopback_and_exact_token() {
+        assert_eq!(validate_dev_auth(true, DEV_AUTH_TOKEN), Ok(()));
+        assert_eq!(
+            validate_dev_auth(true, "wrong"),
+            Err("invalid development token")
+        );
+        assert_eq!(
+            validate_dev_auth(false, DEV_AUTH_TOKEN),
+            Err("development authentication is only available on loopback")
         );
     }
 }

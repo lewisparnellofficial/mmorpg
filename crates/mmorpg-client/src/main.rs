@@ -30,6 +30,7 @@ use std::time::Duration;
 
 const FIELD_SIZE: Vec2 = Vec2::new(40.0, 30.0);
 const DEFAULT_SERVER_ADDRESS: &str = "127.0.0.1:4000";
+const DEV_AUTH_TOKEN: &str = "dev-local";
 const PLAYER_NAME: &str = "Aria";
 const PLAYER_ROLE: &str = "damage";
 const MOVEMENT_STEP: f32 = 2.0;
@@ -462,9 +463,8 @@ fn spawn_wire_network_worker(
         let mut outgoing = VecDeque::<Vec<u8>>::new();
         queue_wire_command(
             &mut outgoing,
-            WireCommand::Join {
-                name: PLAYER_NAME.to_owned(),
-                role: mmorpg_wire::RoleCode::DamageDealer,
+            WireCommand::Authenticate {
+                token: DEV_AUTH_TOKEN.to_owned(),
             },
         );
         let mut incoming = Vec::new();
@@ -547,6 +547,9 @@ fn spawn_wire_network_worker(
                         return;
                     }
                 };
+                if let ServerMessage::Authenticated { .. } = message {
+                    queue_wire_command(&mut outgoing, WireCommand::EnterWorld);
+                }
                 if let ServerMessage::Connected { .. } = message {
                     session_ready = true;
                     queue_wire_command(&mut outgoing, WireCommand::Snapshot);
@@ -1088,6 +1091,9 @@ fn apply_server_line(state: &mut ClientState, line: &str) {
 fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
     match message {
         ServerMessage::Welcome { server } => state.log(format!("server greeted {server}")),
+        ServerMessage::Authenticated { account_id, .. } => {
+            state.log(format!("authenticated account {account_id}"));
+        }
         ServerMessage::Connected { player_id, .. } => {
             state.player_id = Some(EntityId(*player_id));
             state.connection_status = "authenticated typed development session".to_owned();
