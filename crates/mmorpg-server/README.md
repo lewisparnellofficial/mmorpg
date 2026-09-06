@@ -62,6 +62,11 @@ cargo run -p mmorpg-server -- 127.0.0.1:4400 \
   --character-store /tmp/mmorpg-dev/aria.state
 ```
 
+When a client disconnects, the server first applies and checkpoints any
+commands already read during that loop iteration, then queues the player's
+authoritative leave. This prevents a same-tick reward from being discarded
+before the local checkpoint prototype can record it.
+
 The wire listener accepts versioned `MMOW` command envelopes containing the
 typed `mmorpg-wire::ClientCommand` payload. It routes those commands through
 the same bound-player checks and authoritative `World` as the line listener.

@@ -1692,8 +1692,12 @@ fn main() -> io::Result<()> {
 
         server.read_clients();
         server.read_wire_clients();
-        server.queue_disconnects();
+        // Apply commands received before a socket close, then checkpoint the
+        // still-bound character in `advance_if_due`. Queue the leave only
+        // afterward so a disconnect cannot hide a same-tick reward from the
+        // persistence pass.
         server.advance_if_due();
+        server.queue_disconnects();
         server.flush_clients();
         server.remove_closed();
         thread::sleep(Duration::from_millis(1));
