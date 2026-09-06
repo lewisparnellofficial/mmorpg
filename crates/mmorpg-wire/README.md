@@ -40,8 +40,9 @@ covers join, movement, target selection, attack, vendor listing and purchase,
 loot, quest offers/acceptance/turn-in, and snapshot request. Numeric IDs are
 big-endian, movement values are IEEE-754 `f32` bit patterns, names are bounded
 UTF-8 strings, and zero IDs/quantities or non-finite movement values are
-rejected. The opcode table is intentionally private to the Rust API until the
-server session adapter is ready to publish a compatibility contract.
+rejected. The server session adapter now consumes these commands on its
+optional wire listener; the opcode table remains an explicitly versioned Rust
+contract until a stable external compatibility document is accepted.
 
 ## Why the current TCP output is not production protocol
 

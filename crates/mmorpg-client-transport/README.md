@@ -6,8 +6,8 @@ connects to the temporary line-oriented development server, sends typed
 diagnostic lines. `WireConnection` uses the versioned `mmorpg-wire` envelope
 and provides both a compatibility method for carrying those validated command
 lines and `send_typed_command` for the first structured client-command schema.
-Event payloads remain opaque temporary lines until the server session adapter
-is implemented.
+Event payloads remain opaque temporary lines while the structured server-event
+schema is being implemented.
 
 The wire bridge intentionally does not parse `WELCOME`, `EVENT`, `WORLD`,
 `PLAYER`, or other server output into authoritative state. The payload is
