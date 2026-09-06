@@ -80,6 +80,9 @@ gameplay smoke with a checkpoint store, then a second fresh server process
 loaded the same file. The restart smoke verified persisted quest-reward gold,
 a purchased Town Ration, and rewarded quest state.
 
+The repository-root command `./scripts/smoke-restart-persistence.sh` repeats
+this exact two-process scenario with an isolated temporary checkpoint path.
+
 This remains a local prototype, not production durability. It does not yet
 provide a transaction journal, retry/idempotency keys, fsync of the parent
 directory, multi-character storage, concurrent writers, migration tooling, or

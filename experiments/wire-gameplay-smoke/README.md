@@ -55,3 +55,12 @@ cargo run --quiet --manifest-path experiments/wire-gameplay-smoke/Cargo.toml -- 
 This second mode only enters the selected character and verifies that the
 starter quest reward, purchased ration, and rewarded quest state survived the
 restart.
+
+The repository-root wrapper repeats both halves using an isolated temporary
+checkpoint directory, then removes that directory:
+
+```bash
+./scripts/smoke-restart-persistence.sh
+```
+
+It accepts optional line and wire addresses as its first and second arguments.
