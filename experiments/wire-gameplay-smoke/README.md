@@ -3,9 +3,10 @@
 This standalone tool validates the current typed client/server protocol over
 real TCP. It connects to an already-running development server, verifies that
 an unauthenticated legacy join is rejected, authenticates with the loopback-only
-development token, enters the fixed damage-dealer profile, verifies the typed
-bootstrap snapshot, buys from the vendor, accepts the starter quest, defeats
-and loots all three field wolves, and turns the quest in.
+development token, verifies the character list, explicitly selects the
+development character, verifies the typed bootstrap snapshot, buys from the
+vendor, accepts the starter quest, defeats and loots all three field wolves,
+and turns the quest in.
 
 It is an integration smoke test, not a benchmark. It uses one client and one
 development server process and does not measure capacity, latency, persistence,

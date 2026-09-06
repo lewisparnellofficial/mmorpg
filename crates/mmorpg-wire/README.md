@@ -36,9 +36,10 @@ bytes.
 
 `ClientCommand::encode_payload` and `ClientCommand::decode_payload` define the
 first structured application payload above the envelope. The schema currently
-covers development authentication, world entry, join compatibility decoding,
-movement, target selection, attack, vendor listing and purchase, loot, quest
-offers/acceptance/turn-in, and snapshot request. Numeric IDs are
+covers development authentication, character listing/selection, world entry,
+join compatibility decoding, movement, target selection, attack, vendor
+listing and purchase, loot, quest offers/acceptance/turn-in, and snapshot
+request. Numeric IDs are
 big-endian, movement values are IEEE-754 `f32` bit patterns, names are bounded
 UTF-8 strings, and zero IDs/quantities or non-finite movement values are
 rejected. The server session adapter now consumes these commands on its
@@ -47,9 +48,9 @@ contract until a stable external compatibility document is accepted.
 
 ## Typed server messages
 
-`ServerMessage` encodes welcome, development-authentication, connect/error
-responses, every current authoritative gameplay event, and a bounded bootstrap
-`WorldSnapshot`. Player
+`ServerMessage` encodes welcome, development-authentication,
+character-list/selection, connect/error responses, every current authoritative
+gameplay event, and a bounded bootstrap `WorldSnapshot`. Player
 state includes inventory stacks and quest progress; NPCs, vendor listings, and
 quest offers use explicit bounded collections. IDs, enum values, strings,
 floats, collection counts, and trailing bytes are validated during both encode

@@ -36,8 +36,9 @@ cargo run --manifest-path crates/mmorpg-client/Cargo.toml -- \
 ```
 
 In wire mode the background worker sends the loopback-only development token,
-waits for the typed `Authenticated` response, enters the fixed development
-character, requests a typed bootstrap snapshot, and passes typed
+waits for the typed `Authenticated` response, lists available characters,
+selects the first character, enters the world, requests a typed bootstrap
+snapshot, and passes typed
 `ServerMessage` values through `mmorpg-client-adapter`. The default line mode
 remains available while the two paths are compared locally. This handshake is
 not production authentication or an internet-safe credential flow.

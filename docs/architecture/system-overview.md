@@ -108,10 +108,10 @@ server.
 The current server is intentionally a development process. It does not yet
 provide production authentication, durable persistence, interest-managed
 replication, or multi-worker deployment. Its optional typed wire listener has a
-loopback-only development token handshake and server-assigned session ID so
-the client can exercise an explicit authenticated-session boundary; this does
-not represent the eventual account, credential, encryption, or authorization
-architecture.
+loopback-only development token handshake, server-assigned session ID, and
+explicit character list/selection phase so the client can exercise an
+authenticated-session boundary; this does not represent the eventual account,
+credential, encryption, or authorization architecture.
 
 The wire and transport crates are preparatory boundaries, not a production
 network stack. The current server still supports its temporary line protocol,

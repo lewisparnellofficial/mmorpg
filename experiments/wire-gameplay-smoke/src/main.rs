@@ -56,6 +56,56 @@ fn main() {
     }
     connection
         .send_typed_command(&ClientCommand::EnterWorld)
+        .expect("premature enter-world command should encode and send");
+    match expect_message(
+        &mut connection,
+        "premature enter-world rejection",
+        |message| matches!(message, ServerMessage::Error { .. }),
+    ) {
+        ServerMessage::Error { message } => {
+            assert_eq!(message, "select a character before entering world");
+        }
+        _ => unreachable!("predicate selected an error message"),
+    }
+    connection
+        .send_typed_command(&ClientCommand::ListCharacters)
+        .expect("character-list command should encode and send");
+    let character_id = match expect_message(&mut connection, "character list", |message| {
+        matches!(message, ServerMessage::CharacterList { .. })
+    }) {
+        ServerMessage::CharacterList {
+            account_id,
+            characters,
+        } => {
+            assert_eq!(account_id, 1);
+            let character = characters
+                .first()
+                .expect("development account should have a character");
+            assert_eq!(character.name, "Aria");
+            assert_eq!(character.role, mmorpg_wire::RoleCode::DamageDealer);
+            character.character_id
+        }
+        _ => unreachable!("predicate selected character list"),
+    };
+    connection
+        .send_typed_command(&ClientCommand::SelectCharacter { character_id })
+        .expect("character-selection command should encode and send");
+    match expect_message(&mut connection, "character selected", |message| {
+        matches!(message, ServerMessage::CharacterSelected { .. })
+    }) {
+        ServerMessage::CharacterSelected {
+            character_id: selected_id,
+            name,
+            role,
+        } => {
+            assert_eq!(selected_id, character_id);
+            assert_eq!(name, "Aria");
+            assert_eq!(role, mmorpg_wire::RoleCode::DamageDealer);
+        }
+        _ => unreachable!("predicate selected character-selected message"),
+    }
+    connection
+        .send_typed_command(&ClientCommand::EnterWorld)
         .expect("enter-world command should encode and send");
     let player_id = match expect_message(&mut connection, "connected", |message| {
         matches!(message, ServerMessage::Connected { .. })

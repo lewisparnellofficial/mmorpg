@@ -1,8 +1,9 @@
 use mmorpg_core::{Command, EntityId, Event, ItemId, QuestId, Role, World};
 use mmorpg_wire::{
-    ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope, ItemStackState,
-    MessageKind, NpcKindCode, NpcState, PlayerState, QuestOfferState, QuestState, QuestStatusCode,
-    ServerEvent, ServerMessage, VendorListingState, WorldSnapshot, ZoneAreaCode, decode_one,
+    CharacterSummary, ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope,
+    ItemStackState, MessageKind, NpcKindCode, NpcState, PlayerState, QuestOfferState, QuestState,
+    QuestStatusCode, ServerEvent, ServerMessage, VendorListingState, WorldSnapshot, ZoneAreaCode,
+    decode_one,
 };
 use std::collections::VecDeque;
 use std::env;
@@ -15,6 +16,7 @@ const DEFAULT_ADDRESS: &str = "127.0.0.1:4000";
 const DEFAULT_TICK_HZ: u64 = 20;
 const DEV_AUTH_TOKEN: &str = "dev-local";
 const DEV_ACCOUNT_ID: u64 = 1;
+const DEV_CHARACTER_ID: u64 = 1;
 const DEV_PLAYER_NAME: &str = "Aria";
 const DEV_PLAYER_ROLE: Role = Role::DamageDealer;
 const MAX_WIRE_INPUT_BYTES: usize = mmorpg_wire::MAX_FRAME_SIZE * 2;
@@ -55,6 +57,7 @@ struct WireClient {
     input: Vec<u8>,
     output: VecDeque<u8>,
     authenticated: Option<AuthenticatedSession>,
+    selected_character_id: Option<u64>,
     player_id: Option<EntityId>,
     closed: bool,
 }
@@ -67,6 +70,7 @@ impl WireClient {
             input: Vec::new(),
             output: VecDeque::new(),
             authenticated: None,
+            selected_character_id: None,
             player_id: None,
             closed: false,
         }
@@ -320,6 +324,41 @@ impl Server {
             );
             return;
         }
+        if matches!(command, WireCommand::ListCharacters) {
+            if bound_player.is_some() {
+                self.queue_wire_error(client_id, "already connected".to_owned());
+                return;
+            }
+            let account_id = self.wire_clients[client_index]
+                .authenticated
+                .expect("authenticated state checked above")
+                .account_id;
+            self.wire_clients[client_index].queue_server_message(&ServerMessage::CharacterList {
+                account_id,
+                characters: vec![dev_character_summary()],
+            });
+            return;
+        }
+        if let WireCommand::SelectCharacter { character_id } = command {
+            if bound_player.is_some() {
+                self.queue_wire_error(client_id, "already connected".to_owned());
+                return;
+            }
+            if dev_character(character_id).is_none() {
+                self.queue_wire_error(client_id, "unknown character".to_owned());
+                return;
+            }
+            self.wire_clients[client_index].selected_character_id = Some(character_id);
+            let character = dev_character_summary();
+            self.wire_clients[client_index].queue_server_message(
+                &ServerMessage::CharacterSelected {
+                    character_id: character.character_id,
+                    name: character.name,
+                    role: character.role,
+                },
+            );
+            return;
+        }
         if matches!(command, WireCommand::EnterWorld) {
             let already_pending = self.commands.iter().any(|pending| {
                 pending.origin == ClientOrigin::Wire(client_id)
@@ -329,11 +368,25 @@ impl Server {
                 self.queue_wire_error(client_id, "already connected".to_owned());
                 return;
             }
+            let Some(character_id) = self.wire_clients[client_index].selected_character_id else {
+                self.queue_wire_error(
+                    client_id,
+                    "select a character before entering world".to_owned(),
+                );
+                return;
+            };
+            let Some((name, role)) = dev_character(character_id) else {
+                self.queue_wire_error(
+                    client_id,
+                    "selected character is no longer available".to_owned(),
+                );
+                return;
+            };
             self.commands.push_back(PendingCommand {
                 origin: ClientOrigin::Wire(client_id),
                 command: Command::JoinPlayer {
-                    name: DEV_PLAYER_NAME.to_owned(),
-                    role: DEV_PLAYER_ROLE,
+                    name: name.to_owned(),
+                    role,
                 },
             });
             return;
@@ -1475,10 +1528,24 @@ fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Com
         WireCommand::Authenticate { .. }
         | WireCommand::Join { .. }
         | WireCommand::EnterWorld
+        | WireCommand::ListCharacters
+        | WireCommand::SelectCharacter { .. }
         | WireCommand::Snapshot => {
             return Err("command is not valid in a bound session".to_owned());
         }
     })
+}
+
+fn dev_character(character_id: u64) -> Option<(&'static str, Role)> {
+    (character_id == DEV_CHARACTER_ID).then_some((DEV_PLAYER_NAME, DEV_PLAYER_ROLE))
+}
+
+fn dev_character_summary() -> CharacterSummary {
+    CharacterSummary {
+        character_id: DEV_CHARACTER_ID,
+        name: DEV_PLAYER_NAME.to_owned(),
+        role: mmorpg_wire::RoleCode::DamageDealer,
+    }
 }
 
 fn parse_server_addresses() -> Result<(String, Option<String>), String> {

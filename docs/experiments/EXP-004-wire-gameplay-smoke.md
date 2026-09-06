@@ -12,9 +12,9 @@ vertical slice.
 2. Run `experiments/wire-gameplay-smoke` against the wire address.
 3. The tool verifies that a legacy wire join is rejected before
    authentication, authenticates with the loopback-only development token,
-   enters the fixed development character, requests a typed snapshot, buys
-   one vendor item, accepts the starter quest, defeats and loots all three
-   field wolves, and turns in the quest.
+   lists and explicitly selects the development character, requests a typed
+   snapshot, buys one vendor item, accepts the starter quest, defeats and
+   loots all three field wolves, and turns in the quest.
 
 ## Evidence produced
 

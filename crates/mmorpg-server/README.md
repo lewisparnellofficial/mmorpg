@@ -64,16 +64,21 @@ Wire clients must authenticate before sending gameplay commands:
 ```text
 Authenticate { token: "dev-local" }
 Authenticated { account_id: 1, session_id: <server-assigned> }
+ListCharacters
+CharacterList { account_id: 1, characters: [...] }
+SelectCharacter { character_id: 1 }
+CharacterSelected { character_id: 1, ... }
 EnterWorld
 Connected { player_id: <server-assigned>, ... }
 ```
 
 The server rejects unauthenticated commands and the legacy wire `Join` command.
-The `dev-local` token is accepted only on a loopback-bound wire listener, and
-all authenticated clients currently enter the fixed `Aria` damage-dealer
-development profile. This is intentionally a local protocol smoke-test
-handshake; it is not production authentication, authorization, encryption, or
-account/character persistence.
+The `dev-local` token is accepted only on a loopback-bound wire listener. The
+development account currently exposes one static `Aria` damage-dealer
+character, but the client must list and explicitly select it before entering
+the world. This is intentionally a local protocol smoke-test handshake; it is
+not production authentication, authorization, encryption, or account/character
+persistence.
 
 The optional explicit player ID on `move` is checked against the player bound
 to the connection. It exists for debugging and does not grant authority over

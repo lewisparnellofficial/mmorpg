@@ -238,10 +238,11 @@ manager.
 
 The optional typed wire listener has a deliberately narrow development
 handshake: a client must send `Authenticate { token: "dev-local" }`, receive an
-`Authenticated` message, and then send `EnterWorld`. The development token is
-accepted only when the wire listener is bound to a loopback address. This is a
-local smoke-test boundary, not an account system, credential store, encrypted
-session, or internet-safe authentication design.
+`Authenticated` message, list and select a character, and then send
+`EnterWorld`. The development token is accepted only when the wire listener is
+bound to a loopback address. This is a local smoke-test boundary, not an
+account system, credential store, encrypted session, or internet-safe
+authentication design.
 
 The authoritative simulation lives in `mmorpg-core`. Network parsing and
 socket management belong in `mmorpg-server` or a future network adapter; do

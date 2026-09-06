@@ -548,6 +548,24 @@ fn spawn_wire_network_worker(
                     }
                 };
                 if let ServerMessage::Authenticated { .. } = message {
+                    queue_wire_command(&mut outgoing, WireCommand::ListCharacters);
+                }
+                if let ServerMessage::CharacterList { characters, .. } = &message {
+                    if let Some(character) = characters.first() {
+                        queue_wire_command(
+                            &mut outgoing,
+                            WireCommand::SelectCharacter {
+                                character_id: character.character_id,
+                            },
+                        );
+                    } else {
+                        let _ = event_tx.send(NetworkEvent::Status(
+                            "authenticated account has no characters".to_owned(),
+                        ));
+                        return;
+                    }
+                }
+                if let ServerMessage::CharacterSelected { .. } = message {
                     queue_wire_command(&mut outgoing, WireCommand::EnterWorld);
                 }
                 if let ServerMessage::Connected { .. } = message {
@@ -1093,6 +1111,12 @@ fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
         ServerMessage::Welcome { server } => state.log(format!("server greeted {server}")),
         ServerMessage::Authenticated { account_id, .. } => {
             state.log(format!("authenticated account {account_id}"));
+        }
+        ServerMessage::CharacterList { characters, .. } => {
+            state.log(format!("received {} available character(s)", characters.len()));
+        }
+        ServerMessage::CharacterSelected { name, role, .. } => {
+            state.log(format!("selected character {name} ({role:?})"));
         }
         ServerMessage::Connected { player_id, .. } => {
             state.player_id = Some(EntityId(*player_id));

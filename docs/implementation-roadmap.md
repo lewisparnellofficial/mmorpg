@@ -69,6 +69,8 @@ architecture and research remain in `docs/architecture/` and
 - Repeatable TCP wire gameplay smoke tool covering the complete starter loop.
 - Loopback-only typed development authentication handshake with explicit
   server-assigned session state and `EnterWorld` transition.
+- Typed development character listing and explicit selection before world
+  entry.
 - Complete temporary bootstrap snapshot records for player inventory and quest
   state.
 - Bounded stream-level snapshot assembly with atomic publication, duplicate

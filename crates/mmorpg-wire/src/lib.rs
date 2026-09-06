@@ -70,6 +70,10 @@ pub enum ClientCommand {
         role: RoleCode,
     },
     EnterWorld,
+    ListCharacters,
+    SelectCharacter {
+        character_id: u64,
+    },
     Move {
         dx: f32,
         dy: f32,
@@ -120,6 +124,10 @@ impl ClientCommand {
                 payload.push(*role as u8);
             }
             Self::EnterWorld => payload.push(13),
+            Self::ListCharacters => payload.push(14),
+            Self::SelectCharacter { character_id } => {
+                put_nonzero_u64(&mut payload, 15, *character_id, "character_id")?;
+            }
             Self::Move { dx, dy } => {
                 validate_finite(*dx, "dx")?;
                 validate_finite(*dy, "dy")?;
@@ -177,6 +185,10 @@ impl ClientCommand {
                 role: decoder.take_u8()?.try_into()?,
             },
             13 => Self::EnterWorld,
+            14 => Self::ListCharacters,
+            15 => Self::SelectCharacter {
+                character_id: decoder.take_nonzero_u64("character_id")?,
+            },
             2 => Self::Move {
                 dx: f32::from_bits(decoder.take_u32("dx")?),
                 dy: f32::from_bits(decoder.take_u32("dy")?),
@@ -504,6 +516,14 @@ pub struct QuestOfferState {
     pub description: String,
 }
 
+/// Wire representation of a character available to an authenticated account.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CharacterSummary {
+    pub character_id: u64,
+    pub name: String,
+    pub role: RoleCode,
+}
+
 /// Complete authoritative bootstrap state for the current world.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorldSnapshot {
@@ -519,12 +539,31 @@ pub struct WorldSnapshot {
 /// Server-to-client messages carried in an event envelope.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServerMessage {
-    Welcome { server: String },
-    Connected { player_id: u64, role: RoleCode },
-    Error { message: String },
+    Welcome {
+        server: String,
+    },
+    Connected {
+        player_id: u64,
+        role: RoleCode,
+    },
+    Error {
+        message: String,
+    },
     Event(ServerEvent),
     Snapshot(WorldSnapshot),
-    Authenticated { account_id: u64, session_id: u64 },
+    Authenticated {
+        account_id: u64,
+        session_id: u64,
+    },
+    CharacterList {
+        account_id: u64,
+        characters: Vec<CharacterSummary>,
+    },
+    CharacterSelected {
+        character_id: u64,
+        name: String,
+        role: RoleCode,
+    },
 }
 
 /// Typed authoritative event payloads corresponding to the current core
@@ -672,6 +711,27 @@ impl ServerMessage {
                 encoder.put_u64(*account_id, "account_id")?;
                 encoder.put_u64(*session_id, "session_id")?;
             }
+            Self::CharacterList {
+                account_id,
+                characters,
+            } => {
+                encoder.put_u8(7);
+                encoder.put_u64(*account_id, "account_id")?;
+                encoder.put_count(characters.len(), "characters")?;
+                for character in characters {
+                    encode_character(&mut encoder, character)?;
+                }
+            }
+            Self::CharacterSelected {
+                character_id,
+                name,
+                role,
+            } => {
+                encoder.put_u8(8);
+                encoder.put_u64(*character_id, "character_id")?;
+                encoder.put_string(name, "character_name")?;
+                encoder.put_u8(*role as u8);
+            }
         }
         Ok(encoder.bytes)
     }
@@ -698,6 +758,23 @@ impl ServerMessage {
             6 => Self::Authenticated {
                 account_id: decoder.take_nonzero_u64("account_id")?,
                 session_id: decoder.take_nonzero_u64("session_id")?,
+            },
+            7 => {
+                let account_id = decoder.take_nonzero_u64("account_id")?;
+                let character_count = decoder.take_count("characters")?;
+                let mut characters = Vec::with_capacity(character_count);
+                for _ in 0..character_count {
+                    characters.push(decode_character(&mut decoder)?);
+                }
+                Self::CharacterList {
+                    account_id,
+                    characters,
+                }
+            }
+            8 => Self::CharacterSelected {
+                character_id: decoder.take_nonzero_u64("character_id")?,
+                name: decoder.take_string("character_name")?,
+                role: decode_role(&mut decoder)?,
             },
             opcode => return Err(ServerCodecError::UnknownOpcode(opcode)),
         };
@@ -916,6 +993,24 @@ fn decode_role(decoder: &mut ServerDecoder<'_>) -> Result<RoleCode, ServerCodecE
             value,
         }),
     }
+}
+
+fn encode_character(
+    encoder: &mut ServerEncoder,
+    character: &CharacterSummary,
+) -> Result<(), ServerCodecError> {
+    encoder.put_u64(character.character_id, "character_id")?;
+    encoder.put_string(&character.name, "character_name")?;
+    encoder.put_u8(character.role as u8);
+    Ok(())
+}
+
+fn decode_character(decoder: &mut ServerDecoder<'_>) -> Result<CharacterSummary, ServerCodecError> {
+    Ok(CharacterSummary {
+        character_id: decoder.take_nonzero_u64("character_id")?,
+        name: decoder.take_string("character_name")?,
+        role: decode_role(decoder)?,
+    })
 }
 
 fn encode_position(
@@ -1786,6 +1881,8 @@ mod tests {
                 role: RoleCode::DamageDealer,
             },
             ClientCommand::EnterWorld,
+            ClientCommand::ListCharacters,
+            ClientCommand::SelectCharacter { character_id: 1 },
             ClientCommand::Move { dx: -2.5, dy: 4.0 },
             ClientCommand::SelectTarget { target_id: 9 },
             ClientCommand::BasicAttack,
@@ -1839,6 +1936,12 @@ mod tests {
             }
             .encode_payload(),
             Err(CommandCodecError::InvalidFloat { field: "dx" })
+        );
+        assert_eq!(
+            ClientCommand::SelectCharacter { character_id: 0 }.encode_payload(),
+            Err(CommandCodecError::InvalidZero {
+                field: "character_id"
+            })
         );
         assert_eq!(
             ClientCommand::decode_payload(&[5, 0, 0, 0, 0, 0, 0, 0, 0]),
@@ -1916,6 +2019,19 @@ mod tests {
             ServerMessage::Authenticated {
                 account_id: 1,
                 session_id: 11,
+            },
+            ServerMessage::CharacterList {
+                account_id: 1,
+                characters: vec![CharacterSummary {
+                    character_id: 1,
+                    name: "Aria".to_owned(),
+                    role: RoleCode::DamageDealer,
+                }],
+            },
+            ServerMessage::CharacterSelected {
+                character_id: 1,
+                name: "Aria".to_owned(),
+                role: RoleCode::DamageDealer,
             },
             ServerMessage::Error {
                 message: "connect first".to_owned(),
