@@ -76,8 +76,9 @@ The repository now contains the first implementation of this shape:
 - `crates/mmorpg-client-protocol` — standalone typed command-line encoder and
   bounded decoder for the temporary development server adapter; it deliberately
   rejects unrelated human-readable diagnostics.
-- `crates/mmorpg-client-transport` — standalone bounded blocking TCP adapter
-  for sending temporary command lines and reading diagnostic responses.
+- `crates/mmorpg-client-transport` — standalone bounded blocking TCP adapters
+  for the temporary line connection and a versioned-wire bridge that carries
+  validated command/event payloads.
 - `crates/mmorpg-wire` — standalone versioned length-prefixed envelope
   prototype with explicit message kinds and payload boundaries.
 - `crates/mmorpg-core` — dependency-free authoritative starter-zone simulation.
@@ -108,12 +109,12 @@ provide authentication, durable persistence, binary protocol versioning,
 interest-managed replication, or multi-worker deployment.
 
 The wire and transport crates are preparatory boundaries, not a production
-network stack. The current server still speaks a temporary line protocol. The
-graphical client uses a background worker, a framed machine-readable snapshot,
-and `mmorpg-client-adapter` for local development, but authentication,
-production framing, asynchronous backpressure, and complete inventory/quest
-snapshot state remain future work. The current player/NPC renderer consumes
-the presentation model directly.
+network stack. The current server still speaks a temporary line protocol, and
+the graphical client still uses its own background line-protocol worker. The
+new `WireConnection` proves bounded envelope I/O but is not yet connected to
+the server. Authentication, structured binary payload schemas, asynchronous
+backpressure, and interest-managed replication remain future work. The
+current player/NPC renderer consumes the presentation model directly.
 
 The code should retain interfaces for separating these later:
 

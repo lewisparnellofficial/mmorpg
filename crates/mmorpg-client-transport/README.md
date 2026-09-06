@@ -1,17 +1,17 @@
 # `mmorpg-client-transport`
 
-This crate is a small blocking transport adapter for the temporary
-line-oriented development server. It connects a TCP stream, sends the typed
+This crate contains two small blocking TCP adapters. `DevelopmentConnection`
+connects to the temporary line-oriented development server, sends typed
 `ProtocolLine` values produced by `mmorpg-client-protocol`, and reads bounded
-diagnostic lines. The configured maximum line size applies to both outgoing
-command payloads and incoming response payloads; the newline terminator is
-not counted.
+diagnostic lines. `WireConnection` uses the versioned `mmorpg-wire` envelope
+and currently carries those same validated command/event lines as opaque
+payloads, allowing framing and socket behavior to be exercised before the
+binary application schema is finalized.
 
-It intentionally does not parse `WELCOME`, `EVENT`, `WORLD`, `PLAYER`, or
-other human-readable server output into authoritative state. That output is a
-development diagnostic surface. A production client needs a versioned,
-machine-readable wire protocol and a decoder that feeds authoritative results
-into `mmorpg-client-model`.
+The wire bridge intentionally does not parse `WELCOME`, `EVENT`, `WORLD`,
+`PLAYER`, or other server output into authoritative state. The payload is
+returned to a higher protocol layer, which must decode it and feed validated
+results into `mmorpg-client-model`.
 
 The transport is blocking and must not run on the simulation or render thread
 in a future client. It is suitable for local development adapters and
@@ -25,3 +25,8 @@ Run its focused tests from the repository root:
 cargo fmt --manifest-path crates/mmorpg-client-transport/Cargo.toml -- --check
 cargo test --manifest-path crates/mmorpg-client-transport/Cargo.toml
 ```
+
+The current wire bridge is still a transport prototype: the server does not
+yet expose a binary listener, and its payload is not the final structured
+command/event schema. Authentication, encryption, reconnection, queues, and
+production observability remain future work.

@@ -44,6 +44,8 @@ architecture and research remain in `docs/architecture/` and
 - Versioned length-prefixed wire-envelope prototype with bounded decoding.
 - Bounded TCP transport adapter for typed development commands and diagnostic
   lines.
+- Bounded wire-envelope transport bridge for validated command/event payloads,
+  with message-kind and frame-limit tests.
 - Interactive Bevy client shell with background TCP I/O, authoritative
   snapshot bootstrap, keyboard movement, target cycling, attack input, and a
   compact status HUD.

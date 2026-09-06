@@ -14,6 +14,7 @@ name = "mmorpg-client-transport"
 version = "0.1.0"
 dependencies = [
  "mmorpg-client-protocol",
+ "mmorpg-wire",
 ]
 
 [[package]]
@@ -26,3 +27,7 @@ version = "0.1.0"
 dependencies = [
  "mmorpg-content",
 ]
+
+[[package]]
+name = "mmorpg-wire"
+version = "0.1.0"

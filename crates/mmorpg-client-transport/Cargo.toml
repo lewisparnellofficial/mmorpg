@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 mmorpg-client-protocol = { path = "../mmorpg-client-protocol" }
+mmorpg-wire = { path = "../mmorpg-wire" }
 
 [lints.rust]
 unsafe_code = "forbid"
