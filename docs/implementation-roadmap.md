@@ -47,6 +47,8 @@ architecture and research remain in `docs/architecture/` and
 - Interactive Bevy client shell with background TCP I/O, authoritative
   snapshot bootstrap, keyboard movement, target cycling, attack input, and a
   compact status HUD.
+- Visible starter-loop HUD for inventory, vendor stock, quest offers, quest
+  progress, notifications, and server-authoritative vendor/quest/loot intents.
 - Temporary machine-readable snapshot decoder for the graphical client path.
 - Typed temporary-protocol decoder for the complete starter economy, loot,
   and quest event vocabulary.

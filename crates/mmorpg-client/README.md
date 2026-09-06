@@ -8,9 +8,9 @@ directional light, draw a primitive town and field, and instantiate the NPC
 placements from the shared `mmorpg-content` starter catalog. It connects to
 the local development server on a background TCP worker, requests the bounded
 `snapshot` bootstrap response, and supports keyboard movement, target cycling,
-loot, vendor, and quest intents, and server-authoritative basic attacks. The vendor and enemy markers use
-different colors. Startup logs also identify the content definitions and
-placements that were instantiated.
+loot, vendor, and quest intents, and server-authoritative basic attacks. The
+vendor and enemy markers use different colors. Startup logs also identify the
+content definitions and placements that were instantiated.
 
 Decoded snapshots and events are also projected through the standalone
 `mmorpg-client-adapter` into `mmorpg-client-model`. The Bevy scene retains
