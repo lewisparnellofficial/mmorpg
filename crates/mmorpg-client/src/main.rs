@@ -41,6 +41,7 @@ const MAX_DEFERRED_COMMANDS: usize = 32;
 const MAX_OUTGOING_LINES: usize = 64;
 const MAX_WIRE_INPUT_BYTES: usize = mmorpg_wire::MAX_FRAME_SIZE * 2;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Component)]
 struct StarterNpc {
@@ -428,9 +429,6 @@ fn spawn_wire_network_worker(
     event_tx: Sender<NetworkEvent>,
 ) {
     thread::spawn(move || {
-        let _ = event_tx.send(NetworkEvent::Status(format!(
-            "connecting to typed wire {server_address}"
-        )));
         let Some(address) = server_address
             .to_socket_addrs()
             .ok()
@@ -441,146 +439,176 @@ fn spawn_wire_network_worker(
             ));
             return;
         };
-        let mut stream = match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
-            Ok(stream) => stream,
-            Err(error) => {
-                let _ = event_tx.send(NetworkEvent::Status(format!(
-                    "wire connection failed: {error}"
-                )));
-                return;
-            }
-        };
-        if let Err(error) = stream.set_nonblocking(true) {
-            let _ = event_tx.send(NetworkEvent::Status(format!(
-                "cannot configure wire socket: {error}"
-            )));
-            return;
-        }
-
-        let _ = event_tx.send(NetworkEvent::Status(
-            "typed wire socket connected".to_owned(),
-        ));
-        let mut outgoing = VecDeque::<Vec<u8>>::new();
-        queue_wire_command(
-            &mut outgoing,
-            WireCommand::Authenticate {
-                token: DEV_AUTH_TOKEN.to_owned(),
-            },
-        );
-        let mut incoming = Vec::new();
-        let mut session_ready = false;
         let mut deferred_commands = VecDeque::new();
 
         loop {
-            match command_rx.try_recv() {
-                Err(TryRecvError::Disconnected) => break,
-                Ok(command) if session_ready => {
-                    queue_wire_command(&mut outgoing, client_command_to_wire(command))
-                }
-                Ok(command) if deferred_commands.len() < MAX_DEFERRED_COMMANDS => {
-                    deferred_commands.push_back(command)
-                }
-                Ok(_) => {}
-                Err(TryRecvError::Empty) => {}
+            if event_tx
+                .send(NetworkEvent::Status(format!(
+                    "connecting to typed wire {server_address}"
+                )))
+                .is_err()
+            {
+                return;
             }
-
-            if !flush_outgoing(&mut stream, &mut outgoing) {
-                let _ = event_tx.send(NetworkEvent::Status("typed wire write failed".to_owned()));
-                break;
-            }
-
-            let mut buffer = [0_u8; 4096];
-            loop {
-                match stream.read(&mut buffer) {
-                    Ok(0) => {
-                        let _ = event_tx.send(NetworkEvent::Status(
-                            "typed wire server closed the connection".to_owned(),
-                        ));
+            let mut stream = match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    if event_tx
+                        .send(NetworkEvent::Status(format!(
+                            "wire connection failed: {error}; retrying"
+                        )))
+                        .is_err()
+                    {
                         return;
                     }
-                    Ok(bytes_read) => {
-                        incoming.extend_from_slice(&buffer[..bytes_read]);
-                        if incoming.len() > MAX_WIRE_INPUT_BYTES {
+                    thread::sleep(RECONNECT_DELAY);
+                    continue;
+                }
+            };
+            if let Err(error) = stream.set_nonblocking(true) {
+                if event_tx
+                    .send(NetworkEvent::Status(format!(
+                        "cannot configure wire socket: {error}; retrying"
+                    )))
+                    .is_err()
+                {
+                    return;
+                }
+                thread::sleep(RECONNECT_DELAY);
+                continue;
+            }
+            if event_tx
+                .send(NetworkEvent::Status(
+                    "typed wire socket connected".to_owned(),
+                ))
+                .is_err()
+            {
+                return;
+            }
+            let mut outgoing = VecDeque::<Vec<u8>>::new();
+            queue_wire_command(
+                &mut outgoing,
+                WireCommand::Authenticate {
+                    token: DEV_AUTH_TOKEN.to_owned(),
+                },
+            );
+            let mut incoming = Vec::new();
+            let mut session_ready = false;
+
+            'connection: loop {
+                match command_rx.try_recv() {
+                    Err(TryRecvError::Disconnected) => return,
+                    Ok(command) if session_ready => {
+                        queue_wire_command(&mut outgoing, client_command_to_wire(command))
+                    }
+                    Ok(command) if deferred_commands.len() < MAX_DEFERRED_COMMANDS => {
+                        deferred_commands.push_back(command)
+                    }
+                    Ok(_) | Err(TryRecvError::Empty) => {}
+                }
+
+                if !flush_outgoing(&mut stream, &mut outgoing) {
+                    let _ = event_tx.send(NetworkEvent::Status(
+                        "typed wire write failed; reconnecting".to_owned(),
+                    ));
+                    break 'connection;
+                }
+
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    match stream.read(&mut buffer) {
+                        Ok(0) => {
                             let _ = event_tx.send(NetworkEvent::Status(
-                                "typed wire input buffer exceeded its limit".to_owned(),
+                                "typed wire server closed the connection; reconnecting".to_owned(),
                             ));
-                            return;
+                            break 'connection;
+                        }
+                        Ok(bytes_read) => {
+                            incoming.extend_from_slice(&buffer[..bytes_read]);
+                            if incoming.len() > MAX_WIRE_INPUT_BYTES {
+                                let _ = event_tx.send(NetworkEvent::Status(
+                                    "typed wire input buffer exceeded its limit; reconnecting"
+                                        .to_owned(),
+                                ));
+                                break 'connection;
+                            }
+                        }
+                        Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                        Err(error) => {
+                            let _ = event_tx.send(NetworkEvent::Status(format!(
+                                "typed wire read failed: {error}; reconnecting"
+                            )));
+                            break 'connection;
                         }
                     }
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => break,
-                    Err(error) => {
-                        let _ = event_tx.send(NetworkEvent::Status(format!(
-                            "typed wire read failed: {error}"
-                        )));
-                        return;
-                    }
                 }
-            }
 
-            loop {
-                let decoded = match decode_one(&incoming) {
-                    Ok(decoded) => decoded,
-                    Err(WireDecodeError::Truncated { .. }) => break,
-                    Err(error) => {
-                        let _ = event_tx.send(NetworkEvent::Status(format!(
-                            "typed wire frame rejected: {error}"
-                        )));
-                        return;
-                    }
-                };
-                let consumed = decoded.consumed;
-                let kind = decoded.envelope.kind;
-                let payload = decoded.envelope.payload;
-                incoming.drain(..consumed);
-                if kind != MessageKind::Event {
-                    let _ = event_tx.send(NetworkEvent::Status(
-                        "typed wire server sent a non-event message".to_owned(),
-                    ));
-                    return;
-                }
-                let message = match ServerMessage::decode_payload(&payload) {
-                    Ok(message) => message,
-                    Err(error) => {
-                        let _ = event_tx.send(NetworkEvent::Status(format!(
-                            "typed wire server message rejected: {error}"
-                        )));
-                        return;
-                    }
-                };
-                if let ServerMessage::Authenticated { .. } = message {
-                    queue_wire_command(&mut outgoing, WireCommand::ListCharacters);
-                }
-                if let ServerMessage::CharacterList { characters, .. } = &message {
-                    if let Some(character) = characters.first() {
-                        queue_wire_command(
-                            &mut outgoing,
-                            WireCommand::SelectCharacter {
-                                character_id: character.character_id,
-                            },
-                        );
-                    } else {
+                loop {
+                    let decoded = match decode_one(&incoming) {
+                        Ok(decoded) => decoded,
+                        Err(WireDecodeError::Truncated { .. }) => break,
+                        Err(error) => {
+                            let _ = event_tx.send(NetworkEvent::Status(format!(
+                                "typed wire frame rejected: {error}; reconnecting"
+                            )));
+                            break 'connection;
+                        }
+                    };
+                    let consumed = decoded.consumed;
+                    let kind = decoded.envelope.kind;
+                    let payload = decoded.envelope.payload;
+                    incoming.drain(..consumed);
+                    if kind != MessageKind::Event {
                         let _ = event_tx.send(NetworkEvent::Status(
-                            "authenticated account has no characters".to_owned(),
+                            "typed wire server sent a non-event message; reconnecting".to_owned(),
                         ));
+                        break 'connection;
+                    }
+                    let message = match ServerMessage::decode_payload(&payload) {
+                        Ok(message) => message,
+                        Err(error) => {
+                            let _ = event_tx.send(NetworkEvent::Status(format!(
+                                "typed wire server message rejected: {error}; reconnecting"
+                            )));
+                            break 'connection;
+                        }
+                    };
+                    if let ServerMessage::Authenticated { .. } = message {
+                        queue_wire_command(&mut outgoing, WireCommand::ListCharacters);
+                    }
+                    if let ServerMessage::CharacterList { characters, .. } = &message {
+                        if let Some(character) = characters.first() {
+                            queue_wire_command(
+                                &mut outgoing,
+                                WireCommand::SelectCharacter {
+                                    character_id: character.character_id,
+                                },
+                            );
+                        } else {
+                            let _ = event_tx.send(NetworkEvent::Status(
+                                "authenticated account has no characters; reconnecting".to_owned(),
+                            ));
+                            break 'connection;
+                        }
+                    }
+                    if let ServerMessage::CharacterSelected { .. } = message {
+                        queue_wire_command(&mut outgoing, WireCommand::EnterWorld);
+                    }
+                    if let ServerMessage::Connected { .. } = message {
+                        session_ready = true;
+                        queue_wire_command(&mut outgoing, WireCommand::Snapshot);
+                        while let Some(command) = deferred_commands.pop_front() {
+                            queue_wire_command(&mut outgoing, client_command_to_wire(command));
+                        }
+                    }
+                    if event_tx.send(NetworkEvent::ServerMessage(message)).is_err() {
                         return;
                     }
                 }
-                if let ServerMessage::CharacterSelected { .. } = message {
-                    queue_wire_command(&mut outgoing, WireCommand::EnterWorld);
-                }
-                if let ServerMessage::Connected { .. } = message {
-                    session_ready = true;
-                    queue_wire_command(&mut outgoing, WireCommand::Snapshot);
-                    while let Some(command) = deferred_commands.pop_front() {
-                        queue_wire_command(&mut outgoing, client_command_to_wire(command));
-                    }
-                }
-                if event_tx.send(NetworkEvent::ServerMessage(message)).is_err() {
-                    return;
-                }
-            }
 
-            thread::sleep(Duration::from_millis(5));
+                thread::sleep(Duration::from_millis(5));
+            }
+            thread::sleep(RECONNECT_DELAY);
         }
     });
 }
@@ -1113,7 +1141,10 @@ fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
             state.log(format!("authenticated account {account_id}"));
         }
         ServerMessage::CharacterList { characters, .. } => {
-            state.log(format!("received {} available character(s)", characters.len()));
+            state.log(format!(
+                "received {} available character(s)",
+                characters.len()
+            ));
         }
         ServerMessage::CharacterSelected { name, role, .. } => {
             state.log(format!("selected character {name} ({role:?})"));

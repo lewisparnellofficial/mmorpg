@@ -41,7 +41,12 @@ selects the first character, enters the world, requests a typed bootstrap
 snapshot, and passes typed
 `ServerMessage` values through `mmorpg-client-adapter`. The default line mode
 remains available while the two paths are compared locally. This handshake is
-not production authentication or an internet-safe credential flow.
+not production authentication or an internet-safe credential flow. If the
+typed socket closes or the development server is restarted, the worker retries
+after 500 ms and repeats the full authentication, character-selection, and
+bootstrap sequence. The server therefore supplies a fresh authoritative
+snapshot; this is reconnect-by-restore, not a production session-resume
+protocol.
 
 The window can be closed using the normal window controls. With the server
 running in another terminal, use `WASD` to move, `Tab` to select the next
@@ -61,10 +66,12 @@ distributions; consult the Bevy setup documentation for the selected host.
 
 - The connection uses a temporary development TCP adapter. Wire mode has a
   loopback-only development token handshake, but the project does not yet
-  provide production authentication, encryption, reconnection, replication
-  interest management, or production backpressure. The local spike does use
-  bounded input, deferred-command, and wire-frame queues plus a five-second
-  connection timeout.
+  provide production authentication, encryption, session fencing, replication
+  interest management, or production backpressure. The local spike retries a
+  dropped typed-wire connection and reboots its development session, but does
+  not preserve in-flight commands or use a reconnect token. It uses bounded
+  input, deferred-command, and wire-frame queues plus a five-second connection
+  timeout.
 - The client has only a fixed camera, keyboard input, basic targeting, and a
   compact starter-loop UI. It does not yet provide a full character
   controller, persistence, or addon scripting.

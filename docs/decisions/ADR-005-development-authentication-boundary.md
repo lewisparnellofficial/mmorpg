@@ -47,11 +47,16 @@ unchanged because it remains a local debugging protocol.
   non-loopback address.
 - Multiple local wire clients currently receive the same account and static
   character catalog; this is acceptable only for the development slice.
+- The typed client may reconnect after a socket loss by executing this full
+  development transition again. Each connection obtains a new development
+  session and an authoritative bootstrap; no session-resume guarantee is
+  implied.
 - The protocol retains the legacy `Join` codec variant temporarily so older
   payload round-trip tests and compatibility tooling can still decode it, but
   the server does not accept it on the typed wire path.
 - No claim is made about production identity, credential storage, transport
-  encryption, authorization, revocation, reconnect, or character selection.
+  encryption, authorization, revocation, reconnect policy, or multi-character
+  selection UX.
 
 ## Follow-up
 
