@@ -46,6 +46,8 @@ architecture and research remain in `docs/architecture/` and
   lines.
 - Bounded wire-envelope transport bridge for validated command/event payloads,
   with message-kind and frame-limit tests.
+- Typed bounded client-command payload codec for the complete current
+  starter-loop intent vocabulary.
 - Interactive Bevy client shell with background TCP I/O, authoritative
   snapshot bootstrap, keyboard movement, target cycling, attack input, and a
   compact status HUD.

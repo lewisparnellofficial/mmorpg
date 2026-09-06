@@ -4,9 +4,10 @@ This crate contains two small blocking TCP adapters. `DevelopmentConnection`
 connects to the temporary line-oriented development server, sends typed
 `ProtocolLine` values produced by `mmorpg-client-protocol`, and reads bounded
 diagnostic lines. `WireConnection` uses the versioned `mmorpg-wire` envelope
-and currently carries those same validated command/event lines as opaque
-payloads, allowing framing and socket behavior to be exercised before the
-binary application schema is finalized.
+and provides both a compatibility method for carrying those validated command
+lines and `send_typed_command` for the first structured client-command schema.
+Event payloads remain opaque temporary lines until the server session adapter
+is implemented.
 
 The wire bridge intentionally does not parse `WELCOME`, `EVENT`, `WORLD`,
 `PLAYER`, or other server output into authoritative state. The payload is

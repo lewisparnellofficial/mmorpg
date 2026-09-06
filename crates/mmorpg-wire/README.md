@@ -2,9 +2,8 @@
 
 This standalone crate is a prototype for the production protocol boundary. It
 defines a small, transport-independent envelope for versioned commands and
-events. The payload remains opaque so a later schema decision can be made
-without coupling framing to sockets, the simulation, or a particular
-serialization library.
+events. The envelope remains independent of sockets and the simulation, while
+the first typed client-command payload schema now lives alongside it.
 
 ## Frame format
 
@@ -33,6 +32,17 @@ intentional: a future protocol can add negotiated versions or flags behind a
 deliberate compatibility decision instead of silently interpreting unknown
 bytes.
 
+## Typed client commands
+
+`ClientCommand::encode_payload` and `ClientCommand::decode_payload` define the
+first structured application payload above the envelope. The schema currently
+covers join, movement, target selection, attack, vendor listing and purchase,
+loot, quest offers/acceptance/turn-in, and snapshot request. Numeric IDs are
+big-endian, movement values are IEEE-754 `f32` bit patterns, names are bounded
+UTF-8 strings, and zero IDs/quantities or non-finite movement values are
+rejected. The opcode table is intentionally private to the Rust API until the
+server session adapter is ready to publish a compatibility contract.
+
 ## Why the current TCP output is not production protocol
 
 The development server currently writes human-readable lines such as
@@ -52,8 +62,9 @@ debugging, but it is not a safe or stable production protocol:
 - Parsing server display text would make client state dependent on wording
   rather than stable IDs and typed fields.
 
-This prototype addresses framing and envelope metadata only. It does not yet
-define command/event payload schemas, authentication, encryption, compression,
+This prototype addresses framing, envelope metadata, and the first typed
+command payload schema. It does not yet define typed event/snapshot payloads,
+authentication, encryption, compression,
 capability negotiation, replay protection, sequencing, acknowledgements,
 interest-managed replication, or socket ownership. A future network adapter
 should own buffering and I/O, call `decode_one` only after receiving bytes,

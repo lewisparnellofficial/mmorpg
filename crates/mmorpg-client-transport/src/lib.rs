@@ -14,7 +14,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use mmorpg_client_protocol::ProtocolLine;
-use mmorpg_wire::{Envelope, MAX_FRAME_SIZE, MessageKind, decode_one};
+use mmorpg_wire::{ClientCommand, Envelope, MAX_FRAME_SIZE, MessageKind, decode_one};
 
 pub const DEFAULT_MAX_LINE_BYTES: usize = 8 * 1024;
 pub const DEFAULT_MAX_WIRE_FRAME_SIZE: usize = MAX_FRAME_SIZE;
@@ -232,6 +232,7 @@ pub enum WireTransportError {
     InvalidUtf8,
     ConnectionClosed,
     Io(io::Error),
+    Command(mmorpg_wire::CommandCodecError),
     Encode(mmorpg_wire::EncodeError),
     Decode(mmorpg_wire::DecodeError),
 }
@@ -249,6 +250,7 @@ impl fmt::Display for WireTransportError {
             Self::InvalidUtf8 => write!(formatter, "wire event payload is not valid UTF-8"),
             Self::ConnectionClosed => write!(formatter, "server closed the wire connection"),
             Self::Io(error) => error.fmt(formatter),
+            Self::Command(error) => write!(formatter, "invalid typed command: {error}"),
             Self::Encode(error) => write!(formatter, "cannot encode wire envelope: {error}"),
             Self::Decode(error) => write!(formatter, "cannot decode wire envelope: {error}"),
         }
@@ -269,6 +271,12 @@ impl From<mmorpg_wire::EncodeError> for WireTransportError {
     }
 }
 
+impl From<mmorpg_wire::CommandCodecError> for WireTransportError {
+    fn from(error: mmorpg_wire::CommandCodecError) -> Self {
+        Self::Command(error)
+    }
+}
+
 impl From<mmorpg_wire::DecodeError> for WireTransportError {
     fn from(error: mmorpg_wire::DecodeError) -> Self {
         Self::Decode(error)
@@ -277,9 +285,10 @@ impl From<mmorpg_wire::DecodeError> for WireTransportError {
 
 /// A blocking transport bridge for versioned command/event envelopes.
 ///
-/// The payload currently remains the validated temporary protocol line. This
-/// lets callers prove framing, bounded I/O, and message-kind separation before
-/// the project commits to a binary command/event payload schema.
+/// The bridge supports both validated temporary line payloads and the first
+/// typed client-command payload schema. This lets callers prove framing,
+/// bounded I/O, and message-kind separation while the server session adapter
+/// is still being migrated.
 pub struct WireConnection {
     writer: TcpStream,
     reader: BufReader<TcpStream>,
@@ -307,6 +316,15 @@ impl WireConnection {
     /// Sends one validated temporary command inside a versioned envelope.
     pub fn send_command(&mut self, command: &ProtocolLine) -> Result<(), WireTransportError> {
         let envelope = Envelope::new(MessageKind::Command, command.as_str().as_bytes().to_vec())?;
+        self.write_envelope(&envelope)
+    }
+
+    /// Sends one typed application command inside a versioned envelope.
+    pub fn send_typed_command(
+        &mut self,
+        command: &ClientCommand,
+    ) -> Result<(), WireTransportError> {
+        let envelope = Envelope::new(MessageKind::Command, command.encode_payload()?)?;
         self.write_envelope(&envelope)
     }
 
@@ -478,7 +496,10 @@ mod tests {
                 .expect("read frame body");
             let decoded = mmorpg_wire::decode_one(&frame).expect("decode command envelope");
             assert_eq!(decoded.envelope.kind, MessageKind::Command);
-            assert_eq!(decoded.envelope.payload, b"state".to_vec());
+            assert_eq!(
+                ClientCommand::decode_payload(&decoded.envelope.payload),
+                Ok(ClientCommand::Snapshot)
+            );
 
             let response = Envelope::new(MessageKind::Event, b"EVENT ready".to_vec())
                 .expect("construct event envelope")
@@ -491,7 +512,7 @@ mod tests {
             WireConnection::connect(&WireConnectionConfig::new(address.to_string()))
                 .expect("connect to loopback");
         connection
-            .send_command(&CommandLine::state())
+            .send_typed_command(&ClientCommand::Snapshot)
             .expect("send framed command");
         assert_eq!(
             connection.read_event_payload().expect("read framed event"),
