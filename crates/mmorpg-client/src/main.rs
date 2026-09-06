@@ -15,7 +15,7 @@ use mmorpg_client_model::{ClientEntity, ClientWorld};
 use mmorpg_client_protocol::{
     EntityId, NpcKind, ServerEvent, ServerLine, Snapshot, SnapshotAssembler, decode_server_line,
 };
-use mmorpg_content::starter_catalog;
+use mmorpg_content::{ItemId, QuestId, item_definition, starter_catalog};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -88,9 +88,28 @@ impl ClientState {
 
 #[derive(Debug)]
 enum ClientCommand {
-    Move { dx: f32, dy: f32 },
+    Move {
+        dx: f32,
+        dy: f32,
+    },
     Target(EntityId),
     Attack,
+    ListVendor(EntityId),
+    ListQuestOffers(EntityId),
+    BuyItem {
+        vendor_id: EntityId,
+        item_id: ItemId,
+        quantity: u32,
+    },
+    AcceptQuest {
+        npc_id: EntityId,
+        quest_id: QuestId,
+    },
+    TurnInQuest {
+        npc_id: EntityId,
+        quest_id: QuestId,
+    },
+    Loot(EntityId),
 }
 
 #[derive(Debug)]
@@ -245,7 +264,7 @@ fn setup_ui(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 top: px(12.0),
                 left: px(12.0),
-                width: px(460.0),
+                width: px(560.0),
                 padding: UiRect::all(px(12.0)),
                 ..default()
             },
@@ -384,6 +403,28 @@ fn queue_command_bounded(outgoing: &mut VecDeque<Vec<u8>>, command: ClientComman
             queue_command_line(outgoing, &format!("target {id}"));
         }
         ClientCommand::Attack => queue_command_line(outgoing, "attack"),
+        ClientCommand::ListVendor(EntityId(id)) => {
+            queue_command_line(outgoing, &format!("vendor {id}"));
+        }
+        ClientCommand::ListQuestOffers(EntityId(id)) => {
+            queue_command_line(outgoing, &format!("quest-offers {id}"));
+        }
+        ClientCommand::BuyItem {
+            vendor_id: EntityId(vendor_id),
+            item_id,
+            quantity,
+        } => queue_command_line(outgoing, &format!("buy {vendor_id} {item_id} {quantity}")),
+        ClientCommand::AcceptQuest {
+            npc_id: EntityId(npc_id),
+            quest_id,
+        } => queue_command_line(outgoing, &format!("accept-quest {npc_id} {quest_id}")),
+        ClientCommand::TurnInQuest {
+            npc_id: EntityId(npc_id),
+            quest_id,
+        } => queue_command_line(outgoing, &format!("turn-in-quest {npc_id} {quest_id}")),
+        ClientCommand::Loot(EntityId(enemy_id)) => {
+            queue_command_line(outgoing, &format!("loot {enemy_id}"));
+        }
     }
 }
 
@@ -467,6 +508,59 @@ fn keyboard_input(
     if input.just_pressed(KeyCode::Space) {
         send_command(&bridge, &mut state, ClientCommand::Attack);
     }
+    if input.just_pressed(KeyCode::KeyL)
+        && let Some(target_id) = state
+            .player_id
+            .and_then(|id| state.presentation.player(id))
+            .and_then(|player| player.target)
+    {
+        send_command(&bridge, &mut state, ClientCommand::Loot(target_id));
+    }
+    if input.just_pressed(KeyCode::KeyV)
+        && let Some(vendor_id) = first_vendor_id(&state)
+    {
+        send_command(&bridge, &mut state, ClientCommand::ListVendor(vendor_id));
+    }
+    if input.just_pressed(KeyCode::KeyO)
+        && let Some(vendor_id) = first_vendor_id(&state)
+    {
+        send_command(
+            &bridge,
+            &mut state,
+            ClientCommand::ListQuestOffers(vendor_id),
+        );
+    }
+    if input.just_pressed(KeyCode::KeyB)
+        && let Some((vendor_id, item_id)) = first_vendor_listing(&state)
+    {
+        send_command(
+            &bridge,
+            &mut state,
+            ClientCommand::BuyItem {
+                vendor_id,
+                item_id,
+                quantity: 1,
+            },
+        );
+    }
+    if input.just_pressed(KeyCode::KeyE)
+        && let Some((npc_id, quest_id)) = first_quest_offer(&state)
+    {
+        send_command(
+            &bridge,
+            &mut state,
+            ClientCommand::AcceptQuest { npc_id, quest_id },
+        );
+    }
+    if input.just_pressed(KeyCode::KeyR)
+        && let Some((npc_id, quest_id)) = first_player_quest(&state)
+    {
+        send_command(
+            &bridge,
+            &mut state,
+            ClientCommand::TurnInQuest { npc_id, quest_id },
+        );
+    }
 }
 
 fn send_command(bridge: &NetworkBridge, state: &mut ClientState, command: ClientCommand) {
@@ -494,6 +588,47 @@ fn next_target(state: &mut ClientState) -> Option<EntityId> {
     let target = ids.get(state.target_cursor % ids.len().max(1)).copied()?;
     state.target_cursor = (state.target_cursor + 1) % ids.len();
     Some(target)
+}
+
+fn first_vendor_id(state: &ClientState) -> Option<EntityId> {
+    state
+        .presentation
+        .entities()
+        .find_map(|entity| match entity {
+            ClientEntity::Npc(npc) if npc.kind == NpcKind::Vendor => Some(npc.id),
+            _ => None,
+        })
+}
+
+fn first_quest_offer(state: &ClientState) -> Option<(EntityId, QuestId)> {
+    let npc_id = first_vendor_id(state)?;
+    let quest_id = state
+        .presentation
+        .quest_offers(npc_id)?
+        .first()
+        .map(|offer| offer.quest_id)?;
+    Some((npc_id, quest_id))
+}
+
+fn first_vendor_listing(state: &ClientState) -> Option<(EntityId, ItemId)> {
+    let vendor_id = first_vendor_id(state)?;
+    let item_id = state
+        .presentation
+        .vendor_listings(vendor_id)?
+        .first()
+        .map(|listing| listing.item_id)?;
+    Some((vendor_id, item_id))
+}
+
+fn first_player_quest(state: &ClientState) -> Option<(EntityId, QuestId)> {
+    let player_id = state.player_id?;
+    let quest_id = state
+        .presentation
+        .player(player_id)?
+        .quests
+        .first()
+        .map(|quest| quest.quest_id)?;
+    Some((first_vendor_id(state)?, quest_id))
 }
 
 fn sync_authoritative_presentation(
@@ -550,6 +685,10 @@ fn update_status_text(state: Res<ClientState>, mut query: Query<&mut Text, With<
     let Ok(mut text) = query.single_mut() else {
         return;
     };
+    text.0 = format_hud_text(&state);
+}
+
+fn format_hud_text(state: &ClientState) -> String {
     let player = state.player_id.and_then(|id| state.presentation.player(id));
     let target = player.and_then(|player| player.target).map_or_else(
         || "none".to_owned(),
@@ -560,7 +699,7 @@ fn update_status_text(state: Res<ClientState>, mut query: Query<&mut Text, With<
             )
         },
     );
-    let player = state.player_id.map_or_else(
+    let player_summary = state.player_id.map_or_else(
         || "not connected".to_owned(),
         |id| match state.presentation.player(id) {
             Some(player) => format!(
@@ -575,10 +714,113 @@ fn update_status_text(state: Res<ClientState>, mut query: Query<&mut Text, With<
         .world_tick()
         .map_or_else(|| "-".to_owned(), |tick| tick.to_string());
     let logs = state.logs.iter().cloned().collect::<Vec<_>>().join("\n");
-    text.0 = format!(
-        "server: {} ({})\n{}  tick {}\n\n{}",
-        state.connection_status, state.server_address, player, tick, logs
+    let inventory = player.map_or_else(
+        || "inventory: waiting for snapshot".to_owned(),
+        |player| {
+            let stacks = player
+                .inventory
+                .stacks()
+                .map(|stack| {
+                    let name = item_definition(stack.item_id)
+                        .map(|definition| definition.name)
+                        .unwrap_or("unknown item");
+                    format!("{name} x{}", stack.quantity)
+                })
+                .collect::<Vec<_>>();
+            if stacks.is_empty() {
+                format!(
+                    "inventory ({}/{}): empty",
+                    player.inventory.used_slots(),
+                    player.inventory.capacity()
+                )
+            } else {
+                format!(
+                    "inventory ({}/{}): {}",
+                    player.inventory.used_slots(),
+                    player.inventory.capacity(),
+                    stacks.join(", ")
+                )
+            }
+        },
     );
+    let quests = player.map_or_else(
+        || "quests: waiting for snapshot".to_owned(),
+        |player| {
+            if player.quests.is_empty() {
+                return "quests: none".to_owned();
+            }
+            player
+                .quests
+                .iter()
+                .map(|quest| {
+                    let name = starter_catalog()
+                        .quests
+                        .iter()
+                        .find(|definition| definition.id == quest.quest_id)
+                        .map(|definition| definition.name)
+                        .unwrap_or("unknown quest");
+                    let required = quest
+                        .required_count
+                        .map_or_else(|| "?".to_owned(), |count| count.to_string());
+                    format!(
+                        "{name} {}/{} ({:?})",
+                        quest.progress, required, quest.status
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+    );
+    let vendor = first_vendor_id(state).map_or_else(
+        || "vendor: not discovered".to_owned(),
+        |vendor_id| match state.presentation.vendor_listings(vendor_id) {
+            Some(listings) if !listings.is_empty() => format!(
+                "vendor: {}",
+                listings
+                    .iter()
+                    .map(|listing| {
+                        format!(
+                            "{} {}g ({} left)",
+                            listing.name, listing.unit_price, listing.remaining_quantity
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            _ => "vendor: press V to list stock".to_owned(),
+        },
+    );
+    let offers = first_vendor_id(state).map_or_else(
+        || "offers: not discovered".to_owned(),
+        |vendor_id| match state.presentation.quest_offers(vendor_id) {
+            Some(offers) if !offers.is_empty() => format!(
+                "offers: {}",
+                offers
+                    .iter()
+                    .map(|offer| offer.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            _ => "offers: press O to ask the town NPC".to_owned(),
+        },
+    );
+    let notification = state.presentation.last_notification().map_or_else(
+        || "".to_owned(),
+        |notification| format!("\nnotice: {notification:?}"),
+    );
+    format!(
+        "server: {} ({})\n{}  tick {}\n{}\n{}\n{}\n{}\n\ncontrols: WASD move | Tab target | Space attack | L loot | V vendor | B buy | O offers | E accept | R turn in{}\n\n{}",
+        state.connection_status,
+        state.server_address,
+        player_summary,
+        tick,
+        inventory,
+        quests,
+        vendor,
+        offers,
+        notification,
+        logs,
+    )
 }
 
 fn apply_server_line(state: &mut ClientState, line: &str) {
@@ -735,13 +977,59 @@ mod tests {
     }
 
     #[test]
+    fn starter_loop_commands_encode_to_server_intents() {
+        let mut outgoing = VecDeque::new();
+        queue_command_bounded(&mut outgoing, ClientCommand::ListVendor(EntityId(1)));
+        queue_command_bounded(&mut outgoing, ClientCommand::ListQuestOffers(EntityId(1)));
+        queue_command_bounded(
+            &mut outgoing,
+            ClientCommand::BuyItem {
+                vendor_id: EntityId(1),
+                item_id: ItemId::TOWN_RATION,
+                quantity: 1,
+            },
+        );
+        queue_command_bounded(
+            &mut outgoing,
+            ClientCommand::AcceptQuest {
+                npc_id: EntityId(1),
+                quest_id: QuestId::CLEAR_THE_FIELD,
+            },
+        );
+        queue_command_bounded(
+            &mut outgoing,
+            ClientCommand::TurnInQuest {
+                npc_id: EntityId(1),
+                quest_id: QuestId::CLEAR_THE_FIELD,
+            },
+        );
+        queue_command_bounded(&mut outgoing, ClientCommand::Loot(EntityId(2)));
+
+        let lines = outgoing
+            .into_iter()
+            .map(|line| String::from_utf8(line).expect("client commands are UTF-8"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lines,
+            vec![
+                "vendor 1\n",
+                "quest-offers 1\n",
+                "buy 1 2 1\n",
+                "accept-quest 1 1\n",
+                "turn-in-quest 1 1\n",
+                "loot 2\n",
+            ]
+        );
+    }
+
+    #[test]
     fn projects_the_machine_snapshot_records_used_by_the_graphical_client() {
         let mut state = ClientState::new(DEFAULT_SERVER_ADDRESS.to_owned());
         apply_server_line(&mut state, "CONNECTED player_id=5 role=damage");
         apply_server_line(&mut state, "TEMP_SNAPSHOT_BEGIN version=1");
         apply_server_line(
             &mut state,
-            "TEMP_SNAPSHOT WORLD tick=17 players=1 npcs=1 enemies=1 vendors=0",
+            "TEMP_SNAPSHOT WORLD tick=17 players=1 npcs=2 enemies=1 vendors=1",
         );
         apply_server_line(
             &mut state,
@@ -751,6 +1039,10 @@ mod tests {
         apply_server_line(
             &mut state,
             "TEMP_SNAPSHOT QUEST player=5 quest=1 progress=1/3 status=Accepted",
+        );
+        apply_server_line(
+            &mut state,
+            "TEMP_SNAPSHOT NPC id=1 template_id=1 name=Mira%20the%20Merchant kind=vendor position=0.0,0.0 health=1 max_health=1",
         );
         apply_server_line(
             &mut state,
@@ -777,6 +1069,19 @@ mod tests {
             state.presentation.player(EntityId(5)).unwrap().quests[0].progress,
             1
         );
+        apply_server_line(
+            &mut state,
+            "EVENT vendor_listed player=5 vendor=1 listings=item=2 name=Town_Ration price=2 stock=98 max_stack=20;item=3 name=Minor_Healing_Potion price=8 stock=10 max_stack=5",
+        );
+        apply_server_line(
+            &mut state,
+            "EVENT quest_offers player=5 npc=1 quests=id=1 name=Clear_the_Field",
+        );
+        let hud = format_hud_text(&state);
+        assert!(hud.contains("inventory (1/16): Town Ration x2"));
+        assert!(hud.contains("Clear the Field 1/3 (Accepted)"));
+        assert!(hud.contains("vendor: Town Ration 2g (98 left)"));
+        assert!(hud.contains("offers: Clear the Field"));
         assert_eq!(
             state.presentation.npc(EntityId(2)).unwrap().template_id,
             mmorpg_content::NpcTemplateId::FIELD_WOLF

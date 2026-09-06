@@ -127,11 +127,12 @@ The window, terrain-core, and first interactive client reliability spikes now
 run locally. The protocol-to-presentation adapter is exercised by the client,
 and player/NPC rendering now consumes the model directly. The temporary
 snapshot now carries inventory/quest details, with a fixed starter inventory
-capacity pending protocol versioning. The remaining technology
-work in this batch is to add visible inventory/vendor/quest interfaces,
-connect native tablet events, version the snapshot contract beyond the
-temporary fixed-capacity bootstrap, and validate the protected UI scripting
-boundary with an embedded runtime.
+capacity pending protocol versioning. The compact HUD now exposes inventory,
+vendor stock, quest offers, quest progress, and server notifications, with
+keyboard intents for the first vendor and quest interactions. The remaining
+technology work in this batch is to connect native tablet events, version the
+snapshot contract beyond the temporary fixed-capacity bootstrap, and validate
+the protected UI scripting boundary with an embedded runtime.
 
 The timing, AI, wire-envelope, and development-transport additions are still
 prototypes. They do not yet provide a production event schema, async

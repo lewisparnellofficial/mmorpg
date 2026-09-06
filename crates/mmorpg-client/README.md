@@ -8,7 +8,7 @@ directional light, draw a primitive town and field, and instantiate the NPC
 placements from the shared `mmorpg-content` starter catalog. It connects to
 the local development server on a background TCP worker, requests the bounded
 `snapshot` bootstrap response, and supports keyboard movement, target cycling,
-and server-authoritative basic attacks. The vendor and enemy markers use
+loot, vendor, and quest intents, and server-authoritative basic attacks. The vendor and enemy markers use
 different colors. Startup logs also identify the content definitions and
 placements that were instantiated.
 
@@ -29,9 +29,11 @@ cargo run --manifest-path crates/mmorpg-client/Cargo.toml
 
 The window can be closed using the normal window controls. With the server
 running in another terminal, use `WASD` to move, `Tab` to select the next
-known NPC, and `Space` to attack the selected target. The first build
-may take several minutes because Bevy and its graphics dependencies are
-compiled locally.
+known NPC, `Space` to attack, and `L` to loot the selected target. `V` lists
+vendor stock, `B` buys one unit of the first listing, `O` requests quest offers,
+`E` accepts the first offer, and `R` attempts to turn in the first quest. The
+first build may take several minutes because Bevy and its graphics
+dependencies are compiled locally.
 
 On Linux, the host needs a working desktop session and graphics stack. Bevy's
 window and renderer may require distribution-specific X11/Wayland, Vulkan,
@@ -46,8 +48,8 @@ distributions; consult the Bevy setup documentation for the selected host.
   management, or production backpressure. The local spike does use a bounded
   input/deferred-command queue and a five-second connection timeout.
 - The client has only a fixed camera, keyboard input, basic targeting, and a
-  compact diagnostic UI. It does not yet provide a full character controller,
-  inventory/quest panels, persistence, or addon scripting.
+  compact starter-loop UI. It does not yet provide a full character
+  controller, persistence, or addon scripting.
 - The scene uses primitive meshes and hard-coded presentation layout. It does
   not validate or load authored terrain, models, animations, particles, sound,
   or music packages.
@@ -64,9 +66,12 @@ distributions; consult the Bevy setup documentation for the selected host.
 
 The client now uses the shared bounded development decoder and the
 protocol-to-presentation adapter for snapshot and event records, and the
-renderer reads player/NPC state directly from `ClientWorld`. The current
-temporary snapshot now includes inventory stacks and quest progress, but
-inventory capacity remains a temporary fixed value until the protocol is
-versioned. The next client spike is to add visible inventory/vendor/quest interfaces and then replace the
-temporary line transport with the versioned wire protocol. Pen-tablet input
-and the separate content editor remain independent technology spikes.
+renderer reads player/NPC state directly from `ClientWorld`. The compact HUD
+now displays inventory, vendor listings, quest offers, quest progress, and
+authoritative notifications. `V` lists vendor stock, `B` buys one unit of the
+first displayed listing, `O` requests quest offers, `E` accepts the first
+displayed offer, `R` attempts to turn in the first displayed quest, and `L`
+submits a loot request for the selected target. These keys only submit server
+intents; they do not mutate gameplay state locally. Inventory capacity remains
+a temporary fixed value until the protocol is versioned. Pen-tablet input and
+the separate content editor remain independent technology spikes.
