@@ -113,6 +113,14 @@ explicit character list/selection phase so the client can exercise an
 authenticated-session boundary; this does not represent the eventual account,
 credential, encryption, or authorization architecture.
 
+Account-to-character lookup for the typed development path is now owned by an
+`AccountCharacterRepository` boundary in the server rather than by the socket
+loop. Its current `DevelopmentAccountRepository` implementation is an
+in-memory local catalog. A future durable repository should preserve the same
+lookup and ownership boundary while adding account records, character state,
+credential verification, and transactional persistence outside the simulation
+critical path.
+
 The wire and transport crates are preparatory boundaries, not a production
 network stack. The current server still supports its temporary line protocol,
 and the graphical client still uses its own background line-protocol worker.

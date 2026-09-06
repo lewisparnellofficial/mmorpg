@@ -71,6 +71,8 @@ architecture and research remain in `docs/architecture/` and
   server-assigned session state and `EnterWorld` transition.
 - Typed development character listing and explicit selection before world
   entry.
+- Server-owned account/character repository boundary, currently backed by an
+  in-memory development catalog.
 - Complete temporary bootstrap snapshot records for player inventory and quest
   state.
 - Bounded stream-level snapshot assembly with atomic publication, duplicate

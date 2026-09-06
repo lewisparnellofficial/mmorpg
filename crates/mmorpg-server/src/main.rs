@@ -1,9 +1,11 @@
+mod account_repository;
+
+use crate::account_repository::{AccountCharacterRepository, DevelopmentAccountRepository};
 use mmorpg_core::{Command, EntityId, Event, ItemId, QuestId, Role, World};
 use mmorpg_wire::{
-    CharacterSummary, ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope,
-    ItemStackState, MessageKind, NpcKindCode, NpcState, PlayerState, QuestOfferState, QuestState,
-    QuestStatusCode, ServerEvent, ServerMessage, VendorListingState, WorldSnapshot, ZoneAreaCode,
-    decode_one,
+    ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope, ItemStackState,
+    MessageKind, NpcKindCode, NpcState, PlayerState, QuestOfferState, QuestState, QuestStatusCode,
+    ServerEvent, ServerMessage, VendorListingState, WorldSnapshot, ZoneAreaCode, decode_one,
 };
 use std::collections::VecDeque;
 use std::env;
@@ -14,11 +16,6 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_ADDRESS: &str = "127.0.0.1:4000";
 const DEFAULT_TICK_HZ: u64 = 20;
-const DEV_AUTH_TOKEN: &str = "dev-local";
-const DEV_ACCOUNT_ID: u64 = 1;
-const DEV_CHARACTER_ID: u64 = 1;
-const DEV_PLAYER_NAME: &str = "Aria";
-const DEV_PLAYER_ROLE: Role = Role::DamageDealer;
 const MAX_WIRE_INPUT_BYTES: usize = mmorpg_wire::MAX_FRAME_SIZE * 2;
 const MAX_WIRE_OUTPUT_BYTES: usize = 256 * 1024;
 
@@ -125,15 +122,25 @@ struct Server {
     clients: Vec<Client>,
     wire_clients: Vec<WireClient>,
     commands: VecDeque<PendingCommand>,
+    account_repository: Box<dyn AccountCharacterRepository>,
     next_client_id: u64,
     next_session_id: u64,
-    dev_auth_enabled: bool,
     tick_interval: Duration,
     next_tick: Instant,
 }
 
 impl Server {
     fn new(tick_hz: u64, dev_auth_enabled: bool) -> Self {
+        Self::with_account_repository(
+            tick_hz,
+            Box::new(DevelopmentAccountRepository::new(dev_auth_enabled)),
+        )
+    }
+
+    fn with_account_repository(
+        tick_hz: u64,
+        account_repository: Box<dyn AccountCharacterRepository>,
+    ) -> Self {
         let tick_hz = tick_hz.max(1);
         let tick_interval = Duration::from_secs_f64(1.0 / tick_hz as f64);
         Self {
@@ -141,9 +148,9 @@ impl Server {
             clients: Vec::new(),
             wire_clients: Vec::new(),
             commands: VecDeque::new(),
+            account_repository,
             next_client_id: 1,
             next_session_id: 1,
-            dev_auth_enabled,
             tick_interval,
             next_tick: Instant::now() + tick_interval,
         }
@@ -293,18 +300,24 @@ impl Server {
                 self.queue_wire_error(client_id, "already authenticated".to_owned());
                 return;
             }
-            if let Err(error) = validate_dev_auth(self.dev_auth_enabled, &token) {
-                self.queue_wire_error(client_id, error.to_owned());
-                return;
-            }
+            let account_id = match self
+                .account_repository
+                .authenticate_development_token(&token)
+            {
+                Ok(account_id) => account_id,
+                Err(error) => {
+                    self.queue_wire_error(client_id, error.message().to_owned());
+                    return;
+                }
+            };
             let session_id = self.next_session_id;
             self.next_session_id = self.next_session_id.saturating_add(1);
             self.wire_clients[client_index].authenticated = Some(AuthenticatedSession {
-                account_id: DEV_ACCOUNT_ID,
+                account_id,
                 session_id,
             });
             self.wire_clients[client_index].queue_server_message(&ServerMessage::Authenticated {
-                account_id: DEV_ACCOUNT_ID,
+                account_id,
                 session_id,
             });
             return;
@@ -333,9 +346,15 @@ impl Server {
                 .authenticated
                 .expect("authenticated state checked above")
                 .account_id;
+            let characters = self
+                .account_repository
+                .list_characters(account_id)
+                .into_iter()
+                .map(|character| character.summary())
+                .collect();
             self.wire_clients[client_index].queue_server_message(&ServerMessage::CharacterList {
                 account_id,
-                characters: vec![dev_character_summary()],
+                characters,
             });
             return;
         }
@@ -344,17 +363,24 @@ impl Server {
                 self.queue_wire_error(client_id, "already connected".to_owned());
                 return;
             }
-            if dev_character(character_id).is_none() {
+            let account_id = self.wire_clients[client_index]
+                .authenticated
+                .expect("authenticated state checked above")
+                .account_id;
+            let Some(character) = self
+                .account_repository
+                .find_character(account_id, character_id)
+            else {
                 self.queue_wire_error(client_id, "unknown character".to_owned());
                 return;
-            }
+            };
             self.wire_clients[client_index].selected_character_id = Some(character_id);
-            let character = dev_character_summary();
+            let summary = character.summary();
             self.wire_clients[client_index].queue_server_message(
                 &ServerMessage::CharacterSelected {
-                    character_id: character.character_id,
-                    name: character.name,
-                    role: character.role,
+                    character_id: summary.character_id,
+                    name: summary.name,
+                    role: summary.role,
                 },
             );
             return;
@@ -375,7 +401,14 @@ impl Server {
                 );
                 return;
             };
-            let Some((name, role)) = dev_character(character_id) else {
+            let account_id = self.wire_clients[client_index]
+                .authenticated
+                .expect("authenticated state checked above")
+                .account_id;
+            let Some(character) = self
+                .account_repository
+                .find_character(account_id, character_id)
+            else {
                 self.queue_wire_error(
                     client_id,
                     "selected character is no longer available".to_owned(),
@@ -385,8 +418,8 @@ impl Server {
             self.commands.push_back(PendingCommand {
                 origin: ClientOrigin::Wire(client_id),
                 command: Command::JoinPlayer {
-                    name: name.to_owned(),
-                    role,
+                    name: character.name,
+                    role: character.role,
                 },
             });
             return;
@@ -782,16 +815,6 @@ impl Server {
             }
         }
     }
-}
-
-fn validate_dev_auth(enabled: bool, token: &str) -> Result<(), &'static str> {
-    if !enabled {
-        return Err("development authentication is only available on loopback");
-    }
-    if token != DEV_AUTH_TOKEN {
-        return Err("invalid development token");
-    }
-    Ok(())
 }
 
 fn wire_role(role: Role) -> mmorpg_wire::RoleCode {
@@ -1536,18 +1559,6 @@ fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Com
     })
 }
 
-fn dev_character(character_id: u64) -> Option<(&'static str, Role)> {
-    (character_id == DEV_CHARACTER_ID).then_some((DEV_PLAYER_NAME, DEV_PLAYER_ROLE))
-}
-
-fn dev_character_summary() -> CharacterSummary {
-    CharacterSummary {
-        character_id: DEV_CHARACTER_ID,
-        name: DEV_PLAYER_NAME.to_owned(),
-        role: mmorpg_wire::RoleCode::DamageDealer,
-    }
-}
-
 fn parse_server_addresses() -> Result<(String, Option<String>), String> {
     let mut arguments = env::args().skip(1);
     let address = arguments
@@ -1803,19 +1814,6 @@ mod tests {
         assert_eq!(
             encode_snapshot_text("Name with\tcontrols%"),
             "Name%20with%09controls%25"
-        );
-    }
-
-    #[test]
-    fn development_authentication_requires_loopback_and_exact_token() {
-        assert_eq!(validate_dev_auth(true, DEV_AUTH_TOKEN), Ok(()));
-        assert_eq!(
-            validate_dev_auth(true, "wrong"),
-            Err("invalid development token")
-        );
-        assert_eq!(
-            validate_dev_auth(false, DEV_AUTH_TOKEN),
-            Err("development authentication is only available on loopback")
         );
     }
 }

@@ -80,6 +80,13 @@ the world. This is intentionally a local protocol smoke-test handshake; it is
 not production authentication, authorization, encryption, or account/character
 persistence.
 
+The current server resolves the development token and character catalog through
+its `AccountCharacterRepository` boundary. `DevelopmentAccountRepository` is
+an in-memory local catalog used only by this slice. It does not preserve an
+account, character, inventory, quest, or position across process restarts; a
+durable implementation must replace that repository before any persistent or
+externally reachable deployment.
+
 The optional explicit player ID on `move` is checked against the player bound
 to the connection. It exists for debugging and does not grant authority over
 another player.

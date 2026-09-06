@@ -57,6 +57,20 @@ The pipeline may combine:
 
 The database should not be used as the per-frame simulation data structure.
 
+## Current development identity boundary
+
+The typed development server currently resolves a local token and its available
+characters through an `AccountCharacterRepository` boundary. The active
+implementation is an in-memory development catalog, not durable storage. This
+separates socket/session handling from account and character lookup now, so a
+future database-backed repository can be introduced without placing database
+access in the simulation tick.
+
+The current boundary deliberately does **not** persist characters, inventory,
+quest state, currency, positions, credentials, or sessions. It is a narrow
+replacement seam and should not be described as satisfying the project's
+persistence requirement.
+
 ## Transactional operations
 
 The following must have clear atomicity and retry behavior:

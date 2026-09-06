@@ -244,6 +244,12 @@ bound to a loopback address. This is a local smoke-test boundary, not an
 account system, credential store, encrypted session, or internet-safe
 authentication design.
 
+The server's account and character lookup is isolated in
+`crates/mmorpg-server/src/account_repository.rs`. The current implementation
+is an in-memory development catalog. Do not put database calls, credential
+storage, or durable-character mutations in the socket loop or simulation core;
+replace the repository implementation when durable identity storage is added.
+
 The authoritative simulation lives in `mmorpg-core`. Network parsing and
 socket management belong in `mmorpg-server` or a future network adapter; do
 not put socket, database, or rendering dependencies into the core merely to
