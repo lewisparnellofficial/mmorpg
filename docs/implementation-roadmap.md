@@ -122,12 +122,13 @@ The first foundations from this batch now exist:
   scripting spikes before they become accepted decisions.
 
 The window, terrain-core, and first interactive client reliability spikes now
-run locally. The first protocol-to-presentation adapter is now exercised by
-the client, but the renderer still retains a temporary local projection and
-the snapshot schema omits inventory/quest details. The remaining technology
-work in this batch is to make rendering consume the model directly, connect
-native tablet events, extend snapshots to complete authoritative state, and
-validate the protected UI scripting boundary with an embedded runtime.
+run locally. The protocol-to-presentation adapter is exercised by the client,
+and player/NPC rendering now consumes the model directly. The snapshot schema
+still omits inventory/quest details. The remaining technology
+work in this batch is to add visible inventory/vendor/quest interfaces,
+connect native tablet events, extend snapshots to complete authoritative
+state, and validate the protected UI scripting boundary with an embedded
+runtime.
 
 The timing, AI, wire-envelope, and development-transport additions are still
 prototypes. They do not yet provide a production event schema, async

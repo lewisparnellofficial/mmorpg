@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use mmorpg_client_adapter::{
     apply_event as apply_presentation_event, apply_snapshot as apply_presentation_snapshot,
 };
-use mmorpg_client_model::ClientWorld;
+use mmorpg_client_model::{ClientEntity, ClientWorld};
 use mmorpg_client_protocol::{
     EntityId, NpcKind, ServerEvent, ServerLine, Snapshot, SnapshotAssembler, decode_server_line,
 };
@@ -47,25 +47,6 @@ struct PlayerMarker;
 #[derive(Component)]
 struct StatusText;
 
-#[derive(Clone, Copy, Debug)]
-struct NpcState {
-    position: Vec2,
-    health: u32,
-    max_health: u32,
-    kind: NpcKind,
-}
-
-impl Default for NpcState {
-    fn default() -> Self {
-        Self {
-            position: Vec2::ZERO,
-            health: 0,
-            max_health: 0,
-            kind: NpcKind::Enemy,
-        }
-    }
-}
-
 #[derive(Resource, Clone)]
 struct NpcPresentationAssets {
     mesh: Handle<Mesh>,
@@ -78,12 +59,6 @@ struct ClientState {
     server_address: String,
     connection_status: String,
     player_id: Option<EntityId>,
-    player_position: Vec2,
-    player_health: u32,
-    player_max_health: u32,
-    player_target: Option<EntityId>,
-    world_tick: Option<u64>,
-    npcs: BTreeMap<EntityId, NpcState>,
     target_cursor: usize,
     logs: VecDeque<String>,
     snapshot: SnapshotAssembler,
@@ -96,12 +71,6 @@ impl ClientState {
             server_address,
             connection_status: "connecting".to_owned(),
             player_id: None,
-            player_position: Vec2::ZERO,
-            player_health: 0,
-            player_max_health: 0,
-            player_target: None,
-            world_tick: None,
-            npcs: BTreeMap::new(),
             target_cursor: 0,
             logs: VecDeque::from(["WASD move  Tab target  Space attack".to_owned()]),
             snapshot: SnapshotAssembler::new(),
@@ -514,7 +483,14 @@ fn send_command(bridge: &NetworkBridge, state: &mut ClientState, command: Client
 }
 
 fn next_target(state: &mut ClientState) -> Option<EntityId> {
-    let ids: Vec<_> = state.npcs.keys().copied().collect();
+    let ids: Vec<_> = state
+        .presentation
+        .entities()
+        .filter_map(|entity| match entity {
+            ClientEntity::Npc(npc) => Some(npc.id),
+            ClientEntity::Player(_) => None,
+        })
+        .collect();
     let target = ids.get(state.target_cursor % ids.len().max(1)).copied()?;
     state.target_cursor = (state.target_cursor + 1) % ids.len();
     Some(target)
@@ -527,24 +503,30 @@ fn sync_authoritative_presentation(
     mut player_query: Query<&mut Transform, (With<PlayerMarker>, Without<StarterNpc>)>,
     mut npc_query: Query<(Entity, &StarterNpc, &mut Transform), Without<PlayerMarker>>,
 ) {
-    if let Ok(mut transform) = player_query.single_mut() {
-        transform.translation.x = state.player_position.x;
-        transform.translation.z = state.player_position.y;
+    if let Some(player_id) = state.player_id
+        && let Some(player) = state.presentation.player(player_id)
+        && let Ok(mut transform) = player_query.single_mut()
+    {
+        transform.translation.x = player.position.x;
+        transform.translation.z = player.position.y;
     }
     let mut rendered_ids = BTreeMap::new();
     for (entity, marker, mut transform) in &mut npc_query {
-        if let Some(npc) = state.npcs.get(&marker.id) {
+        if let Some(ClientEntity::Npc(npc)) = state.presentation.entity(marker.id) {
             transform.translation.x = npc.position.x;
             transform.translation.z = npc.position.y;
-            transform.translation.y = if npc.health == 0 { 0.2 } else { 0.75 };
+            transform.translation.y = if npc.defeated { 0.2 } else { 0.75 };
             rendered_ids.insert(marker.id, entity);
         } else {
             commands.entity(entity).despawn();
         }
     }
 
-    for (id, npc) in &state.npcs {
-        if rendered_ids.contains_key(id) {
+    for entity in state.presentation.entities() {
+        let ClientEntity::Npc(npc) = entity else {
+            continue;
+        };
+        if rendered_ids.contains_key(&npc.id) {
             continue;
         }
         let material = match npc.kind {
@@ -556,26 +538,23 @@ fn sync_authoritative_presentation(
             MeshMaterial3d(material),
             Transform::from_xyz(
                 npc.position.x,
-                if npc.health == 0 { 0.2 } else { 0.75 },
+                if npc.defeated { 0.2 } else { 0.75 },
                 npc.position.y,
             ),
-            StarterNpc { id: *id },
+            StarterNpc { id: npc.id },
         ));
     }
-}
-
-fn to_bevy_position(position: mmorpg_client_protocol::Position) -> Vec2 {
-    Vec2::new(position.x, position.y)
 }
 
 fn update_status_text(state: Res<ClientState>, mut query: Query<&mut Text, With<StatusText>>) {
     let Ok(mut text) = query.single_mut() else {
         return;
     };
-    let target = state.player_target.map_or_else(
+    let player = state.player_id.and_then(|id| state.presentation.player(id));
+    let target = player.and_then(|player| player.target).map_or_else(
         || "none".to_owned(),
         |target| {
-            state.npcs.get(&target).map_or_else(
+            state.presentation.npc(target).map_or_else(
                 || target.0.to_string(),
                 |npc| format!("{} ({}/{})", target.0, npc.health, npc.max_health),
             )
@@ -583,15 +562,17 @@ fn update_status_text(state: Res<ClientState>, mut query: Query<&mut Text, With<
     );
     let player = state.player_id.map_or_else(
         || "not connected".to_owned(),
-        |id| {
-            format!(
+        |id| match state.presentation.player(id) {
+            Some(player) => format!(
                 "player {}  hp {}/{}  target {}",
-                id.0, state.player_health, state.player_max_health, target
-            )
+                id.0, player.health, player.max_health, target
+            ),
+            None => format!("player {}  waiting for snapshot", id.0),
         },
     );
     let tick = state
-        .world_tick
+        .presentation
+        .world_tick()
         .map_or_else(|| "-".to_owned(), |tick| tick.to_string());
     let logs = state.logs.iter().cloned().collect::<Vec<_>>().join("\n");
     text.0 = format!(
@@ -613,14 +594,16 @@ fn apply_server_line(state: &mut ClientState, line: &str) {
     }
     match decode_server_line(line) {
         Ok(ServerLine::SnapshotBegin { .. } | ServerLine::SnapshotEnd) => {}
-        Ok(ServerLine::World(world)) => state.world_tick = Some(world.tick),
+        Ok(ServerLine::World(_)) => {}
         Ok(ServerLine::Connected(connected)) => {
             state.player_id = Some(connected.player_id);
             state.connection_status = "authenticated development session".to_owned();
             state.log(format!("connected as {}", connected.player_id.0));
         }
-        Ok(ServerLine::Player(player)) => apply_player_state(state, &player),
-        Ok(ServerLine::Npc(npc)) => apply_npc_state(state, &npc),
+        // Legacy diagnostic records are intentionally not projected. The
+        // graphical client consumes complete TEMP_SNAPSHOT frames and typed
+        // EVENT records so its renderer has one authoritative state source.
+        Ok(ServerLine::Player(_) | ServerLine::Npc(_)) => {}
         Ok(ServerLine::Event(event)) => apply_event(state, event),
         Err(_) => match line.split_whitespace().next() {
             Some("ERR") => state.log(line.to_owned()),
@@ -636,50 +619,6 @@ fn apply_snapshot(state: &mut ClientState, snapshot: Snapshot) {
         state.log(format!("authoritative presentation rejected: {error}"));
         return;
     }
-    state.world_tick = Some(snapshot.world.tick);
-    state.npcs = snapshot
-        .npcs
-        .into_iter()
-        .map(|(id, npc)| {
-            (
-                id,
-                NpcState {
-                    position: to_bevy_position(npc.position),
-                    health: npc.health,
-                    max_health: npc.max_health,
-                    kind: npc.kind,
-                },
-            )
-        })
-        .collect();
-
-    if let Some(player_id) = state.player_id
-        && let Some(player) = snapshot.players.get(&player_id)
-    {
-        apply_player_state(state, player);
-    }
-}
-
-fn apply_player_state(state: &mut ClientState, player: &mmorpg_client_protocol::PlayerState) {
-    if Some(player.id) != state.player_id {
-        return;
-    }
-    state.player_position = to_bevy_position(player.position);
-    state.player_health = player.health;
-    state.player_max_health = player.max_health;
-    state.player_target = player.target;
-}
-
-fn apply_npc_state(state: &mut ClientState, npc: &mmorpg_client_protocol::NpcState) {
-    state.npcs.insert(
-        npc.id,
-        NpcState {
-            position: to_bevy_position(npc.position),
-            health: npc.health,
-            max_health: npc.max_health,
-            kind: npc.kind,
-        },
-    );
 }
 
 fn apply_event(state: &mut ClientState, event: ServerEvent) {
@@ -688,36 +627,16 @@ fn apply_event(state: &mut ClientState, event: ServerEvent) {
         Err(error) => state.log(format!("authoritative presentation rejected: {error}")),
     }
     match event {
-        ServerEvent::PlayerMoved { id, position, .. } if Some(id) == state.player_id => {
-            state.player_position = to_bevy_position(position);
-        }
         ServerEvent::TargetSelected {
             player_id,
             target_id,
         } if Some(player_id) == state.player_id => {
-            state.player_target = Some(target_id);
-            state.log(format!(
-                "target {}",
-                state
-                    .player_target
-                    .map_or_else(|| "none".to_owned(), |id| id.0.to_string())
-            ));
+            state.log(format!("target {}", target_id.0));
         }
-        ServerEvent::AttackResolved {
-            player_id,
-            target_id,
-            target_health,
-            ..
-        } if Some(player_id) == state.player_id => {
-            if let Some(npc) = state.npcs.get_mut(&target_id) {
-                npc.health = target_health;
-            }
+        ServerEvent::AttackResolved { player_id, .. } if Some(player_id) == state.player_id => {
             state.log("server resolved attack".to_owned());
         }
-        ServerEvent::EnemyDefeated { enemy_id } => {
-            if let Some(npc) = state.npcs.get_mut(&enemy_id) {
-                npc.health = 0;
-            }
+        ServerEvent::EnemyDefeated { .. } => {
             state.log("enemy defeated; server decides rewards".to_owned());
         }
         ServerEvent::CommandRejected { reason } => state.log(format!("rejected: {reason}")),
@@ -748,14 +667,20 @@ mod tests {
     fn projects_player_and_npc_state_only_from_server_lines() {
         let mut state = ClientState::new(DEFAULT_SERVER_ADDRESS.to_owned());
         apply_server_line(&mut state, "CONNECTED player_id=5 role=damage");
+        apply_server_line(&mut state, "TEMP_SNAPSHOT_BEGIN version=1");
         apply_server_line(
             &mut state,
-            "PLAYER id=5 name=Aria role=damage pos=4.00,-2.00 hp=90/100 gold=20 target=2",
+            "TEMP_SNAPSHOT WORLD tick=10 players=1 npcs=1 enemies=1 vendors=0",
         );
         apply_server_line(
             &mut state,
-            "NPC id=2 name=Field kind=Enemy pos=24.00,0.00 hp=100/100",
+            "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=4.0,-2.0 health=90 max_health=100 gold=20 target=2",
         );
+        apply_server_line(
+            &mut state,
+            "TEMP_SNAPSHOT NPC id=2 template_id=2 name=Field%20Wolf kind=enemy position=24.0,0.0 health=100 max_health=100",
+        );
+        apply_server_line(&mut state, "TEMP_SNAPSHOT_END");
         apply_server_line(
             &mut state,
             "EVENT player_moved id=5 pos=6.00,-1.00 area=Field",
@@ -766,17 +691,30 @@ mod tests {
         );
 
         assert_eq!(state.player_id, Some(EntityId(5)));
-        assert_eq!(state.player_position, Vec2::new(6.0, -1.0));
-        assert_eq!(state.player_health, 90);
-        assert_eq!(state.player_target, Some(EntityId(2)));
-        assert_eq!(state.npcs[&EntityId(2)].health, 75);
+        assert_eq!(
+            state.presentation.player(EntityId(5)).unwrap().position,
+            mmorpg_client_protocol::Position::new(6.0, -1.0)
+        );
+        assert_eq!(state.presentation.player(EntityId(5)).unwrap().health, 90);
+        assert_eq!(
+            state.presentation.player(EntityId(5)).unwrap().target,
+            Some(EntityId(2))
+        );
+        assert_eq!(state.presentation.npc(EntityId(2)).unwrap().health, 75);
     }
 
     #[test]
     fn tab_targeting_cycles_server_known_entities() {
         let mut state = ClientState::new(DEFAULT_SERVER_ADDRESS.to_owned());
-        state.npcs.insert(EntityId(4), NpcState::default());
-        state.npcs.insert(EntityId(2), NpcState::default());
+        for line in [
+            "TEMP_SNAPSHOT_BEGIN version=1",
+            "TEMP_SNAPSHOT WORLD tick=1 players=0 npcs=2 enemies=2 vendors=0",
+            "TEMP_SNAPSHOT NPC id=4 template_id=2 name=Wolf_4 kind=enemy position=0.0,0.0 health=100 max_health=100",
+            "TEMP_SNAPSHOT NPC id=2 template_id=2 name=Wolf_2 kind=enemy position=0.0,0.0 health=100 max_health=100",
+            "TEMP_SNAPSHOT_END",
+        ] {
+            apply_server_line(&mut state, line);
+        }
 
         assert_eq!(next_target(&mut state), Some(EntityId(2)));
         assert_eq!(next_target(&mut state), Some(EntityId(4)));
@@ -813,13 +751,11 @@ mod tests {
         );
         apply_server_line(&mut state, "TEMP_SNAPSHOT_END");
 
-        assert_eq!(state.world_tick, Some(17));
-        assert_eq!(state.player_position, Vec2::new(3.0, -4.0));
-        assert_eq!(state.player_health, 88);
-        assert_eq!(state.player_target, Some(EntityId(2)));
-        assert_eq!(state.npcs[&EntityId(2)].position, Vec2::new(24.0, 0.0));
-        assert_eq!(state.npcs[&EntityId(2)].health, 100);
         assert_eq!(state.presentation.world_tick(), Some(17));
+        assert_eq!(
+            state.presentation.player(EntityId(5)).unwrap().position,
+            mmorpg_client_protocol::Position::new(3.0, -4.0)
+        );
         assert_eq!(state.presentation.player(EntityId(5)).unwrap().gold, 20);
         assert_eq!(
             state.presentation.npc(EntityId(2)).unwrap().template_id,

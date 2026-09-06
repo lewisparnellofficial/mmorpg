@@ -13,9 +13,9 @@ different colors. Startup logs also identify the content definitions and
 placements that were instantiated.
 
 Decoded snapshots and events are also projected through the standalone
-`mmorpg-client-adapter` into `mmorpg-client-model`. The Bevy scene still has a
-small local projection while the renderer migration is in progress, but the
-authoritative presentation model is now exercised by the live client path.
+`mmorpg-client-adapter` into `mmorpg-client-model`. The Bevy scene retains
+connection/transport state locally, while rendered player and NPC state comes
+directly from the authoritative presentation model.
 
 ## Run
 
@@ -63,9 +63,10 @@ distributions; consult the Bevy setup documentation for the selected host.
   production-readiness result.
 
 The client now uses the shared bounded development decoder and the
-protocol-to-presentation adapter for snapshot and event records. The current
+protocol-to-presentation adapter for snapshot and event records, and the
+renderer reads player/NPC state directly from `ClientWorld`. The current
 temporary snapshot does not yet include inventory stacks or quest progress;
 the adapter documents and bounds that limitation. The next client spike is
-to make the renderer consume the model directly, then replace the temporary
-line transport with the versioned wire protocol. Pen-tablet input and the
-separate content editor remain independent technology spikes.
+to add visible inventory/vendor/quest interfaces and then replace the
+temporary line transport with the versioned wire protocol. Pen-tablet input
+and the separate content editor remain independent technology spikes.

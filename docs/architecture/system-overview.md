@@ -111,8 +111,9 @@ The wire and transport crates are preparatory boundaries, not a production
 network stack. The current server still speaks a temporary line protocol. The
 graphical client uses a background worker, a framed machine-readable snapshot,
 and `mmorpg-client-adapter` for local development, but authentication,
-production framing, asynchronous backpressure, and direct renderer
-consumption of the complete presentation model remain future work.
+production framing, asynchronous backpressure, and complete inventory/quest
+snapshot state remain future work. The current player/NPC renderer consumes
+the presentation model directly.
 
 The code should retain interfaces for separating these later:
 
