@@ -332,6 +332,33 @@ pub struct PlayerSnapshot {
     pub quests: Vec<QuestProgress>,
 }
 
+/// Character state retained across a safe logout or server restart.
+///
+/// Live entity IDs, health, targets, casts, and cooldowns deliberately remain
+/// transient and are reset when this state becomes a live player again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DurablePlayerState {
+    pub name: String,
+    pub role: Role,
+    pub position: Position,
+    pub gold: u32,
+    pub inventory: Inventory,
+    pub quests: Vec<QuestProgress>,
+}
+
+impl Player {
+    pub fn durable_state(&self) -> DurablePlayerState {
+        DurablePlayerState {
+            name: self.name.clone(),
+            role: self.role,
+            position: self.position,
+            gold: self.gold,
+            inventory: self.inventory.clone(),
+            quests: self.quests.clone(),
+        }
+    }
+}
+
 /// State for one quest accepted by a player.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QuestProgress {
@@ -370,6 +397,9 @@ pub enum Command {
     JoinPlayer {
         name: String,
         role: Role,
+    },
+    RestorePlayer {
+        state: DurablePlayerState,
     },
     LeavePlayer {
         player_id: EntityId,
@@ -842,6 +872,80 @@ impl World {
         id
     }
 
+    fn restore_player(&mut self, state: DurablePlayerState, events: &mut Vec<Event>) {
+        let name = state.name.trim();
+        if name.is_empty() || name.len() > 24 {
+            Self::reject(events, "restored player name is invalid");
+            return;
+        }
+        if !state.position.x.is_finite()
+            || !state.position.y.is_finite()
+            || state.position.x < self.bounds.min_x
+            || state.position.x > self.bounds.max_x
+            || state.position.y < self.bounds.min_y
+            || state.position.y > self.bounds.max_y
+        {
+            Self::reject(events, "restored player position is invalid");
+            return;
+        }
+        if state.inventory.capacity > STARTER_INVENTORY_CAPACITY
+            || state.inventory.stacks.len() > state.inventory.capacity
+        {
+            Self::reject(events, "restored inventory capacity is invalid");
+            return;
+        }
+        for stack in &state.inventory.stacks {
+            let Some(definition) = item_definition(stack.item_id) else {
+                Self::reject(events, "restored inventory item is unknown");
+                return;
+            };
+            if stack.quantity == 0 || stack.quantity > definition.max_stack {
+                Self::reject(events, "restored inventory stack is invalid");
+                return;
+            }
+        }
+        for quest in &state.quests {
+            let Some(definition) = starter_catalog()
+                .quests
+                .iter()
+                .find(|item| item.id == quest.quest_id)
+            else {
+                Self::reject(events, "restored quest is unknown");
+                return;
+            };
+            let Some(ObjectiveDefinition::KillNpc { required_count, .. }) =
+                definition.objectives.first()
+            else {
+                Self::reject(events, "restored quest objective is invalid");
+                return;
+            };
+            if quest.required_count == 0
+                || quest.progress > quest.required_count
+                || quest.required_count != *required_count
+            {
+                Self::reject(events, "restored quest state is invalid");
+                return;
+            }
+        }
+        let id = self.allocate_id();
+        let player = Player {
+            id,
+            name: name.to_owned(),
+            role: state.role,
+            position: state.position,
+            health: 100,
+            max_health: 100,
+            target: None,
+            gold: state.gold,
+            inventory: state.inventory,
+            quests: state.quests,
+        };
+        events.push(Event::PlayerJoined {
+            player: player.snapshot(),
+        });
+        self.players.insert(id, player);
+    }
+
     fn apply(&mut self, command: Command, events: &mut Vec<Event>) {
         match command {
             Command::JoinPlayer { name, role } => {
@@ -872,6 +976,7 @@ impl World {
                 });
                 self.players.insert(id, player);
             }
+            Command::RestorePlayer { state } => self.restore_player(state, events),
             Command::LeavePlayer { player_id } => {
                 if self.players.remove(&player_id).is_some() {
                     self.combat_cooldowns.remove(&player_id);
@@ -1519,6 +1624,53 @@ mod tests {
             ZoneArea::from_position(Position::new(20.0, 0.0)),
             ZoneArea::Field
         );
+    }
+
+    #[test]
+    fn restored_player_rehydrates_durable_state_and_resets_transient_state() {
+        let mut source = World::new_starter_zone();
+        source.step([Command::JoinPlayer {
+            name: "Aria".to_owned(),
+            role: Role::DamageDealer,
+        }]);
+        let player_id = source.players().next().expect("player joined").id;
+        source.step([Command::Move {
+            player_id,
+            dx: 8.0,
+            dy: 0.0,
+        }]);
+        let state = source
+            .player(player_id)
+            .expect("player exists")
+            .durable_state();
+
+        let mut restored = World::new_starter_zone();
+        let events = restored.step([Command::RestorePlayer { state }]);
+        let player = match events.as_slice() {
+            [Event::PlayerJoined { player }] => player,
+            other => panic!("expected restored join event, got {other:?}"),
+        };
+        assert_eq!(player.name, "Aria");
+        assert_eq!(player.position, Position::new(8.0, 0.0));
+        assert_eq!(player.health, 100);
+        assert_eq!(player.target, None);
+    }
+
+    #[test]
+    fn restored_player_rejects_invalid_checkpoint_position() {
+        let mut world = World::new_starter_zone();
+        let events = world.step([Command::RestorePlayer {
+            state: DurablePlayerState {
+                name: "Aria".to_owned(),
+                role: Role::DamageDealer,
+                position: Position::new(f32::NAN, 0.0),
+                gold: 20,
+                inventory: Inventory::new(16),
+                quests: Vec::new(),
+            },
+        }]);
+        assert!(matches!(events.as_slice(), [Event::CommandRejected { .. }]));
+        assert_eq!(world.players().count(), 0);
     }
 
     #[test]
