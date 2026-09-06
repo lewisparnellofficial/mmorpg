@@ -62,6 +62,10 @@ architecture and research remain in `docs/architecture/` and
   and quest event vocabulary.
 - Standalone protocol-to-presentation adapter with atomic snapshot replacement
   and content-ID metadata resolution.
+- Typed wire-message to presentation adapter with atomic snapshot conversion
+  and shared content-ID validation.
+- Opt-in Bevy client wire mode with bounded background frame I/O and typed
+  server-message projection.
 - Complete temporary bootstrap snapshot records for player inventory and quest
   state.
 - Bounded stream-level snapshot assembly with atomic publication, duplicate
@@ -148,7 +152,9 @@ the protected UI scripting boundary with an embedded runtime.
 The timing, AI, wire-envelope, and development-transport additions are still
 prototypes. They do not yet provide async backpressure, authentication,
 encryption, interest-managed replication, or a graphical-client migration to
-the typed server-message path.
+production-grade reconnection, or a production replication protocol. The
+graphical client now has an opt-in typed server-message path, but the line mode
+remains the default until the two modes are behaviorally equivalent.
 
 ### Batch 4: real simulation scheduling
 

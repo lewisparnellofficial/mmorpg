@@ -212,7 +212,7 @@ Convenience launch commands from the repository root:
 
 ```bash
 ./scripts/run-server.sh [127.0.0.1:4000]
-./scripts/run-client.sh
+./scripts/run-client.sh [127.0.0.1:4000] [--wire-address 127.0.0.1:4001]
 ./scripts/run-editor.sh [--output /tmp/starter-terrain.mmterrain]
 ```
 
@@ -223,9 +223,8 @@ working graphics stack.
 ## Development server
 
 The initial server is a development process, not a production MMO server. It
-currently has no authentication, durable persistence, binary protocol,
-interest-managed replication, client prediction, layer manager, or instance
-manager.
+currently has no authentication, durable persistence, interest-managed
+replication, client prediction, layer manager, or instance manager.
 
 The authoritative simulation lives in `mmorpg-core`. Network parsing and
 socket management belong in `mmorpg-server` or a future network adapter; do

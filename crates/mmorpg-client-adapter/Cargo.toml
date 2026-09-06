@@ -11,6 +11,7 @@ mmorpg-client-model = { path = "../mmorpg-client-model" }
 mmorpg-client-protocol = { path = "../mmorpg-client-protocol" }
 mmorpg-content = { path = "../mmorpg-content" }
 mmorpg-core = { path = "../mmorpg-core" }
+mmorpg-wire = { path = "../mmorpg-wire" }
 
 [lints.rust]
 unsafe_code = "forbid"

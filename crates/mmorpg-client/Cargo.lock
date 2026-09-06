@@ -3430,6 +3430,7 @@ dependencies = [
  "mmorpg-client-model",
  "mmorpg-client-protocol",
  "mmorpg-content",
+ "mmorpg-wire",
 ]
 
 [[package]]
@@ -3440,6 +3441,7 @@ dependencies = [
  "mmorpg-client-protocol",
  "mmorpg-content",
  "mmorpg-core",
+ "mmorpg-wire",
 ]
 
 [[package]]
@@ -3467,6 +3469,10 @@ version = "0.1.0"
 dependencies = [
  "mmorpg-content",
 ]
+
+[[package]]
+name = "mmorpg-wire"
+version = "0.1.0"
 
 [[package]]
 name = "moxcms"

@@ -27,6 +27,19 @@ cargo check --manifest-path crates/mmorpg-client/Cargo.toml
 cargo run --manifest-path crates/mmorpg-client/Cargo.toml
 ```
 
+To use the typed wire listener, pass the line address first and the optional
+wire address second:
+
+```bash
+cargo run --manifest-path crates/mmorpg-client/Cargo.toml -- \
+  127.0.0.1:4000 --wire-address 127.0.0.1:4001
+```
+
+In wire mode the background worker sends typed `mmorpg-wire::ClientCommand`
+frames, requests a typed bootstrap snapshot after connection, and passes
+typed `ServerMessage` values through `mmorpg-client-adapter`. The default line
+mode remains available while the two paths are compared locally.
+
 The window can be closed using the normal window controls. With the server
 running in another terminal, use `WASD` to move, `Tab` to select the next
 known NPC, `Space` to attack, and `L` to loot the selected target. `V` lists
@@ -45,8 +58,9 @@ distributions; consult the Bevy setup documentation for the selected host.
 
 - The connection uses a temporary development TCP adapter and does not yet
   provide authentication, encryption, reconnection, replication interest
-  management, or production backpressure. The local spike does use a bounded
-  input/deferred-command queue and a five-second connection timeout.
+  management, or production backpressure. The local spike does use bounded
+  input, deferred-command, and wire-frame queues plus a five-second connection
+  timeout.
 - The client has only a fixed camera, keyboard input, basic targeting, and a
   compact starter-loop UI. It does not yet provide a full character
   controller, persistence, or addon scripting.
@@ -64,8 +78,9 @@ distributions; consult the Bevy setup documentation for the selected host.
   current content schema; it is not a performance, compatibility, or
   production-readiness result.
 
-The client now uses the shared bounded development decoder and the
-protocol-to-presentation adapter for snapshot and event records, and the
+The client uses the shared bounded development decoder and the
+protocol-to-presentation adapter for line-mode records. Its opt-in wire mode
+uses the typed server-message adapter for snapshot and event records, and the
 renderer reads player/NPC state directly from `ClientWorld`. The compact HUD
 now displays inventory, vendor listings, quest offers, quest progress, and
 authoritative notifications. `V` lists vendor stock, `B` buys one unit of the

@@ -1,21 +1,25 @@
 //! Minimal interactive Linux client technology spike.
 //!
 //! Bevy owns presentation and input. A dedicated TCP worker owns all socket
-//! I/O so render and input systems never wait on the server. The line parser
-//! below is deliberately temporary: the development server's `snapshot`
-//! command provides a bounded bootstrap stream, while live gameplay still
-//! arrives as development event lines. This adapter must be replaced by the
-//! production wire protocol when that boundary is implemented.
+//! I/O so render and input systems never wait on the server. The default line
+//! connection remains available for local compatibility. An
+//! opt-in wire address uses typed command frames and typed server messages;
+//! both paths feed the same renderer-independent presentation model.
 
 use bevy::prelude::*;
 use mmorpg_client_adapter::{
     apply_event as apply_presentation_event, apply_snapshot as apply_presentation_snapshot,
+    apply_wire_message,
 };
 use mmorpg_client_model::{ClientEntity, ClientWorld};
 use mmorpg_client_protocol::{
     EntityId, NpcKind, ServerEvent, ServerLine, Snapshot, SnapshotAssembler, decode_server_line,
 };
 use mmorpg_content::{ItemId, QuestId, item_definition, starter_catalog};
+use mmorpg_wire::{
+    ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope, MessageKind,
+    ServerMessage, decode_one,
+};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -34,6 +38,7 @@ const MAX_LOG_LINES: usize = 6;
 const COMMAND_QUEUE_CAPACITY: usize = 64;
 const MAX_DEFERRED_COMMANDS: usize = 32;
 const MAX_OUTGOING_LINES: usize = 64;
+const MAX_WIRE_INPUT_BYTES: usize = mmorpg_wire::MAX_FRAME_SIZE * 2;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Component)]
@@ -116,6 +121,7 @@ enum ClientCommand {
 enum NetworkEvent {
     Status(String),
     ServerLine(String),
+    ServerMessage(ServerMessage),
 }
 
 #[derive(Resource)]
@@ -128,12 +134,36 @@ struct NetworkBridge {
 struct MovementRepeat(Timer);
 
 fn main() {
-    let server_address = std::env::args()
-        .nth(1)
+    let mut arguments = std::env::args().skip(1);
+    let server_address = arguments
+        .next()
         .unwrap_or_else(|| DEFAULT_SERVER_ADDRESS.to_owned());
+    let mut wire_address = None;
+    while let Some(argument) = arguments.next() {
+        if argument != "--wire-address" {
+            eprintln!("unknown argument '{argument}'");
+            return;
+        }
+        if wire_address.is_some() {
+            eprintln!("--wire-address may only be specified once");
+            return;
+        }
+        wire_address = arguments.next();
+        if wire_address.is_none() {
+            eprintln!("--wire-address requires an address");
+            return;
+        }
+    }
+    let display_address = wire_address
+        .clone()
+        .unwrap_or_else(|| server_address.clone());
     let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel();
-    spawn_network_worker(server_address.clone(), command_rx, event_tx);
+    if let Some(wire_address) = wire_address {
+        spawn_wire_network_worker(wire_address, command_rx, event_tx);
+    } else {
+        spawn_network_worker(server_address, command_rx, event_tx);
+    }
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -145,7 +175,7 @@ fn main() {
             ..default()
         }))
         .insert_resource(ClearColor(Color::srgb(0.08, 0.12, 0.18)))
-        .insert_resource(ClientState::new(server_address))
+        .insert_resource(ClientState::new(display_address))
         .insert_resource(NetworkBridge {
             command_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
@@ -387,6 +417,202 @@ fn spawn_network_worker(
     });
 }
 
+/// Runs the typed wire transport on the same dedicated worker used by the
+/// legacy line path. Socket ownership remains outside Bevy's render and input
+/// systems, and the bounded frame buffer rejects malformed or oversized data
+/// before it reaches the presentation adapter.
+fn spawn_wire_network_worker(
+    server_address: String,
+    command_rx: Receiver<ClientCommand>,
+    event_tx: Sender<NetworkEvent>,
+) {
+    thread::spawn(move || {
+        let _ = event_tx.send(NetworkEvent::Status(format!(
+            "connecting to typed wire {server_address}"
+        )));
+        let Some(address) = server_address
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut addresses| addresses.next())
+        else {
+            let _ = event_tx.send(NetworkEvent::Status(
+                "wire address could not be resolved".to_owned(),
+            ));
+            return;
+        };
+        let mut stream = match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = event_tx.send(NetworkEvent::Status(format!(
+                    "wire connection failed: {error}"
+                )));
+                return;
+            }
+        };
+        if let Err(error) = stream.set_nonblocking(true) {
+            let _ = event_tx.send(NetworkEvent::Status(format!(
+                "cannot configure wire socket: {error}"
+            )));
+            return;
+        }
+
+        let _ = event_tx.send(NetworkEvent::Status(
+            "typed wire socket connected".to_owned(),
+        ));
+        let mut outgoing = VecDeque::<Vec<u8>>::new();
+        queue_wire_command(
+            &mut outgoing,
+            WireCommand::Join {
+                name: PLAYER_NAME.to_owned(),
+                role: mmorpg_wire::RoleCode::DamageDealer,
+            },
+        );
+        let mut incoming = Vec::new();
+        let mut session_ready = false;
+        let mut deferred_commands = VecDeque::new();
+
+        loop {
+            match command_rx.try_recv() {
+                Err(TryRecvError::Disconnected) => break,
+                Ok(command) if session_ready => {
+                    queue_wire_command(&mut outgoing, client_command_to_wire(command))
+                }
+                Ok(command) if deferred_commands.len() < MAX_DEFERRED_COMMANDS => {
+                    deferred_commands.push_back(command)
+                }
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => {}
+            }
+
+            if !flush_outgoing(&mut stream, &mut outgoing) {
+                let _ = event_tx.send(NetworkEvent::Status("typed wire write failed".to_owned()));
+                break;
+            }
+
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => {
+                        let _ = event_tx.send(NetworkEvent::Status(
+                            "typed wire server closed the connection".to_owned(),
+                        ));
+                        return;
+                    }
+                    Ok(bytes_read) => {
+                        incoming.extend_from_slice(&buffer[..bytes_read]);
+                        if incoming.len() > MAX_WIRE_INPUT_BYTES {
+                            let _ = event_tx.send(NetworkEvent::Status(
+                                "typed wire input buffer exceeded its limit".to_owned(),
+                            ));
+                            return;
+                        }
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                    Err(error) => {
+                        let _ = event_tx.send(NetworkEvent::Status(format!(
+                            "typed wire read failed: {error}"
+                        )));
+                        return;
+                    }
+                }
+            }
+
+            loop {
+                let decoded = match decode_one(&incoming) {
+                    Ok(decoded) => decoded,
+                    Err(WireDecodeError::Truncated { .. }) => break,
+                    Err(error) => {
+                        let _ = event_tx.send(NetworkEvent::Status(format!(
+                            "typed wire frame rejected: {error}"
+                        )));
+                        return;
+                    }
+                };
+                let consumed = decoded.consumed;
+                let kind = decoded.envelope.kind;
+                let payload = decoded.envelope.payload;
+                incoming.drain(..consumed);
+                if kind != MessageKind::Event {
+                    let _ = event_tx.send(NetworkEvent::Status(
+                        "typed wire server sent a non-event message".to_owned(),
+                    ));
+                    return;
+                }
+                let message = match ServerMessage::decode_payload(&payload) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        let _ = event_tx.send(NetworkEvent::Status(format!(
+                            "typed wire server message rejected: {error}"
+                        )));
+                        return;
+                    }
+                };
+                if let ServerMessage::Connected { .. } = message {
+                    session_ready = true;
+                    queue_wire_command(&mut outgoing, WireCommand::Snapshot);
+                    while let Some(command) = deferred_commands.pop_front() {
+                        queue_wire_command(&mut outgoing, client_command_to_wire(command));
+                    }
+                }
+                if event_tx.send(NetworkEvent::ServerMessage(message)).is_err() {
+                    return;
+                }
+            }
+
+            thread::sleep(Duration::from_millis(5));
+        }
+    });
+}
+
+fn client_command_to_wire(command: ClientCommand) -> WireCommand {
+    match command {
+        ClientCommand::Move { dx, dy } => WireCommand::Move { dx, dy },
+        ClientCommand::Target(EntityId(target_id)) => WireCommand::SelectTarget { target_id },
+        ClientCommand::Attack => WireCommand::BasicAttack,
+        ClientCommand::ListVendor(EntityId(vendor_id)) => WireCommand::ListVendor { vendor_id },
+        ClientCommand::ListQuestOffers(EntityId(npc_id)) => WireCommand::ListQuestOffers { npc_id },
+        ClientCommand::BuyItem {
+            vendor_id: EntityId(vendor_id),
+            item_id,
+            quantity,
+        } => WireCommand::BuyItem {
+            vendor_id,
+            item_id: item_id.0,
+            quantity,
+        },
+        ClientCommand::AcceptQuest {
+            npc_id: EntityId(npc_id),
+            quest_id,
+        } => WireCommand::AcceptQuest {
+            npc_id,
+            quest_id: quest_id.0,
+        },
+        ClientCommand::TurnInQuest {
+            npc_id: EntityId(npc_id),
+            quest_id,
+        } => WireCommand::TurnInQuest {
+            npc_id,
+            quest_id: quest_id.0,
+        },
+        ClientCommand::Loot(EntityId(enemy_id)) => WireCommand::LootEnemy { enemy_id },
+    }
+}
+
+fn queue_wire_command(outgoing: &mut VecDeque<Vec<u8>>, command: WireCommand) {
+    if outgoing.len() >= MAX_OUTGOING_LINES {
+        return;
+    }
+    let Ok(payload) = command.encode_payload() else {
+        return;
+    };
+    let Ok(frame) =
+        Envelope::new(MessageKind::Command, payload).and_then(|envelope| envelope.encode())
+    else {
+        return;
+    };
+    outgoing.push_back(frame);
+}
+
 fn queue_command_line(outgoing: &mut VecDeque<Vec<u8>>, command: &str) {
     let mut line = command.as_bytes().to_vec();
     line.push(b'\n');
@@ -460,6 +686,7 @@ fn consume_network_events(bridge: Res<NetworkBridge>, mut state: ResMut<ClientSt
                 state.log(status);
             }
             NetworkEvent::ServerLine(line) => apply_server_line(&mut state, &line),
+            NetworkEvent::ServerMessage(message) => apply_server_message(&mut state, &message),
         }
     }
 }
@@ -858,6 +1085,22 @@ fn apply_server_line(state: &mut ClientState, line: &str) {
     }
 }
 
+fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
+    match message {
+        ServerMessage::Welcome { server } => state.log(format!("server greeted {server}")),
+        ServerMessage::Connected { player_id, .. } => {
+            state.player_id = Some(EntityId(*player_id));
+            state.connection_status = "authenticated typed development session".to_owned();
+            state.log(format!("connected as {player_id}"));
+        }
+        ServerMessage::Error { message } => state.log(format!("rejected: {message}")),
+        ServerMessage::Event(_) | ServerMessage::Snapshot(_) => {}
+    }
+    if let Err(error) = apply_wire_message(&mut state.presentation, message) {
+        state.log(format!("authoritative presentation rejected: {error}"));
+    }
+}
+
 fn apply_snapshot(state: &mut ClientState, snapshot: Snapshot) {
     if let Err(error) = apply_presentation_snapshot(&mut state.presentation, &snapshot) {
         state.log(format!("authoritative presentation rejected: {error}"));
@@ -1019,6 +1262,30 @@ mod tests {
                 "turn-in-quest 1 1\n",
                 "loot 2\n",
             ]
+        );
+    }
+
+    #[test]
+    fn typed_mode_wraps_client_intents_in_versioned_command_frames() {
+        let mut outgoing = VecDeque::new();
+        queue_wire_command(
+            &mut outgoing,
+            client_command_to_wire(ClientCommand::BuyItem {
+                vendor_id: EntityId(1),
+                item_id: ItemId::TOWN_RATION,
+                quantity: 2,
+            }),
+        );
+        let frame = outgoing.pop_front().expect("wire frame should be queued");
+        let decoded = decode_one(&frame).expect("wire frame should decode");
+        assert_eq!(decoded.envelope.kind, MessageKind::Command);
+        assert_eq!(
+            WireCommand::decode_payload(&decoded.envelope.payload),
+            Ok(WireCommand::BuyItem {
+                vendor_id: 1,
+                item_id: 2,
+                quantity: 2,
+            })
         );
     }
 

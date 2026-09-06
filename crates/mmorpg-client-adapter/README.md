@@ -1,11 +1,13 @@
 # `mmorpg-client-adapter`
 
 This standalone crate translates the decoded temporary development protocol
-into the renderer-independent `mmorpg-client-model`. It is the seam between
+and typed `mmorpg-wire` server messages into the renderer-independent
+`mmorpg-client-model`. It is the seam between
 transport/schema code and Bevy (or a future renderer); it does not open
 sockets, render frames, or make gameplay decisions.
 
-Snapshots are applied as complete replacements. The temporary snapshot schema
+Snapshots from either protocol path are applied as complete replacements. The
+temporary snapshot schema
 contains player identity/combat/economy scalars, NPC identity/combat state,
 inventory stack records, and quest state records. The adapter translates those
 records into the model so reconnect and reconciliation preserve the current
