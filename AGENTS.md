@@ -111,6 +111,7 @@ git diff --check
 ```bash
 cargo run -p mmorpg-server
 cargo run -p mmorpg-server -- 127.0.0.1:4400
+cargo run -p mmorpg-server -- 127.0.0.1:4400 --wire-address 127.0.0.1:4401
 ```
 
 Connect to the default server from another terminal:
@@ -132,6 +133,11 @@ snapshot
 help
 quit
 ```
+
+The optional `--wire-address` listener accepts versioned `MMOW` envelopes with
+typed `mmorpg-wire::ClientCommand` payloads. It is a protocol/session spike;
+the graphical client still uses the line listener until structured binary
+event and snapshot payloads are complete.
 
 The explicit player ID form of `move` is restricted to the player bound to the
 connection. The protocol is for local development and is not suitable for

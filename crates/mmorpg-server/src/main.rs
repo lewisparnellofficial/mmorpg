@@ -1,4 +1,7 @@
 use mmorpg_core::{Command, EntityId, Event, ItemId, QuestId, Role, World};
+use mmorpg_wire::{
+    ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope, MessageKind, decode_one,
+};
 use std::collections::VecDeque;
 use std::env;
 use std::io::{self, Read, Write};
@@ -8,6 +11,8 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_ADDRESS: &str = "127.0.0.1:4000";
 const DEFAULT_TICK_HZ: u64 = 20;
+const MAX_WIRE_INPUT_BYTES: usize = mmorpg_wire::MAX_FRAME_SIZE * 2;
+const MAX_WIRE_OUTPUT_BYTES: usize = 256 * 1024;
 
 #[derive(Debug)]
 struct Client {
@@ -37,14 +42,64 @@ impl Client {
     }
 }
 
+#[derive(Debug)]
+struct WireClient {
+    id: u64,
+    stream: TcpStream,
+    input: Vec<u8>,
+    output: VecDeque<u8>,
+    player_id: Option<EntityId>,
+    closed: bool,
+}
+
+impl WireClient {
+    fn new(id: u64, stream: TcpStream) -> Self {
+        Self {
+            id,
+            stream,
+            input: Vec::new(),
+            output: VecDeque::new(),
+            player_id: None,
+            closed: false,
+        }
+    }
+
+    fn queue_event_payload(&mut self, payload: &[u8]) {
+        let Ok(envelope) = Envelope::new(MessageKind::Event, payload.to_vec()) else {
+            self.closed = true;
+            return;
+        };
+        let Ok(frame) = envelope.encode() else {
+            self.closed = true;
+            return;
+        };
+        if self.output.len().saturating_add(frame.len()) > MAX_WIRE_OUTPUT_BYTES {
+            self.closed = true;
+            return;
+        }
+        self.output.extend(frame);
+    }
+
+    fn queue_event_text(&mut self, text: impl AsRef<str>) {
+        self.queue_event_payload(text.as_ref().as_bytes());
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClientOrigin {
+    Line(u64),
+    Wire(u64),
+}
+
 struct PendingCommand {
-    origin: u64,
+    origin: ClientOrigin,
     command: Command,
 }
 
 struct Server {
     world: World,
     clients: Vec<Client>,
+    wire_clients: Vec<WireClient>,
     commands: VecDeque<PendingCommand>,
     next_client_id: u64,
     tick_interval: Duration,
@@ -58,6 +113,7 @@ impl Server {
         Self {
             world: World::new_starter_zone(),
             clients: Vec::new(),
+            wire_clients: Vec::new(),
             commands: VecDeque::new(),
             next_client_id: 1,
             tick_interval,
@@ -73,6 +129,15 @@ impl Server {
         client.queue_line("TYPE help FOR COMMANDS");
         self.clients.push(client);
         println!("client_connected id={id}");
+    }
+
+    fn add_wire_client(&mut self, stream: TcpStream) {
+        let id = self.next_client_id;
+        self.next_client_id = self.next_client_id.saturating_add(1);
+        let mut client = WireClient::new(id, stream);
+        client.queue_event_text("WELCOME mmorpg-server");
+        self.wire_clients.push(client);
+        println!("wire_client_connected id={id}");
     }
 
     fn read_clients(&mut self) {
@@ -113,6 +178,151 @@ impl Server {
         }
     }
 
+    fn read_wire_clients(&mut self) {
+        let mut commands = Vec::new();
+        let mut errors = Vec::new();
+        for client in &mut self.wire_clients {
+            if client.closed {
+                continue;
+            }
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match client.stream.read(&mut buffer) {
+                    Ok(0) => {
+                        client.closed = true;
+                        break;
+                    }
+                    Ok(bytes_read) => {
+                        client.input.extend_from_slice(&buffer[..bytes_read]);
+                        if client.input.len() > MAX_WIRE_INPUT_BYTES {
+                            errors.push((
+                                client.id,
+                                "wire input buffer exceeded its limit".to_owned(),
+                            ));
+                            client.input.clear();
+                            client.closed = true;
+                            break;
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => {
+                        eprintln!("wire_client_read_error id={} error={error}", client.id);
+                        client.closed = true;
+                        break;
+                    }
+                }
+            }
+
+            loop {
+                let decoded = match decode_one(&client.input) {
+                    Ok(decoded) => decoded,
+                    Err(WireDecodeError::Truncated { .. }) => break,
+                    Err(error) => {
+                        errors.push((client.id, format!("invalid wire frame: {error}")));
+                        client.input.clear();
+                        client.closed = true;
+                        break;
+                    }
+                };
+                let consumed = decoded.consumed;
+                let kind = decoded.envelope.kind;
+                let payload = decoded.envelope.payload;
+                client.input.drain(..consumed);
+                if kind != MessageKind::Command {
+                    errors.push((
+                        client.id,
+                        format!("expected command envelope, received {kind:?}"),
+                    ));
+                    continue;
+                }
+                match WireCommand::decode_payload(&payload) {
+                    Ok(command) => commands.push((client.id, command)),
+                    Err(error) => errors.push((client.id, format!("invalid command: {error}"))),
+                }
+            }
+        }
+
+        for (client_id, error) in errors {
+            self.queue_wire_error(client_id, error);
+        }
+        for (client_id, command) in commands {
+            self.handle_wire_command(client_id, command);
+        }
+    }
+
+    fn handle_wire_command(&mut self, client_id: u64, command: WireCommand) {
+        let Some(client_index) = self
+            .wire_clients
+            .iter()
+            .position(|client| client.id == client_id)
+        else {
+            return;
+        };
+        let bound_player = self.wire_clients[client_index].player_id;
+        if let WireCommand::Join { name, role } = command {
+            let already_pending = self.commands.iter().any(|pending| {
+                pending.origin == ClientOrigin::Wire(client_id)
+                    && matches!(pending.command, Command::JoinPlayer { .. })
+            });
+            if bound_player.is_some() || already_pending {
+                self.queue_wire_error(client_id, "already connected".to_owned());
+                return;
+            }
+            let role = match role {
+                mmorpg_wire::RoleCode::Tank => Role::Tank,
+                mmorpg_wire::RoleCode::Healer => Role::Healer,
+                mmorpg_wire::RoleCode::DamageDealer => Role::DamageDealer,
+            };
+            self.commands.push_back(PendingCommand {
+                origin: ClientOrigin::Wire(client_id),
+                command: Command::JoinPlayer { name, role },
+            });
+            return;
+        }
+        if matches!(command, WireCommand::Snapshot) {
+            self.send_wire_machine_snapshot(client_id);
+            return;
+        }
+        let Some(player_id) = bound_player else {
+            self.queue_wire_error(client_id, "connect first".to_owned());
+            return;
+        };
+        let command = match wire_command_to_core(command, player_id) {
+            Ok(command) => command,
+            Err(error) => {
+                self.queue_wire_error(client_id, error);
+                return;
+            }
+        };
+        self.commands.push_back(PendingCommand {
+            origin: ClientOrigin::Wire(client_id),
+            command,
+        });
+    }
+
+    fn send_wire_machine_snapshot(&mut self, client_id: u64) {
+        let lines = format_machine_snapshot(&self.world);
+        if let Some(client) = self
+            .wire_clients
+            .iter_mut()
+            .find(|client| client.id == client_id)
+        {
+            for line in lines {
+                client.queue_event_text(line);
+            }
+        }
+    }
+
+    fn queue_wire_error(&mut self, client_id: u64, error: String) {
+        if let Some(client) = self
+            .wire_clients
+            .iter_mut()
+            .find(|client| client.id == client_id)
+        {
+            client.queue_event_text(format!("ERR {error}"));
+        }
+    }
+
     fn handle_line(&mut self, client_id: u64, line: &str) {
         let Some(client_index) = self
             .clients
@@ -125,7 +335,7 @@ impl Server {
             Ok(ParsedLine::Command(command)) => {
                 if matches!(command, Command::JoinPlayer { .. }) {
                     let already_pending = self.commands.iter().any(|pending| {
-                        pending.origin == client_id
+                        pending.origin == ClientOrigin::Line(client_id)
                             && matches!(pending.command, Command::JoinPlayer { .. })
                     });
                     if self.clients[client_index].player_id.is_some() || already_pending {
@@ -134,7 +344,7 @@ impl Server {
                     }
                 }
                 self.commands.push_back(PendingCommand {
-                    origin: client_id,
+                    origin: ClientOrigin::Line(client_id),
                     command,
                 });
             }
@@ -307,7 +517,7 @@ impl Server {
         }
 
         let pending: Vec<_> = self.commands.drain(..).collect();
-        let mut join_origins: VecDeque<u64> = pending
+        let mut join_origins: VecDeque<ClientOrigin> = pending
             .iter()
             .filter_map(|pending| {
                 matches!(pending.command, Command::JoinPlayer { .. }).then_some(pending.origin)
@@ -322,14 +532,35 @@ impl Server {
         for event in &events {
             if let Event::PlayerJoined { player } = event
                 && let Some(origin) = join_origins.pop_front()
-                && let Some(client) = self.clients.iter_mut().find(|client| client.id == origin)
             {
-                client.player_id = Some(player.id);
-                client.queue_line(format!(
-                    "CONNECTED player_id={} role={}",
-                    player.id,
-                    player.role.as_str()
-                ));
+                match origin {
+                    ClientOrigin::Line(origin) => {
+                        if let Some(client) =
+                            self.clients.iter_mut().find(|client| client.id == origin)
+                        {
+                            client.player_id = Some(player.id);
+                            client.queue_line(format!(
+                                "CONNECTED player_id={} role={}",
+                                player.id,
+                                player.role.as_str()
+                            ));
+                        }
+                    }
+                    ClientOrigin::Wire(origin) => {
+                        if let Some(client) = self
+                            .wire_clients
+                            .iter_mut()
+                            .find(|client| client.id == origin)
+                        {
+                            client.player_id = Some(player.id);
+                            client.queue_event_text(format!(
+                                "CONNECTED player_id={} role={}",
+                                player.id,
+                                player.role.as_str()
+                            ));
+                        }
+                    }
+                }
             }
         }
 
@@ -349,7 +580,17 @@ impl Server {
                 && let Some(player_id) = client.player_id.take()
             {
                 self.commands.push_back(PendingCommand {
-                    origin: client.id,
+                    origin: ClientOrigin::Line(client.id),
+                    command: Command::LeavePlayer { player_id },
+                });
+            }
+        }
+        for client in &mut self.wire_clients {
+            if client.closed
+                && let Some(player_id) = client.player_id.take()
+            {
+                self.commands.push_back(PendingCommand {
+                    origin: ClientOrigin::Wire(client.id),
                     command: Command::LeavePlayer { player_id },
                 });
             }
@@ -377,10 +618,32 @@ impl Server {
                 }
             }
         }
+        for client in &mut self.wire_clients {
+            while !client.output.is_empty() {
+                let chunk: Vec<u8> = client.output.iter().copied().take(8192).collect();
+                match client.stream.write(&chunk) {
+                    Ok(0) => {
+                        client.closed = true;
+                        break;
+                    }
+                    Ok(bytes_written) => {
+                        client.output.drain(..bytes_written);
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => {
+                        eprintln!("wire_client_write_error id={} error={error}", client.id);
+                        client.closed = true;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     fn remove_closed(&mut self) {
         self.clients
+            .retain(|client| !client.closed || !client.output.is_empty());
+        self.wire_clients
             .retain(|client| !client.closed || !client.output.is_empty());
     }
 
@@ -388,6 +651,11 @@ impl Server {
         for client in &mut self.clients {
             if !client.closed {
                 client.queue_line(&line);
+            }
+        }
+        for client in &mut self.wire_clients {
+            if !client.closed {
+                client.queue_event_text(&line);
             }
         }
     }
@@ -805,14 +1073,88 @@ fn parse_positive_quantity(value: &str) -> Result<u32, String> {
     Ok(quantity)
 }
 
-fn main() -> io::Result<()> {
-    let address = env::args()
-        .nth(1)
+fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Command, String> {
+    Ok(match command {
+        WireCommand::Move { dx, dy } => Command::Move { player_id, dx, dy },
+        WireCommand::SelectTarget { target_id } => Command::SelectTarget {
+            player_id,
+            target_id: EntityId(target_id),
+        },
+        WireCommand::BasicAttack => Command::BasicAttack { player_id },
+        WireCommand::ListVendor { vendor_id } => Command::ListVendor {
+            player_id,
+            vendor_id: EntityId(vendor_id),
+        },
+        WireCommand::BuyItem {
+            vendor_id,
+            item_id,
+            quantity,
+        } => Command::BuyItem {
+            player_id,
+            vendor_id: EntityId(vendor_id),
+            item_id: ItemId(item_id),
+            quantity,
+        },
+        WireCommand::LootEnemy { enemy_id } => Command::LootEnemy {
+            player_id,
+            enemy_id: EntityId(enemy_id),
+        },
+        WireCommand::ListQuestOffers { npc_id } => Command::ListQuestOffers {
+            player_id,
+            npc_id: EntityId(npc_id),
+        },
+        WireCommand::AcceptQuest { npc_id, quest_id } => Command::AcceptQuest {
+            player_id,
+            npc_id: EntityId(npc_id),
+            quest_id: QuestId(quest_id),
+        },
+        WireCommand::TurnInQuest { npc_id, quest_id } => Command::TurnInQuest {
+            player_id,
+            npc_id: EntityId(npc_id),
+            quest_id: QuestId(quest_id),
+        },
+        WireCommand::Join { .. } | WireCommand::Snapshot => {
+            return Err("command is not valid in a bound session".to_owned());
+        }
+    })
+}
+
+fn parse_server_addresses() -> Result<(String, Option<String>), String> {
+    let mut arguments = env::args().skip(1);
+    let address = arguments
+        .next()
         .unwrap_or_else(|| DEFAULT_ADDRESS.to_owned());
+    let mut wire_address = None;
+    while let Some(argument) = arguments.next() {
+        if argument != "--wire-address" {
+            return Err(format!("unknown argument '{argument}'"));
+        }
+        if wire_address.is_some() {
+            return Err("--wire-address may only be specified once".to_owned());
+        }
+        wire_address = Some(
+            arguments
+                .next()
+                .ok_or_else(|| "--wire-address requires an address".to_owned())?,
+        );
+    }
+    Ok((address, wire_address))
+}
+
+fn main() -> io::Result<()> {
+    let (address, wire_address) = parse_server_addresses()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let listener = TcpListener::bind(&address)?;
     listener.set_nonblocking(true)?;
+    let wire_listener = wire_address.as_deref().map(TcpListener::bind).transpose()?;
+    if let Some(listener) = &wire_listener {
+        listener.set_nonblocking(true)?;
+    }
     let mut server = Server::new(DEFAULT_TICK_HZ);
     println!("server_listening address={address} tick_hz={DEFAULT_TICK_HZ}");
+    if let Some(address) = wire_address {
+        println!("wire_server_listening address={address}");
+    }
 
     loop {
         loop {
@@ -827,7 +1169,22 @@ fn main() -> io::Result<()> {
             }
         }
 
+        if let Some(listener) = &wire_listener {
+            loop {
+                match listener.accept() {
+                    Ok((stream, peer)) => {
+                        stream.set_nonblocking(true)?;
+                        println!("accepted_wire_peer={peer}");
+                        server.add_wire_client(stream);
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+
         server.read_clients();
+        server.read_wire_clients();
         server.queue_disconnects();
         server.advance_if_due();
         server.flush_clients();

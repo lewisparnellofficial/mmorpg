@@ -7,13 +7,15 @@ production gateway or authentication service.
 ## Intended first-slice behavior
 
 - Bind a configurable local TCP address.
+- Optionally bind a second TCP address for versioned wire-envelope clients.
 - Advance the authoritative world at a fixed tick rate.
 - Accept simple line-oriented development commands.
 - Return authoritative events and state summaries.
 - Keep sockets and command parsing outside the simulation core.
 
-The development protocol is temporary. It exists to make the first world
-simulation observable and testable before a versioned binary protocol is added.
+The line development protocol is temporary. It remains available for manual
+testing while the optional wire listener exercises versioned binary command
+ingress against the same authoritative world.
 
 ## Planned commands
 
@@ -42,6 +44,20 @@ first argument. For example:
 cargo run -p mmorpg-server -- 127.0.0.1:4400
 nc 127.0.0.1 4400
 ```
+
+To enable the opt-in wire listener, provide `--wire-address` after the line
+listener address:
+
+```bash
+cargo run -p mmorpg-server -- 127.0.0.1:4400 --wire-address 127.0.0.1:4401
+```
+
+The wire listener accepts versioned `MMOW` command envelopes containing the
+typed `mmorpg-wire::ClientCommand` payload. It routes those commands through
+the same bound-player checks and authoritative `World` as the line listener.
+Responses are currently event envelopes whose payload is the existing bounded
+diagnostic text, including the temporary snapshot records. Structured binary
+event and snapshot payloads remain a later protocol increment.
 
 The optional explicit player ID on `move` is checked against the player bound
 to the connection. It exists for debugging and does not grant authority over

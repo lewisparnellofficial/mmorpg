@@ -26,4 +26,9 @@ name = "mmorpg-server"
 version = "0.1.0"
 dependencies = [
  "mmorpg-core",
+ "mmorpg-wire",
 ]
+
+[[package]]
+name = "mmorpg-wire"
+version = "0.1.0"

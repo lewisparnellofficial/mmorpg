@@ -48,6 +48,8 @@ architecture and research remain in `docs/architecture/` and
   with message-kind and frame-limit tests.
 - Typed bounded client-command payload codec for the complete current
   starter-loop intent vocabulary.
+- Optional server wire listener that routes typed command envelopes into the
+  authoritative world and broadcasts bounded event envelopes.
 - Interactive Bevy client shell with background TCP I/O, authoritative
   snapshot bootstrap, keyboard movement, target cycling, attack input, and a
   compact status HUD.

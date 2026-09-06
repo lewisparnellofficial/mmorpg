@@ -83,7 +83,8 @@ The repository now contains the first implementation of this shape:
   prototype with explicit message kinds and payload boundaries.
 - `crates/mmorpg-core` — dependency-free authoritative starter-zone simulation.
 - `crates/mmorpg-server` — Linux headless development server with a temporary
-  nonblocking TCP line protocol.
+  nonblocking TCP line protocol and an opt-in versioned-wire listener that
+  routes typed commands into the same authoritative world.
 
 The current development tooling also includes `tools/mmorpg-content-check`, a
 standalone catalog validation command. It validates the same typed content
@@ -105,16 +106,17 @@ navigation, persistence, and ownership boundaries are integrated into the
 server.
 
 The current server is intentionally a development process. It does not yet
-provide authentication, durable persistence, binary protocol versioning,
-interest-managed replication, or multi-worker deployment.
+provide authentication, durable persistence, structured binary event/snapshot
+payloads, interest-managed replication, or multi-worker deployment.
 
 The wire and transport crates are preparatory boundaries, not a production
-network stack. The current server still speaks a temporary line protocol, and
-the graphical client still uses its own background line-protocol worker. The
-new `WireConnection` proves bounded envelope I/O but is not yet connected to
-the server. Authentication, structured binary payload schemas, asynchronous
-backpressure, and interest-managed replication remain future work. The
-current player/NPC renderer consumes the presentation model directly.
+network stack. The current server still supports its temporary line protocol,
+and the graphical client still uses its own background line-protocol worker.
+The opt-in server wire listener now accepts typed command payloads and emits
+event envelopes carrying temporary diagnostic payloads. Authentication,
+structured binary event/snapshot schemas, asynchronous backpressure, and
+interest-managed replication remain future work. The current player/NPC
+renderer consumes the presentation model directly.
 
 The code should retain interfaces for separating these later:
 
