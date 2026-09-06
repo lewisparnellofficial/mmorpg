@@ -11,6 +11,12 @@ combat, inventory, quest, or other client-authored results. All mutable state
 changes enter through `Event` values or authoritative snapshots supplied by a
 server adapter.
 
+`ClientWorld::replace_from_snapshot` performs a whole-projection replacement
+and records the snapshot tick. It clears stale entities and transient vendor
+or quest query results, which gives reconnect and reconciliation code an
+explicit atomic replacement boundary. The adapter must translate and validate
+all records before calling it.
+
 ## Current projection
 
 The model projects:

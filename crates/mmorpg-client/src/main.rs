@@ -8,6 +8,10 @@
 //! production wire protocol when that boundary is implemented.
 
 use bevy::prelude::*;
+use mmorpg_client_adapter::{
+    apply_event as apply_presentation_event, apply_snapshot as apply_presentation_snapshot,
+};
+use mmorpg_client_model::ClientWorld;
 use mmorpg_client_protocol::{
     EntityId, NpcKind, ServerEvent, ServerLine, Snapshot, SnapshotAssembler, decode_server_line,
 };
@@ -83,6 +87,7 @@ struct ClientState {
     target_cursor: usize,
     logs: VecDeque<String>,
     snapshot: SnapshotAssembler,
+    presentation: ClientWorld,
 }
 
 impl ClientState {
@@ -100,6 +105,7 @@ impl ClientState {
             target_cursor: 0,
             logs: VecDeque::from(["WASD move  Tab target  Space attack".to_owned()]),
             snapshot: SnapshotAssembler::new(),
+            presentation: ClientWorld::default(),
         }
     }
 
@@ -626,6 +632,10 @@ fn apply_server_line(state: &mut ClientState, line: &str) {
 }
 
 fn apply_snapshot(state: &mut ClientState, snapshot: Snapshot) {
+    if let Err(error) = apply_presentation_snapshot(&mut state.presentation, &snapshot) {
+        state.log(format!("authoritative presentation rejected: {error}"));
+        return;
+    }
     state.world_tick = Some(snapshot.world.tick);
     state.npcs = snapshot
         .npcs
@@ -673,6 +683,10 @@ fn apply_npc_state(state: &mut ClientState, npc: &mmorpg_client_protocol::NpcSta
 }
 
 fn apply_event(state: &mut ClientState, event: ServerEvent) {
+    match apply_presentation_event(&mut state.presentation, &event) {
+        Ok(_) => {}
+        Err(error) => state.log(format!("authoritative presentation rejected: {error}")),
+    }
     match event {
         ServerEvent::PlayerMoved { id, position, .. } if Some(id) == state.player_id => {
             state.player_position = to_bevy_position(position);
@@ -805,5 +819,11 @@ mod tests {
         assert_eq!(state.player_target, Some(EntityId(2)));
         assert_eq!(state.npcs[&EntityId(2)].position, Vec2::new(24.0, 0.0));
         assert_eq!(state.npcs[&EntityId(2)].health, 100);
+        assert_eq!(state.presentation.world_tick(), Some(17));
+        assert_eq!(state.presentation.player(EntityId(5)).unwrap().gold, 20);
+        assert_eq!(
+            state.presentation.npc(EntityId(2)).unwrap().template_id,
+            mmorpg_content::NpcTemplateId::FIELD_WOLF
+        );
     }
 }

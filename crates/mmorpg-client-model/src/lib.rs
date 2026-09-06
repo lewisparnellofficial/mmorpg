@@ -214,6 +214,7 @@ pub struct ClientWorld {
     vendor_listings: BTreeMap<EntityId, Vec<ClientVendorListing>>,
     quest_offers: BTreeMap<EntityId, Vec<QuestOffer>>,
     last_notification: Option<ClientNotification>,
+    world_tick: Option<u64>,
 }
 
 impl ClientWorld {
@@ -249,6 +250,44 @@ impl ClientWorld {
 
     pub fn last_notification(&self) -> Option<&ClientNotification> {
         self.last_notification.as_ref()
+    }
+
+    /// Returns the tick associated with the most recently applied complete
+    /// world snapshot, when the transport supplies one.
+    pub fn world_tick(&self) -> Option<u64> {
+        self.world_tick
+    }
+
+    /// Replaces the entity projection with one complete authoritative
+    /// snapshot.
+    ///
+    /// The replacement is intentionally whole-world: stale entities and
+    /// transient vendor/quest query results cannot survive a successful
+    /// bootstrap or reconciliation snapshot. Inventory and quest state are
+    /// carried by each [`PlayerSnapshot`], so this API does not invent or
+    /// preserve mutable player data across a replacement.
+    pub fn replace_from_snapshot(
+        &mut self,
+        world_tick: u64,
+        players: impl IntoIterator<Item = PlayerSnapshot>,
+        npcs: impl IntoIterator<Item = Npc>,
+    ) {
+        self.entities.clear();
+        self.defeated_enemies.clear();
+        self.vendor_listings.clear();
+        self.quest_offers.clear();
+        self.last_notification = None;
+        self.world_tick = Some(world_tick);
+
+        for player in players {
+            self.entities.insert(
+                player.id,
+                ClientEntity::Player(ClientPlayer::from_snapshot(&player)),
+            );
+        }
+        for npc in npcs {
+            self.apply_npc_snapshot(&npc);
+        }
     }
 
     /// Applies one authoritative server snapshot for an NPC.

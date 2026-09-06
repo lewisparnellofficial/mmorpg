@@ -188,6 +188,7 @@ Client and editor technology spikes:
 cargo check --manifest-path crates/mmorpg-client/Cargo.toml
 cargo run --manifest-path crates/mmorpg-client/Cargo.toml
 cargo test --manifest-path crates/mmorpg-client-protocol/Cargo.toml
+cargo test --manifest-path crates/mmorpg-client-adapter/Cargo.toml
 cargo test --manifest-path crates/mmorpg-client-transport/Cargo.toml
 cargo test --manifest-path crates/mmorpg-wire/Cargo.toml
 cargo test --manifest-path experiments/ai-respawn/Cargo.toml
@@ -198,8 +199,8 @@ cargo run --quiet --manifest-path experiments/client-presentation-replay/Cargo.t
 ```
 
 The Bevy client requires a Linux desktop session and a working graphics stack.
-The protocol, editor-core, and replay crates are standalone technology spikes
-and are intentionally not part of the root workspace yet.
+The protocol, client-adapter, editor-core, and replay crates are standalone
+technology spikes and are intentionally not part of the root workspace yet.
 
 Convenience launch commands from the repository root:
 

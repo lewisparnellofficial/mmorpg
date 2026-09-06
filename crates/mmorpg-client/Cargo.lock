@@ -3426,8 +3426,28 @@ name = "mmorpg-client"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "mmorpg-client-adapter",
+ "mmorpg-client-model",
  "mmorpg-client-protocol",
  "mmorpg-content",
+]
+
+[[package]]
+name = "mmorpg-client-adapter"
+version = "0.1.0"
+dependencies = [
+ "mmorpg-client-model",
+ "mmorpg-client-protocol",
+ "mmorpg-content",
+ "mmorpg-core",
+]
+
+[[package]]
+name = "mmorpg-client-model"
+version = "0.1.0"
+dependencies = [
+ "mmorpg-content",
+ "mmorpg-core",
 ]
 
 [[package]]

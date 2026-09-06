@@ -67,6 +67,9 @@ The repository now contains the first implementation of this shape:
 - `crates/mmorpg-client-model` — renderer-independent presentation state that
   accepts authoritative events and snapshots without providing gameplay
   authority or a client command API.
+- `crates/mmorpg-client-adapter` — standalone translation boundary from the
+  temporary decoded protocol into the presentation model; it resolves
+  content metadata by stable ID and has no socket or renderer dependencies.
 - `crates/mmorpg-client` — standalone Bevy Linux client-shell technology spike
   that opens a window, presents the starter catalog with primitive geometry,
   connects to the development server, and sends basic authoritative intents.
@@ -106,10 +109,10 @@ interest-managed replication, or multi-worker deployment.
 
 The wire and transport crates are preparatory boundaries, not a production
 network stack. The current server still speaks a temporary line protocol. The
-graphical client uses a background worker and a framed machine-readable
-snapshot for local development, but authentication, production framing,
-asynchronous backpressure, and full authoritative event projection remain
-future work.
+graphical client uses a background worker, a framed machine-readable snapshot,
+and `mmorpg-client-adapter` for local development, but authentication,
+production framing, asynchronous backpressure, and direct renderer
+consumption of the complete presentation model remain future work.
 
 The code should retain interfaces for separating these later:
 
