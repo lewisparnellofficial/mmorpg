@@ -70,7 +70,17 @@ durability.
 
 ## Current status
 
-Planned. The server now has an `AccountCharacterRepository` replacement seam,
-but the core still creates starter-default players only and the active
-repository is non-durable. This experiment defines the next implementation
-boundary; it does not claim persistence is implemented.
+Implemented as a local development prototype. `mmorpg-core` now validates a
+durable player restore state and resets transient combat/session state. The
+development repository can atomically write and load a strict version-1
+checkpoint when `mmorpg-server` is started with `--character-store <file>`.
+
+Directly measured on 2026-09-06: a fresh server completed the starter wire
+gameplay smoke with a checkpoint store, then a second fresh server process
+loaded the same file. The restart smoke verified persisted quest-reward gold,
+a purchased Town Ration, and rewarded quest state.
+
+This remains a local prototype, not production durability. It does not yet
+provide a transaction journal, retry/idempotency keys, fsync of the parent
+directory, multi-character storage, concurrent writers, migration tooling, or
+PostgreSQL-backed account data.

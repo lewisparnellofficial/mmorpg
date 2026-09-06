@@ -139,6 +139,11 @@ typed `mmorpg-wire::ClientCommand` payloads and returns typed server-message
 payloads for events and bootstrap snapshots. It is a protocol/session spike;
 the graphical client still uses the line listener during its staged migration.
 
+For the opt-in restart-persistence prototype, add
+`--character-store /tmp/mmorpg-dev/aria.state` to a loopback wire-server
+launch. The repository performs the checkpoint file I/O only after the world
+step returns; this is not a production durable-store implementation.
+
 The explicit player ID form of `move` is restricted to the player bound to the
 connection. The protocol is for local development and is not suitable for
 internet deployment.

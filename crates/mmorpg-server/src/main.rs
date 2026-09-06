@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 use std::env;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -130,11 +131,15 @@ struct Server {
 }
 
 impl Server {
-    fn new(tick_hz: u64, dev_auth_enabled: bool) -> Self {
-        Self::with_account_repository(
-            tick_hz,
-            Box::new(DevelopmentAccountRepository::new(dev_auth_enabled)),
-        )
+    fn new(tick_hz: u64, dev_auth_enabled: bool, checkpoint_path: Option<PathBuf>) -> Self {
+        let repository: Box<dyn AccountCharacterRepository> = match checkpoint_path {
+            Some(path) => Box::new(DevelopmentAccountRepository::with_checkpoint_store(
+                dev_auth_enabled,
+                path,
+            )),
+            None => Box::new(DevelopmentAccountRepository::new(dev_auth_enabled)),
+        };
+        Self::with_account_repository(tick_hz, repository)
     }
 
     fn with_account_repository(
@@ -415,12 +420,26 @@ impl Server {
                 );
                 return;
             };
-            self.commands.push_back(PendingCommand {
-                origin: ClientOrigin::Wire(client_id),
-                command: Command::JoinPlayer {
+            let command = match self
+                .account_repository
+                .load_checkpoint(account_id, character_id)
+            {
+                Ok(Some(state)) => Command::RestorePlayer { state },
+                Ok(None) => Command::JoinPlayer {
                     name: character.name,
                     role: character.role,
                 },
+                Err(error) => {
+                    self.queue_wire_error(
+                        client_id,
+                        format!("cannot load character checkpoint: {error}"),
+                    );
+                    return;
+                }
+            };
+            self.commands.push_back(PendingCommand {
+                origin: ClientOrigin::Wire(client_id),
+                command,
             });
             return;
         }
@@ -670,7 +689,11 @@ impl Server {
         let mut join_origins: VecDeque<ClientOrigin> = pending
             .iter()
             .filter_map(|pending| {
-                matches!(pending.command, Command::JoinPlayer { .. }).then_some(pending.origin)
+                matches!(
+                    pending.command,
+                    Command::JoinPlayer { .. } | Command::RestorePlayer { .. }
+                )
+                .then_some(pending.origin)
             })
             .collect();
         let events = self
@@ -718,9 +741,33 @@ impl Server {
             self.broadcast_wire_event(&event);
         }
 
+        self.checkpoint_wire_players();
+
         self.next_tick += self.tick_interval;
         if self.next_tick <= Instant::now() {
             self.next_tick = Instant::now() + self.tick_interval;
+        }
+    }
+
+    fn checkpoint_wire_players(&self) {
+        for client in &self.wire_clients {
+            let (Some(session), Some(character_id), Some(player_id)) = (
+                client.authenticated,
+                client.selected_character_id,
+                client.player_id,
+            ) else {
+                continue;
+            };
+            let Some(player) = self.world.player(player_id) else {
+                continue;
+            };
+            if let Err(error) = self.account_repository.save_checkpoint(
+                session.account_id,
+                character_id,
+                &player.durable_state(),
+            ) {
+                eprintln!("checkpoint_save_error player={player_id} error={error}");
+            }
         }
     }
 
@@ -1559,30 +1606,40 @@ fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Com
     })
 }
 
-fn parse_server_addresses() -> Result<(String, Option<String>), String> {
+fn parse_server_addresses() -> Result<(String, Option<String>, Option<PathBuf>), String> {
     let mut arguments = env::args().skip(1);
     let address = arguments
         .next()
         .unwrap_or_else(|| DEFAULT_ADDRESS.to_owned());
     let mut wire_address = None;
+    let mut checkpoint_path = None;
     while let Some(argument) = arguments.next() {
-        if argument != "--wire-address" {
+        if argument == "--wire-address" {
+            if wire_address.is_some() {
+                return Err("--wire-address may only be specified once".to_owned());
+            }
+            wire_address = Some(
+                arguments
+                    .next()
+                    .ok_or_else(|| "--wire-address requires an address".to_owned())?,
+            );
+        } else if argument == "--character-store" {
+            if checkpoint_path.is_some() {
+                return Err("--character-store may only be specified once".to_owned());
+            }
+            checkpoint_path =
+                Some(PathBuf::from(arguments.next().ok_or_else(|| {
+                    "--character-store requires a file path".to_owned()
+                })?));
+        } else {
             return Err(format!("unknown argument '{argument}'"));
         }
-        if wire_address.is_some() {
-            return Err("--wire-address may only be specified once".to_owned());
-        }
-        wire_address = Some(
-            arguments
-                .next()
-                .ok_or_else(|| "--wire-address requires an address".to_owned())?,
-        );
     }
-    Ok((address, wire_address))
+    Ok((address, wire_address, checkpoint_path))
 }
 
 fn main() -> io::Result<()> {
-    let (address, wire_address) = parse_server_addresses()
+    let (address, wire_address, checkpoint_path) = parse_server_addresses()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let listener = TcpListener::bind(&address)?;
     listener.set_nonblocking(true)?;
@@ -1596,11 +1653,14 @@ fn main() -> io::Result<()> {
             .map(|address| address.ip().is_loopback())
             .unwrap_or(false)
     });
-    let mut server = Server::new(DEFAULT_TICK_HZ, dev_auth_enabled);
+    let mut server = Server::new(DEFAULT_TICK_HZ, dev_auth_enabled, checkpoint_path.clone());
     println!("server_listening address={address} tick_hz={DEFAULT_TICK_HZ}");
     if let Some(address) = wire_address {
         println!("wire_server_listening address={address}");
         println!("wire_dev_auth_enabled={dev_auth_enabled}");
+    }
+    if let Some(path) = checkpoint_path {
+        println!("character_checkpoint_store={}", path.display());
     }
 
     loop {

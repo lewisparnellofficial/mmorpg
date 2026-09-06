@@ -82,6 +82,8 @@ architecture and research remain in `docs/architecture/` and
   experiment.
 - Persistence and recovery research covering the future durable-operation and
   checkpoint boundary.
+- Opt-in versioned local character checkpoint prototype, validated by a
+  repeatable server-restart smoke test.
 - Instances/layers research covering explicit instance lifecycle, transparent
   layer transfers, and the 200-player world-boss policy.
 
@@ -182,13 +184,14 @@ remains the default until the two modes are behaviorally equivalent.
 - Delta snapshots and combat event channels.
 - Rust replication benchmark.
 
-### Batch 6: persistence
+### Batch 6: durable persistence
 
-- Persistence trait and in-memory test implementation.
-- PostgreSQL schema design.
-- Idempotent economy operations.
-- Snapshots and operation journal.
-- Crash/restart recovery tests.
+- Replace the single-character local checkpoint prototype with a
+  multi-character storage namespace and a durable-repository implementation.
+- PostgreSQL schema design and migration policy.
+- Idempotent economy operations and operation IDs.
+- Snapshots and append-only operation journal.
+- Crash/restart and retry recovery tests.
 
 ### Batch 7: instances and layers
 

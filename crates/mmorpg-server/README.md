@@ -52,6 +52,16 @@ listener address:
 cargo run -p mmorpg-server -- 127.0.0.1:4400 --wire-address 127.0.0.1:4401
 ```
 
+To enable the local development character checkpoint, add an explicit file
+path. The server writes only after an authoritative world step has completed;
+the core simulation performs no file I/O.
+
+```bash
+cargo run -p mmorpg-server -- 127.0.0.1:4400 \
+  --wire-address 127.0.0.1:4401 \
+  --character-store /tmp/mmorpg-dev/aria.state
+```
+
 The wire listener accepts versioned `MMOW` command envelopes containing the
 typed `mmorpg-wire::ClientCommand` payload. It routes those commands through
 the same bound-player checks and authoritative `World` as the line listener.

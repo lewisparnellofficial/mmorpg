@@ -1,6 +1,6 @@
 # Persistence and Recovery
 
-**Status:** Proposed
+**Status:** Proposed (with a local development checkpoint prototype)
 
 ## State categories
 
@@ -57,7 +57,7 @@ The pipeline may combine:
 
 The database should not be used as the per-frame simulation data structure.
 
-## Current development identity boundary
+## Current development identity and checkpoint boundary
 
 The typed development server currently resolves a local token and its available
 characters through an `AccountCharacterRepository` boundary. The active
@@ -66,15 +66,19 @@ separates socket/session handling from account and character lookup now, so a
 future database-backed repository can be introduced without placing database
 access in the simulation tick.
 
-The current boundary deliberately does **not** persist characters, inventory,
-quest state, currency, positions, credentials, or sessions. It is a narrow
-replacement seam and should not be described as satisfying the project's
-persistence requirement.
+The current development server now has an opt-in, single-character local
+checkpoint prototype behind `--character-store <path>`. It uses the repository
+boundary to load validated player state when the selected character enters the
+world and atomically replace a small versioned checkpoint file after each
+authoritative server step. The core validates the state before restoring it;
+runtime-only target, health, and combat timing state is reset.
 
-The next implementation milestone is defined by
-[`EXP-005`](../experiments/EXP-005-durable-character-checkpoint.md). It must
-add validated restore state to the core before a file-backed or database-backed
-repository attempts to load a character into the active world.
+This is deliberately **not** production persistence: it has no journal,
+database transaction, crash-safe directory sync, concurrent writers,
+multi-character namespace, migration system, credential persistence, or
+idempotent durable-operation IDs. It demonstrates the ownership and restore
+boundary only. The repeatable evidence is recorded in
+[`EXP-005`](../experiments/EXP-005-durable-character-checkpoint.md).
 
 ## Transactional operations
 

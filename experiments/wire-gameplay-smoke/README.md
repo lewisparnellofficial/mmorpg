@@ -41,3 +41,17 @@ Expected output is similar to:
 ```text
 wire gameplay smoke: success (player=5, enemies=3, vendor_purchase=1, quest=1)
 ```
+
+## Restart persistence smoke
+
+Run the normal gameplay smoke against a server started with `--character-store`,
+stop that server, start a fresh server with the same checkpoint path, and run:
+
+```bash
+cargo run --quiet --manifest-path experiments/wire-gameplay-smoke/Cargo.toml -- \
+  127.0.0.1:4401 --expect-restored
+```
+
+This second mode only enters the selected character and verifies that the
+starter quest reward, purchased ration, and rewarded quest state survived the
+restart.

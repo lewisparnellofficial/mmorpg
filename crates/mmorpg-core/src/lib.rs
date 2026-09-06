@@ -103,6 +103,13 @@ impl Inventory {
         }
     }
 
+    /// Reconstructs inventory data captured by a persistence adapter.
+    /// Validation of content IDs, stack bounds, and capacity belongs to the
+    /// authoritative restore path before it becomes a live player.
+    pub fn from_stacks(capacity: usize, stacks: Vec<ItemStack>) -> Self {
+        Self { capacity, stacks }
+    }
+
     pub fn capacity(&self) -> usize {
         self.capacity
     }
@@ -904,7 +911,14 @@ impl World {
                 return;
             }
         }
-        for quest in &state.quests {
+        for (index, quest) in state.quests.iter().enumerate() {
+            if state.quests[..index]
+                .iter()
+                .any(|previous| previous.quest_id == quest.quest_id)
+            {
+                Self::reject(events, "restored quest is duplicated");
+                return;
+            }
             let Some(definition) = starter_catalog()
                 .quests
                 .iter()
@@ -1667,6 +1681,29 @@ mod tests {
                 gold: 20,
                 inventory: Inventory::new(16),
                 quests: Vec::new(),
+            },
+        }]);
+        assert!(matches!(events.as_slice(), [Event::CommandRejected { .. }]));
+        assert_eq!(world.players().count(), 0);
+    }
+
+    #[test]
+    fn restored_player_rejects_duplicate_quest_state() {
+        let quest = QuestProgress {
+            quest_id: QuestId::CLEAR_THE_FIELD,
+            progress: 0,
+            required_count: 3,
+            status: QuestStatus::Accepted,
+        };
+        let mut world = World::new_starter_zone();
+        let events = world.step([Command::RestorePlayer {
+            state: DurablePlayerState {
+                name: "Aria".to_owned(),
+                role: Role::DamageDealer,
+                position: Position::new(0.0, 0.0),
+                gold: 20,
+                inventory: Inventory::new(16),
+                quests: vec![quest.clone(), quest],
             },
         }]);
         assert!(matches!(events.as_slice(), [Event::CommandRejected { .. }]));

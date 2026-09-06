@@ -12,9 +12,15 @@ use std::env;
 const DEFAULT_ADDRESS: &str = "127.0.0.1:4001";
 
 fn main() {
-    let address = env::args()
-        .nth(1)
+    let arguments: Vec<_> = env::args().skip(1).collect();
+    let address = arguments
+        .iter()
+        .find(|argument| argument.as_str() != "--expect-restored")
+        .cloned()
         .unwrap_or_else(|| DEFAULT_ADDRESS.to_owned());
+    let expect_restored = arguments
+        .iter()
+        .any(|argument| argument == "--expect-restored");
     let mut connection = WireConnection::connect(&WireConnectionConfig::new(&address))
         .unwrap_or_else(|error| panic!("cannot connect to typed wire listener {address}: {error}"));
 
@@ -130,6 +136,11 @@ fn main() {
         _ => unreachable!("predicate selected snapshot"),
     };
     validate_snapshot(&snapshot, player_id);
+    if expect_restored {
+        validate_restored_snapshot(&snapshot, player_id);
+        println!("wire restart smoke: restored character state successfully");
+        return;
+    }
 
     connection
         .send_typed_command(&ClientCommand::ListVendor { vendor_id: 1 })
@@ -327,4 +338,26 @@ fn validate_snapshot(snapshot: &WorldSnapshot, player_id: u64) {
     for entity_id in [1, 2, 3, 4] {
         assert!(snapshot.npcs.iter().any(|npc| npc.entity_id == entity_id));
     }
+}
+
+fn validate_restored_snapshot(snapshot: &WorldSnapshot, player_id: u64) {
+    let player = snapshot
+        .players
+        .iter()
+        .find(|player| player.player_id == player_id)
+        .expect("restored player should appear in snapshot");
+    assert!(player.gold > 20, "quest reward gold should survive restart");
+    assert!(
+        player
+            .inventory
+            .iter()
+            .any(|stack| stack.item_id == 2 && stack.quantity >= 1)
+    );
+    assert!(
+        player
+            .quests
+            .iter()
+            .any(|quest| quest.quest_id == 1
+                && quest.status == mmorpg_wire::QuestStatusCode::Rewarded)
+    );
 }
