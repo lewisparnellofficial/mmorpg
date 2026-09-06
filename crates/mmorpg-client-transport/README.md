@@ -6,13 +6,15 @@ connects to the temporary line-oriented development server, sends typed
 diagnostic lines. `WireConnection` uses the versioned `mmorpg-wire` envelope
 and provides both a compatibility method for carrying those validated command
 lines and `send_typed_command` for the first structured client-command schema.
-Event payloads remain opaque temporary lines while the structured server-event
-schema is being implemented.
+`read_server_message` now decodes the structured server-event and snapshot
+schema. `read_event_payload` remains as a compatibility method for temporary
+diagnostic text.
 
-The wire bridge intentionally does not parse `WELCOME`, `EVENT`, `WORLD`,
-`PLAYER`, or other server output into authoritative state. The payload is
-returned to a higher protocol layer, which must decode it and feed validated
-results into `mmorpg-client-model`.
+The line bridge intentionally does not parse `WELCOME`, `EVENT`, `WORLD`,
+`PLAYER`, or other server output into authoritative state. The wire bridge
+decodes stable IDs and typed fields, but the payload is still only a transport
+result; callers must apply it through their own presentation or
+authoritative-state boundary.
 
 The transport is blocking and must not run on the simulation or render thread
 in a future client. It is suitable for local development adapters and
@@ -27,7 +29,6 @@ cargo fmt --manifest-path crates/mmorpg-client-transport/Cargo.toml -- --check
 cargo test --manifest-path crates/mmorpg-client-transport/Cargo.toml
 ```
 
-The current wire bridge is still a transport prototype: the server does not
-yet expose a binary listener, and its payload is not the final structured
-command/event schema. Authentication, encryption, reconnection, queues, and
-production observability remain future work.
+The current wire bridge is still a transport prototype. Authentication,
+encryption, reconnection, queues, interest-managed replication, and production
+observability remain future work.

@@ -5,8 +5,9 @@
 //! returns bounded diagnostic lines; it does not parse the server's
 //! human-readable output into authoritative client state. Production client
 //! networking belongs behind the versioned machine-readable protocol. The
-//! [`WireConnection`] bridge below provides bounded framing while its payload
-//! still carries an existing validated command/event line.
+//! [`WireConnection`] bridge provides bounded framing, typed client commands,
+//! and typed server messages while retaining a diagnostic text compatibility
+//! method for local migration.
 
 use std::fmt;
 use std::io::{self, BufReader, Read, Write};
@@ -14,7 +15,10 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use mmorpg_client_protocol::ProtocolLine;
-use mmorpg_wire::{ClientCommand, Envelope, MAX_FRAME_SIZE, MessageKind, decode_one};
+use mmorpg_wire::{
+    ClientCommand, Envelope, MAX_FRAME_SIZE, MessageKind, ServerCodecError, ServerMessage,
+    decode_one,
+};
 
 pub const DEFAULT_MAX_LINE_BYTES: usize = 8 * 1024;
 pub const DEFAULT_MAX_WIRE_FRAME_SIZE: usize = MAX_FRAME_SIZE;
@@ -233,6 +237,7 @@ pub enum WireTransportError {
     ConnectionClosed,
     Io(io::Error),
     Command(mmorpg_wire::CommandCodecError),
+    Server(ServerCodecError),
     Encode(mmorpg_wire::EncodeError),
     Decode(mmorpg_wire::DecodeError),
 }
@@ -251,6 +256,7 @@ impl fmt::Display for WireTransportError {
             Self::ConnectionClosed => write!(formatter, "server closed the wire connection"),
             Self::Io(error) => error.fmt(formatter),
             Self::Command(error) => write!(formatter, "invalid typed command: {error}"),
+            Self::Server(error) => write!(formatter, "invalid typed server message: {error}"),
             Self::Encode(error) => write!(formatter, "cannot encode wire envelope: {error}"),
             Self::Decode(error) => write!(formatter, "cannot decode wire envelope: {error}"),
         }
@@ -277,6 +283,12 @@ impl From<mmorpg_wire::CommandCodecError> for WireTransportError {
     }
 }
 
+impl From<ServerCodecError> for WireTransportError {
+    fn from(error: ServerCodecError) -> Self {
+        Self::Server(error)
+    }
+}
+
 impl From<mmorpg_wire::DecodeError> for WireTransportError {
     fn from(error: mmorpg_wire::DecodeError) -> Self {
         Self::Decode(error)
@@ -286,9 +298,8 @@ impl From<mmorpg_wire::DecodeError> for WireTransportError {
 /// A blocking transport bridge for versioned command/event envelopes.
 ///
 /// The bridge supports both validated temporary line payloads and the first
-/// typed client-command payload schema. This lets callers prove framing,
-/// bounded I/O, and message-kind separation while the server session adapter
-/// is still being migrated.
+/// typed client-command and server-message payload schemas. The diagnostic
+/// text methods remain available for the graphical client's staged migration.
 pub struct WireConnection {
     writer: TcpStream,
     reader: BufReader<TcpStream>,
@@ -339,6 +350,18 @@ impl WireConnection {
             ));
         }
         String::from_utf8(decoded.envelope.payload).map_err(|_| WireTransportError::InvalidUtf8)
+    }
+
+    /// Reads and decodes one typed server message from an event envelope.
+    pub fn read_server_message(&mut self) -> Result<ServerMessage, WireTransportError> {
+        let frame = self.read_frame()?;
+        let decoded = decode_one(&frame)?;
+        if decoded.envelope.kind != MessageKind::Event {
+            return Err(WireTransportError::UnexpectedMessageKind(
+                decoded.envelope.kind,
+            ));
+        }
+        Ok(ServerMessage::decode_payload(&decoded.envelope.payload)?)
     }
 
     fn write_envelope(&mut self, envelope: &Envelope) -> Result<(), WireTransportError> {
@@ -517,6 +540,38 @@ mod tests {
         assert_eq!(
             connection.read_event_payload().expect("read framed event"),
             "EVENT ready"
+        );
+        server.join().expect("server thread");
+    }
+
+    #[test]
+    fn wire_connection_decodes_a_typed_server_message() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept client");
+            let payload = ServerMessage::Connected {
+                player_id: 7,
+                role: mmorpg_wire::RoleCode::Healer,
+            }
+            .encode_payload()
+            .expect("encode typed message");
+            let response = Envelope::new(MessageKind::Event, payload)
+                .expect("construct event envelope")
+                .encode()
+                .expect("encode event envelope");
+            stream.write_all(&response).expect("write event envelope");
+        });
+
+        let mut connection =
+            WireConnection::connect(&WireConnectionConfig::new(address.to_string()))
+                .expect("connect to loopback");
+        assert_eq!(
+            connection.read_server_message().expect("read typed message"),
+            ServerMessage::Connected {
+                player_id: 7,
+                role: mmorpg_wire::RoleCode::Healer,
+            }
         );
         server.join().expect("server thread");
     }

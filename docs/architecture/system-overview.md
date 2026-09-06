@@ -106,17 +106,18 @@ navigation, persistence, and ownership boundaries are integrated into the
 server.
 
 The current server is intentionally a development process. It does not yet
-provide authentication, durable persistence, structured binary event/snapshot
-payloads, interest-managed replication, or multi-worker deployment.
+provide authentication, durable persistence, interest-managed replication, or
+multi-worker deployment.
 
 The wire and transport crates are preparatory boundaries, not a production
 network stack. The current server still supports its temporary line protocol,
 and the graphical client still uses its own background line-protocol worker.
 The opt-in server wire listener now accepts typed command payloads and emits
-event envelopes carrying temporary diagnostic payloads. Authentication,
-structured binary event/snapshot schemas, asynchronous backpressure, and
-interest-managed replication remain future work. The current player/NPC
-renderer consumes the presentation model directly.
+typed server-message payloads for welcome/connect/error responses, gameplay
+events, and the bounded bootstrap snapshot. Authentication, asynchronous
+backpressure, and interest-managed replication remain future work. The
+graphical client still uses the line listener during its staged migration and
+the current player/NPC renderer consumes the presentation model directly.
 
 The code should retain interfaces for separating these later:
 

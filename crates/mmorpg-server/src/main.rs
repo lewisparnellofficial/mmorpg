@@ -1,6 +1,8 @@
 use mmorpg_core::{Command, EntityId, Event, ItemId, QuestId, Role, World};
 use mmorpg_wire::{
-    ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope, MessageKind, decode_one,
+    ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope, ItemStackState,
+    MessageKind, NpcKindCode, NpcState, PlayerState, QuestOfferState, QuestState, QuestStatusCode,
+    ServerEvent, ServerMessage, VendorListingState, WorldSnapshot, ZoneAreaCode, decode_one,
 };
 use std::collections::VecDeque;
 use std::env;
@@ -80,8 +82,14 @@ impl WireClient {
         self.output.extend(frame);
     }
 
-    fn queue_event_text(&mut self, text: impl AsRef<str>) {
-        self.queue_event_payload(text.as_ref().as_bytes());
+    fn queue_server_message(&mut self, message: &ServerMessage) {
+        match message.encode_payload() {
+            Ok(payload) => self.queue_event_payload(&payload),
+            Err(error) => {
+                eprintln!("wire_message_encode_error id={} error={error}", self.id);
+                self.closed = true;
+            }
+        }
     }
 }
 
@@ -135,7 +143,9 @@ impl Server {
         let id = self.next_client_id;
         self.next_client_id = self.next_client_id.saturating_add(1);
         let mut client = WireClient::new(id, stream);
-        client.queue_event_text("WELCOME mmorpg-server");
+        client.queue_server_message(&ServerMessage::Welcome {
+            server: "mmorpg-server".to_owned(),
+        });
         self.wire_clients.push(client);
         println!("wire_client_connected id={id}");
     }
@@ -301,15 +311,13 @@ impl Server {
     }
 
     fn send_wire_machine_snapshot(&mut self, client_id: u64) {
-        let lines = format_machine_snapshot(&self.world);
+        let snapshot = wire_snapshot(&self.world);
         if let Some(client) = self
             .wire_clients
             .iter_mut()
             .find(|client| client.id == client_id)
         {
-            for line in lines {
-                client.queue_event_text(line);
-            }
+            client.queue_server_message(&ServerMessage::Snapshot(snapshot));
         }
     }
 
@@ -319,7 +327,7 @@ impl Server {
             .iter_mut()
             .find(|client| client.id == client_id)
         {
-            client.queue_event_text(format!("ERR {error}"));
+            client.queue_server_message(&ServerMessage::Error { message: error });
         }
     }
 
@@ -553,11 +561,10 @@ impl Server {
                             .find(|client| client.id == origin)
                         {
                             client.player_id = Some(player.id);
-                            client.queue_event_text(format!(
-                                "CONNECTED player_id={} role={}",
-                                player.id,
-                                player.role.as_str()
-                            ));
+                            client.queue_server_message(&ServerMessage::Connected {
+                                player_id: player.id.0,
+                                role: wire_role(player.role),
+                            });
                         }
                     }
                 }
@@ -566,6 +573,7 @@ impl Server {
 
         for event in events {
             self.broadcast(format_event(&event));
+            self.broadcast_wire_event(&event);
         }
 
         self.next_tick += self.tick_interval;
@@ -653,11 +661,296 @@ impl Server {
                 client.queue_line(&line);
             }
         }
+    }
+
+    fn broadcast_wire_event(&mut self, event: &Event) {
+        let Some(event) = wire_event(event) else {
+            return;
+        };
         for client in &mut self.wire_clients {
             if !client.closed {
-                client.queue_event_text(&line);
+                client.queue_server_message(&ServerMessage::Event(event.clone()));
             }
         }
+    }
+}
+
+fn wire_role(role: Role) -> mmorpg_wire::RoleCode {
+    match role {
+        Role::Tank => mmorpg_wire::RoleCode::Tank,
+        Role::Healer => mmorpg_wire::RoleCode::Healer,
+        Role::DamageDealer => mmorpg_wire::RoleCode::DamageDealer,
+    }
+}
+
+fn wire_area(area: mmorpg_core::ZoneArea) -> ZoneAreaCode {
+    match area {
+        mmorpg_core::ZoneArea::Town => ZoneAreaCode::Town,
+        mmorpg_core::ZoneArea::Field => ZoneAreaCode::Field,
+    }
+}
+
+fn wire_status(status: mmorpg_core::QuestStatus) -> QuestStatusCode {
+    match status {
+        mmorpg_core::QuestStatus::Accepted => QuestStatusCode::Accepted,
+        mmorpg_core::QuestStatus::Completed => QuestStatusCode::Completed,
+        mmorpg_core::QuestStatus::Rewarded => QuestStatusCode::Rewarded,
+    }
+}
+
+fn wire_player(player: &mmorpg_core::PlayerSnapshot) -> PlayerState {
+    PlayerState {
+        player_id: player.id.0,
+        name: player.name.clone(),
+        role: wire_role(player.role),
+        position: mmorpg_wire::PositionState {
+            x: player.position.x,
+            y: player.position.y,
+        },
+        health: player.health,
+        max_health: player.max_health,
+        target_id: player.target.map(|target| target.0),
+        gold: player.gold,
+        inventory: player
+            .inventory
+            .stacks()
+            .map(|stack| ItemStackState {
+                item_id: stack.item_id.0,
+                quantity: stack.quantity,
+            })
+            .collect(),
+        quests: player
+            .quests
+            .iter()
+            .map(|quest| QuestState {
+                quest_id: quest.quest_id.0,
+                progress: quest.progress,
+                required_count: quest.required_count,
+                status: wire_status(quest.status),
+            })
+            .collect(),
+    }
+}
+
+fn wire_live_player(player: &mmorpg_core::Player) -> PlayerState {
+    PlayerState {
+        player_id: player.id.0,
+        name: player.name.clone(),
+        role: wire_role(player.role),
+        position: mmorpg_wire::PositionState {
+            x: player.position.x,
+            y: player.position.y,
+        },
+        health: player.health,
+        max_health: player.max_health,
+        target_id: player.target.map(|target| target.0),
+        gold: player.gold,
+        inventory: player
+            .inventory
+            .stacks()
+            .map(|stack| ItemStackState {
+                item_id: stack.item_id.0,
+                quantity: stack.quantity,
+            })
+            .collect(),
+        quests: player
+            .quests
+            .iter()
+            .map(|quest| QuestState {
+                quest_id: quest.quest_id.0,
+                progress: quest.progress,
+                required_count: quest.required_count,
+                status: wire_status(quest.status),
+            })
+            .collect(),
+    }
+}
+
+fn wire_npc(npc: &mmorpg_core::Npc) -> NpcState {
+    NpcState {
+        entity_id: npc.id.0,
+        template_id: npc.template_id.0,
+        name: npc.name.clone(),
+        kind: match npc.kind {
+            mmorpg_core::NpcKind::Vendor => NpcKindCode::Vendor,
+            mmorpg_core::NpcKind::Enemy => NpcKindCode::Enemy,
+        },
+        position: mmorpg_wire::PositionState {
+            x: npc.position.x,
+            y: npc.position.y,
+        },
+        health: npc.health,
+        max_health: npc.max_health,
+    }
+}
+
+fn wire_event(event: &Event) -> Option<ServerEvent> {
+    Some(match event {
+        Event::PlayerJoined { player } => ServerEvent::PlayerJoined {
+            player: wire_player(player),
+        },
+        Event::PlayerLeft { player_id } => ServerEvent::PlayerLeft {
+            player_id: player_id.0,
+        },
+        Event::PlayerMoved {
+            player_id,
+            position,
+            area,
+        } => ServerEvent::PlayerMoved {
+            player_id: player_id.0,
+            position: mmorpg_wire::PositionState {
+                x: position.x,
+                y: position.y,
+            },
+            area: wire_area(*area),
+        },
+        Event::TargetSelected {
+            player_id,
+            target_id,
+        } => ServerEvent::TargetSelected {
+            player_id: player_id.0,
+            target_id: target_id.0,
+        },
+        Event::AttackResolved {
+            player_id,
+            target_id,
+            damage,
+            target_health,
+        } => ServerEvent::AttackResolved {
+            player_id: player_id.0,
+            target_id: target_id.0,
+            damage: *damage,
+            target_health: *target_health,
+        },
+        Event::EnemyDefeated { enemy_id } => ServerEvent::EnemyDefeated {
+            enemy_id: enemy_id.0,
+        },
+        Event::VendorListed {
+            player_id,
+            vendor_id,
+            listings,
+        } => ServerEvent::VendorListed {
+            player_id: player_id.0,
+            vendor_id: vendor_id.0,
+            listings: listings
+                .iter()
+                .map(|listing| VendorListingState {
+                    item_id: listing.item_id.0,
+                    name: listing.name.to_owned(),
+                    unit_price: listing.unit_price,
+                    remaining_quantity: listing.remaining_quantity,
+                    max_stack: listing.max_stack,
+                })
+                .collect(),
+        },
+        Event::ItemPurchased {
+            player_id,
+            vendor_id,
+            item_id,
+            quantity,
+            total_price,
+            gold_remaining,
+        } => ServerEvent::ItemPurchased {
+            player_id: player_id.0,
+            vendor_id: vendor_id.0,
+            item_id: item_id.0,
+            quantity: *quantity,
+            total_price: *total_price,
+            gold_remaining: *gold_remaining,
+        },
+        Event::LootRewarded {
+            player_id,
+            enemy_id,
+            item_id,
+            quantity,
+        } => ServerEvent::LootRewarded {
+            player_id: player_id.0,
+            enemy_id: enemy_id.0,
+            item_id: item_id.0,
+            quantity: *quantity,
+        },
+        Event::TransactionRejected { player_id, reason } => ServerEvent::TransactionRejected {
+            player_id: player_id.0,
+            reason: reason.clone(),
+        },
+        Event::QuestOffersListed {
+            player_id,
+            npc_id,
+            quests,
+        } => ServerEvent::QuestOffersListed {
+            player_id: player_id.0,
+            npc_id: npc_id.0,
+            quests: quests
+                .iter()
+                .map(|quest| QuestOfferState {
+                    quest_id: quest.quest_id.0,
+                    name: quest.name.to_owned(),
+                    description: quest.description.to_owned(),
+                })
+                .collect(),
+        },
+        Event::QuestAccepted {
+            player_id,
+            npc_id,
+            quest_id,
+        } => ServerEvent::QuestAccepted {
+            player_id: player_id.0,
+            npc_id: npc_id.0,
+            quest_id: quest_id.0,
+        },
+        Event::QuestProgressed {
+            player_id,
+            quest_id,
+            progress,
+            required_count,
+        } => ServerEvent::QuestProgressed {
+            player_id: player_id.0,
+            quest_id: quest_id.0,
+            progress: *progress,
+            required_count: *required_count,
+        },
+        Event::QuestCompleted {
+            player_id,
+            quest_id,
+        } => ServerEvent::QuestCompleted {
+            player_id: player_id.0,
+            quest_id: quest_id.0,
+        },
+        Event::QuestRewarded {
+            player_id,
+            quest_id,
+            gold,
+            item_id,
+            item_quantity,
+            gold_remaining,
+        } => ServerEvent::QuestRewarded {
+            player_id: player_id.0,
+            quest_id: quest_id.0,
+            gold: *gold,
+            item_id: item_id.map(|item| item.0),
+            item_quantity: *item_quantity,
+            gold_remaining: *gold_remaining,
+        },
+        Event::QuestRejected { player_id, reason } => ServerEvent::QuestRejected {
+            player_id: player_id.0,
+            reason: reason.clone(),
+        },
+        Event::CommandRejected { reason } => ServerEvent::CommandRejected {
+            reason: reason.clone(),
+        },
+    })
+}
+
+fn wire_snapshot(world: &World) -> WorldSnapshot {
+    let summary = world.summary();
+    WorldSnapshot {
+        tick: summary.tick,
+        player_count: summary.player_count as u32,
+        npc_count: summary.npc_count as u32,
+        enemy_count: summary.enemy_count as u32,
+        vendor_count: summary.vendor_count as u32,
+        players: world.players().map(wire_live_player).collect(),
+        npcs: world.npcs().map(wire_npc).collect(),
     }
 }
 

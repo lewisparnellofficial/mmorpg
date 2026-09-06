@@ -55,9 +55,9 @@ cargo run -p mmorpg-server -- 127.0.0.1:4400 --wire-address 127.0.0.1:4401
 The wire listener accepts versioned `MMOW` command envelopes containing the
 typed `mmorpg-wire::ClientCommand` payload. It routes those commands through
 the same bound-player checks and authoritative `World` as the line listener.
-Responses are currently event envelopes whose payload is the existing bounded
-diagnostic text, including the temporary snapshot records. Structured binary
-event and snapshot payloads remain a later protocol increment.
+It emits typed server-message payloads for welcome/connect/error responses,
+gameplay events, and the bootstrap snapshot. The line listener remains
+available for terminal debugging and graphical-client migration.
 
 The optional explicit player ID on `move` is checked against the player bound
 to the connection. It exists for debugging and does not grant authority over

@@ -48,8 +48,10 @@ architecture and research remain in `docs/architecture/` and
   with message-kind and frame-limit tests.
 - Typed bounded client-command payload codec for the complete current
   starter-loop intent vocabulary.
+- Typed bounded server-message payload codec for gameplay events and bootstrap
+  snapshots, including inventory and quest state.
 - Optional server wire listener that routes typed command envelopes into the
-  authoritative world and broadcasts bounded event envelopes.
+  authoritative world and broadcasts typed bounded event envelopes.
 - Interactive Bevy client shell with background TCP I/O, authoritative
   snapshot bootstrap, keyboard movement, target cycling, attack input, and a
   compact status HUD.
@@ -134,8 +136,9 @@ The first foundations from this batch now exist:
 The window, terrain-core, and first interactive client reliability spikes now
 run locally. The protocol-to-presentation adapter is exercised by the client,
 and player/NPC rendering now consumes the model directly. The temporary
-snapshot now carries inventory/quest details, with a fixed starter inventory
-capacity pending protocol versioning. The compact HUD now exposes inventory,
+snapshot now carries inventory/quest details, while the versioned wire
+snapshot carries the same state through typed bounded fields. The compact HUD
+now exposes inventory,
 vendor stock, quest offers, quest progress, and server notifications, with
 keyboard intents for the first vendor and quest interactions. The remaining
 technology work in this batch is to connect native tablet events, version the
@@ -143,8 +146,9 @@ snapshot contract beyond the temporary fixed-capacity bootstrap, and validate
 the protected UI scripting boundary with an embedded runtime.
 
 The timing, AI, wire-envelope, and development-transport additions are still
-prototypes. They do not yet provide a production event schema, async
-backpressure, authentication, encryption, or a client event decoder.
+prototypes. They do not yet provide async backpressure, authentication,
+encryption, interest-managed replication, or a graphical-client migration to
+the typed server-message path.
 
 ### Batch 4: real simulation scheduling
 

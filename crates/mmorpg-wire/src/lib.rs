@@ -1,8 +1,9 @@
 //! A small, socket-independent wire-envelope prototype.
 //!
-//! The envelope deliberately treats the payload as opaque bytes. Command and
-//! event schemas can be added above this layer without making the framing
-//! implementation depend on a transport, serializer, or simulation crate.
+//! The envelope owns framing while typed command and server-message schemas
+//! live above it. The schemas remain independent of sockets and the
+//! authoritative simulation, so either side can be tested without a runtime
+//! or serializer dependency.
 
 use std::fmt;
 
@@ -369,6 +370,1104 @@ impl<'a> CommandDecoder<'a> {
     }
 }
 
+/// Maximum number of repeated values accepted in one server payload.
+pub const MAX_SERVER_COLLECTION_ENTRIES: usize = 4096;
+const MAX_SERVER_STRING_BYTES: usize = 4096;
+
+/// Wire representation of an entity position.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PositionState {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Wire representation of one inventory stack.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemStackState {
+    pub item_id: u32,
+    pub quantity: u32,
+}
+
+/// Wire representation of one quest in a player's log.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuestState {
+    pub quest_id: u32,
+    pub progress: u32,
+    pub required_count: u32,
+    pub status: QuestStatusCode,
+}
+
+/// Quest status values used by the server snapshot and event codecs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum QuestStatusCode {
+    Accepted = 1,
+    Completed = 2,
+    Rewarded = 3,
+}
+
+impl TryFrom<u8> for QuestStatusCode {
+    type Error = ServerCodecError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Accepted),
+            2 => Ok(Self::Completed),
+            3 => Ok(Self::Rewarded),
+            other => Err(ServerCodecError::InvalidEnum {
+                field: "quest_status",
+                value: other,
+            }),
+        }
+    }
+}
+
+/// Wire representation of a player included in an event or snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerState {
+    pub player_id: u64,
+    pub name: String,
+    pub role: RoleCode,
+    pub position: PositionState,
+    pub health: u32,
+    pub max_health: u32,
+    pub target_id: Option<u64>,
+    pub gold: u32,
+    pub inventory: Vec<ItemStackState>,
+    pub quests: Vec<QuestState>,
+}
+
+/// NPC categories used by the server snapshot and movement events.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum NpcKindCode {
+    Vendor = 1,
+    Enemy = 2,
+}
+
+impl TryFrom<u8> for NpcKindCode {
+    type Error = ServerCodecError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Vendor),
+            2 => Ok(Self::Enemy),
+            other => Err(ServerCodecError::InvalidEnum {
+                field: "npc_kind",
+                value: other,
+            }),
+        }
+    }
+}
+
+/// Wire representation of an NPC included in a snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NpcState {
+    pub entity_id: u64,
+    pub template_id: u32,
+    pub name: String,
+    pub kind: NpcKindCode,
+    pub position: PositionState,
+    pub health: u32,
+    pub max_health: u32,
+}
+
+/// Wire representation of one vendor listing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VendorListingState {
+    pub item_id: u32,
+    pub name: String,
+    pub unit_price: u32,
+    pub remaining_quantity: u32,
+    pub max_stack: u32,
+}
+
+/// Wire representation of one quest offer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuestOfferState {
+    pub quest_id: u32,
+    pub name: String,
+    pub description: String,
+}
+
+/// Complete authoritative bootstrap state for the current world.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldSnapshot {
+    pub tick: u64,
+    pub player_count: u32,
+    pub npc_count: u32,
+    pub enemy_count: u32,
+    pub vendor_count: u32,
+    pub players: Vec<PlayerState>,
+    pub npcs: Vec<NpcState>,
+}
+
+/// Server-to-client messages carried in an event envelope.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ServerMessage {
+    Welcome { server: String },
+    Connected { player_id: u64, role: RoleCode },
+    Error { message: String },
+    Event(ServerEvent),
+    Snapshot(WorldSnapshot),
+}
+
+/// Typed authoritative event payloads corresponding to the current core
+/// event vocabulary. The server remains the source of all values.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ServerEvent {
+    PlayerJoined {
+        player: PlayerState,
+    },
+    PlayerLeft {
+        player_id: u64,
+    },
+    PlayerMoved {
+        player_id: u64,
+        position: PositionState,
+        area: ZoneAreaCode,
+    },
+    TargetSelected {
+        player_id: u64,
+        target_id: u64,
+    },
+    AttackResolved {
+        player_id: u64,
+        target_id: u64,
+        damage: u32,
+        target_health: u32,
+    },
+    EnemyDefeated {
+        enemy_id: u64,
+    },
+    VendorListed {
+        player_id: u64,
+        vendor_id: u64,
+        listings: Vec<VendorListingState>,
+    },
+    ItemPurchased {
+        player_id: u64,
+        vendor_id: u64,
+        item_id: u32,
+        quantity: u32,
+        total_price: u32,
+        gold_remaining: u32,
+    },
+    LootRewarded {
+        player_id: u64,
+        enemy_id: u64,
+        item_id: u32,
+        quantity: u32,
+    },
+    TransactionRejected {
+        player_id: u64,
+        reason: String,
+    },
+    QuestOffersListed {
+        player_id: u64,
+        npc_id: u64,
+        quests: Vec<QuestOfferState>,
+    },
+    QuestAccepted {
+        player_id: u64,
+        npc_id: u64,
+        quest_id: u32,
+    },
+    QuestProgressed {
+        player_id: u64,
+        quest_id: u32,
+        progress: u32,
+        required_count: u32,
+    },
+    QuestCompleted {
+        player_id: u64,
+        quest_id: u32,
+    },
+    QuestRewarded {
+        player_id: u64,
+        quest_id: u32,
+        gold: u32,
+        item_id: Option<u32>,
+        item_quantity: u32,
+        gold_remaining: u32,
+    },
+    QuestRejected {
+        player_id: u64,
+        reason: String,
+    },
+    CommandRejected {
+        reason: String,
+    },
+}
+
+/// Zone area values used by movement events.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ZoneAreaCode {
+    Town = 1,
+    Field = 2,
+}
+
+impl TryFrom<u8> for ZoneAreaCode {
+    type Error = ServerCodecError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Town),
+            2 => Ok(Self::Field),
+            other => Err(ServerCodecError::InvalidEnum {
+                field: "zone_area",
+                value: other,
+            }),
+        }
+    }
+}
+
+impl ServerMessage {
+    /// Encodes one typed server payload without its surrounding envelope.
+    pub fn encode_payload(&self) -> Result<Vec<u8>, ServerCodecError> {
+        let mut encoder = ServerEncoder::default();
+        match self {
+            Self::Welcome { server } => {
+                encoder.put_u8(1);
+                encoder.put_string(server, "server")?;
+            }
+            Self::Connected { player_id, role } => {
+                encoder.put_u8(2);
+                encoder.put_u64(*player_id, "player_id")?;
+                encoder.put_u8(*role as u8);
+            }
+            Self::Error { message } => {
+                encoder.put_u8(3);
+                encoder.put_string(message, "message")?;
+            }
+            Self::Event(event) => {
+                encoder.put_u8(4);
+                encode_server_event(&mut encoder, event)?;
+            }
+            Self::Snapshot(snapshot) => {
+                encoder.put_u8(5);
+                encode_snapshot(&mut encoder, snapshot)?;
+            }
+        }
+        Ok(encoder.bytes)
+    }
+
+    /// Decodes exactly one typed server payload.
+    pub fn decode_payload(payload: &[u8]) -> Result<Self, ServerCodecError> {
+        if payload.is_empty() {
+            return Err(ServerCodecError::Empty);
+        }
+        let mut decoder = ServerDecoder { payload, offset: 0 };
+        let message = match decoder.take_u8("message")? {
+            1 => Self::Welcome {
+                server: decoder.take_string("server")?,
+            },
+            2 => Self::Connected {
+                player_id: decoder.take_nonzero_u64("player_id")?,
+                role: decode_role(&mut decoder)?,
+            },
+            3 => Self::Error {
+                message: decoder.take_string("message")?,
+            },
+            4 => Self::Event(decode_server_event(&mut decoder)?),
+            5 => Self::Snapshot(decode_snapshot(&mut decoder)?),
+            opcode => return Err(ServerCodecError::UnknownOpcode(opcode)),
+        };
+        if decoder.offset != payload.len() {
+            return Err(ServerCodecError::TrailingBytes {
+                count: payload.len() - decoder.offset,
+            });
+        }
+        Ok(message)
+    }
+}
+
+#[derive(Default)]
+struct ServerEncoder {
+    bytes: Vec<u8>,
+}
+
+impl ServerEncoder {
+    fn put_u8(&mut self, value: u8) {
+        self.bytes.push(value);
+    }
+
+    fn put_u32(&mut self, value: u32) {
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn put_u64(&mut self, value: u64, field: &'static str) -> Result<(), ServerCodecError> {
+        if value == 0 {
+            return Err(ServerCodecError::InvalidZero { field });
+        }
+        self.put_u64_unchecked(value);
+        Ok(())
+    }
+
+    fn put_u64_unchecked(&mut self, value: u64) {
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn put_f32(&mut self, value: f32, field: &'static str) -> Result<(), ServerCodecError> {
+        if !value.is_finite() {
+            return Err(ServerCodecError::InvalidFloat { field });
+        }
+        self.put_u32(value.to_bits());
+        Ok(())
+    }
+
+    fn put_string(&mut self, value: &str, field: &'static str) -> Result<(), ServerCodecError> {
+        if value.is_empty() || value.len() > MAX_SERVER_STRING_BYTES {
+            return Err(ServerCodecError::InvalidString { field });
+        }
+        let length =
+            u16::try_from(value.len()).map_err(|_| ServerCodecError::InvalidString { field })?;
+        self.bytes.extend_from_slice(&length.to_be_bytes());
+        self.bytes.extend_from_slice(value.as_bytes());
+        Ok(())
+    }
+
+    fn put_optional_u64(
+        &mut self,
+        value: Option<u64>,
+        field: &'static str,
+    ) -> Result<(), ServerCodecError> {
+        match value {
+            Some(value) => {
+                self.put_u8(1);
+                self.put_u64(value, field)?;
+            }
+            None => self.put_u8(0),
+        }
+        Ok(())
+    }
+
+    fn put_optional_u32(
+        &mut self,
+        value: Option<u32>,
+        field: &'static str,
+    ) -> Result<(), ServerCodecError> {
+        match value {
+            Some(value) => {
+                self.put_u8(1);
+                if value == 0 {
+                    return Err(ServerCodecError::InvalidZero { field });
+                }
+                self.put_u32(value);
+            }
+            None => self.put_u8(0),
+        }
+        Ok(())
+    }
+
+    fn put_count(&mut self, count: usize, field: &'static str) -> Result<(), ServerCodecError> {
+        if count > MAX_SERVER_COLLECTION_ENTRIES {
+            return Err(ServerCodecError::CountTooLarge {
+                field,
+                count,
+                maximum: MAX_SERVER_COLLECTION_ENTRIES,
+            });
+        }
+        self.put_u32(count as u32);
+        Ok(())
+    }
+}
+
+struct ServerDecoder<'a> {
+    payload: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> ServerDecoder<'a> {
+    fn take(&mut self, length: usize, field: &'static str) -> Result<&'a [u8], ServerCodecError> {
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or(ServerCodecError::Truncated { field })?;
+        if end > self.payload.len() {
+            return Err(ServerCodecError::Truncated { field });
+        }
+        let bytes = &self.payload[self.offset..end];
+        self.offset = end;
+        Ok(bytes)
+    }
+
+    fn take_u8(&mut self, field: &'static str) -> Result<u8, ServerCodecError> {
+        Ok(self.take(1, field)?[0])
+    }
+
+    fn take_u32(&mut self, field: &'static str) -> Result<u32, ServerCodecError> {
+        Ok(u32::from_be_bytes(
+            self.take(4, field)?
+                .try_into()
+                .expect("four bytes requested"),
+        ))
+    }
+
+    fn take_nonzero_u32(&mut self, field: &'static str) -> Result<u32, ServerCodecError> {
+        let value = self.take_u32(field)?;
+        if value == 0 {
+            return Err(ServerCodecError::InvalidZero { field });
+        }
+        Ok(value)
+    }
+
+    fn take_u64(&mut self, field: &'static str) -> Result<u64, ServerCodecError> {
+        Ok(u64::from_be_bytes(
+            self.take(8, field)?
+                .try_into()
+                .expect("eight bytes requested"),
+        ))
+    }
+
+    fn take_nonzero_u64(&mut self, field: &'static str) -> Result<u64, ServerCodecError> {
+        let value = self.take_u64(field)?;
+        if value == 0 {
+            return Err(ServerCodecError::InvalidZero { field });
+        }
+        Ok(value)
+    }
+
+    fn take_f32(&mut self, field: &'static str) -> Result<f32, ServerCodecError> {
+        let value = f32::from_bits(self.take_u32(field)?);
+        if !value.is_finite() {
+            return Err(ServerCodecError::InvalidFloat { field });
+        }
+        Ok(value)
+    }
+
+    fn take_string(&mut self, field: &'static str) -> Result<String, ServerCodecError> {
+        let length = usize::from(u16::from_be_bytes(
+            self.take(2, field)?
+                .try_into()
+                .expect("two bytes requested"),
+        ));
+        if length == 0 || length > MAX_SERVER_STRING_BYTES {
+            return Err(ServerCodecError::InvalidString { field });
+        }
+        String::from_utf8(self.take(length, field)?.to_vec())
+            .map_err(|_| ServerCodecError::InvalidUtf8 { field })
+    }
+
+    fn take_optional_u64(&mut self, field: &'static str) -> Result<Option<u64>, ServerCodecError> {
+        match self.take_u8(field)? {
+            0 => Ok(None),
+            1 => Ok(Some(self.take_nonzero_u64(field)?)),
+            value => Err(ServerCodecError::InvalidEnum { field, value }),
+        }
+    }
+
+    fn take_optional_u32(&mut self, field: &'static str) -> Result<Option<u32>, ServerCodecError> {
+        match self.take_u8(field)? {
+            0 => Ok(None),
+            1 => Ok(Some(self.take_nonzero_u32(field)?)),
+            value => Err(ServerCodecError::InvalidEnum { field, value }),
+        }
+    }
+
+    fn take_count(&mut self, field: &'static str) -> Result<usize, ServerCodecError> {
+        let count = self.take_u32(field)? as usize;
+        if count > MAX_SERVER_COLLECTION_ENTRIES {
+            return Err(ServerCodecError::CountTooLarge {
+                field,
+                count,
+                maximum: MAX_SERVER_COLLECTION_ENTRIES,
+            });
+        }
+        Ok(count)
+    }
+}
+
+fn decode_role(decoder: &mut ServerDecoder<'_>) -> Result<RoleCode, ServerCodecError> {
+    match decoder.take_u8("role")? {
+        1 => Ok(RoleCode::Tank),
+        2 => Ok(RoleCode::Healer),
+        3 => Ok(RoleCode::DamageDealer),
+        value => Err(ServerCodecError::InvalidEnum {
+            field: "role",
+            value,
+        }),
+    }
+}
+
+fn encode_position(
+    encoder: &mut ServerEncoder,
+    position: PositionState,
+) -> Result<(), ServerCodecError> {
+    encoder.put_f32(position.x, "position.x")?;
+    encoder.put_f32(position.y, "position.y")?;
+    Ok(())
+}
+
+fn decode_position(decoder: &mut ServerDecoder<'_>) -> Result<PositionState, ServerCodecError> {
+    Ok(PositionState {
+        x: decoder.take_f32("position.x")?,
+        y: decoder.take_f32("position.y")?,
+    })
+}
+
+fn encode_player(
+    encoder: &mut ServerEncoder,
+    player: &PlayerState,
+) -> Result<(), ServerCodecError> {
+    encoder.put_u64(player.player_id, "player_id")?;
+    encoder.put_string(&player.name, "name")?;
+    encoder.put_u8(player.role as u8);
+    encode_position(encoder, player.position)?;
+    encoder.put_u32(player.health);
+    encoder.put_u32(player.max_health);
+    encoder.put_optional_u64(player.target_id, "target_id")?;
+    encoder.put_u32(player.gold);
+    encoder.put_count(player.inventory.len(), "inventory")?;
+    for stack in &player.inventory {
+        if stack.item_id == 0 || stack.quantity == 0 {
+            return Err(ServerCodecError::InvalidZero {
+                field: "item_stack",
+            });
+        }
+        encoder.put_u32(stack.item_id);
+        encoder.put_u32(stack.quantity);
+    }
+    encoder.put_count(player.quests.len(), "quests")?;
+    for quest in &player.quests {
+        if quest.quest_id == 0 || quest.required_count == 0 {
+            return Err(ServerCodecError::InvalidZero { field: "quest" });
+        }
+        encoder.put_u32(quest.quest_id);
+        encoder.put_u32(quest.progress);
+        encoder.put_u32(quest.required_count);
+        encoder.put_u8(quest.status as u8);
+    }
+    Ok(())
+}
+
+fn decode_player(decoder: &mut ServerDecoder<'_>) -> Result<PlayerState, ServerCodecError> {
+    let player_id = decoder.take_nonzero_u64("player_id")?;
+    let name = decoder.take_string("name")?;
+    let role = decode_role(decoder)?;
+    let position = decode_position(decoder)?;
+    let health = decoder.take_u32("health")?;
+    let max_health = decoder.take_u32("max_health")?;
+    let target_id = decoder.take_optional_u64("target_id")?;
+    let gold = decoder.take_u32("gold")?;
+    let inventory_count = decoder.take_count("inventory")?;
+    let mut inventory = Vec::with_capacity(inventory_count);
+    for _ in 0..inventory_count {
+        inventory.push(ItemStackState {
+            item_id: decoder.take_nonzero_u32("item_id")?,
+            quantity: decoder.take_nonzero_u32("quantity")?,
+        });
+    }
+    let quest_count = decoder.take_count("quests")?;
+    let mut quests = Vec::with_capacity(quest_count);
+    for _ in 0..quest_count {
+        quests.push(QuestState {
+            quest_id: decoder.take_nonzero_u32("quest_id")?,
+            progress: decoder.take_u32("progress")?,
+            required_count: decoder.take_nonzero_u32("required_count")?,
+            status: QuestStatusCode::try_from(decoder.take_u8("quest_status")?)?,
+        });
+    }
+    Ok(PlayerState {
+        player_id,
+        name,
+        role,
+        position,
+        health,
+        max_health,
+        target_id,
+        gold,
+        inventory,
+        quests,
+    })
+}
+
+fn encode_npc(encoder: &mut ServerEncoder, npc: &NpcState) -> Result<(), ServerCodecError> {
+    encoder.put_u64(npc.entity_id, "entity_id")?;
+    if npc.template_id == 0 {
+        return Err(ServerCodecError::InvalidZero {
+            field: "template_id",
+        });
+    }
+    encoder.put_u32(npc.template_id);
+    encoder.put_string(&npc.name, "name")?;
+    encoder.put_u8(npc.kind as u8);
+    encode_position(encoder, npc.position)?;
+    encoder.put_u32(npc.health);
+    encoder.put_u32(npc.max_health);
+    Ok(())
+}
+
+fn decode_npc(decoder: &mut ServerDecoder<'_>) -> Result<NpcState, ServerCodecError> {
+    Ok(NpcState {
+        entity_id: decoder.take_nonzero_u64("entity_id")?,
+        template_id: decoder.take_nonzero_u32("template_id")?,
+        name: decoder.take_string("name")?,
+        kind: NpcKindCode::try_from(decoder.take_u8("npc_kind")?)?,
+        position: decode_position(decoder)?,
+        health: decoder.take_u32("health")?,
+        max_health: decoder.take_u32("max_health")?,
+    })
+}
+
+fn encode_snapshot(
+    encoder: &mut ServerEncoder,
+    snapshot: &WorldSnapshot,
+) -> Result<(), ServerCodecError> {
+    encoder.put_u64_unchecked(snapshot.tick);
+    encoder.put_u32(snapshot.player_count);
+    encoder.put_u32(snapshot.npc_count);
+    encoder.put_u32(snapshot.enemy_count);
+    encoder.put_u32(snapshot.vendor_count);
+    encoder.put_count(snapshot.players.len(), "players")?;
+    for player in &snapshot.players {
+        encode_player(encoder, player)?;
+    }
+    encoder.put_count(snapshot.npcs.len(), "npcs")?;
+    for npc in &snapshot.npcs {
+        encode_npc(encoder, npc)?;
+    }
+    Ok(())
+}
+
+fn decode_snapshot(decoder: &mut ServerDecoder<'_>) -> Result<WorldSnapshot, ServerCodecError> {
+    let tick = decoder.take_u64("tick")?;
+    let player_count = decoder.take_u32("player_count")?;
+    let npc_count = decoder.take_u32("npc_count")?;
+    let enemy_count = decoder.take_u32("enemy_count")?;
+    let vendor_count = decoder.take_u32("vendor_count")?;
+    let player_count_in_payload = decoder.take_count("players")?;
+    let mut players = Vec::with_capacity(player_count_in_payload);
+    for _ in 0..player_count_in_payload {
+        players.push(decode_player(decoder)?);
+    }
+    let npc_count_in_payload = decoder.take_count("npcs")?;
+    let mut npcs = Vec::with_capacity(npc_count_in_payload);
+    for _ in 0..npc_count_in_payload {
+        npcs.push(decode_npc(decoder)?);
+    }
+    Ok(WorldSnapshot {
+        tick,
+        player_count,
+        npc_count,
+        enemy_count,
+        vendor_count,
+        players,
+        npcs,
+    })
+}
+
+fn encode_listing(
+    encoder: &mut ServerEncoder,
+    listing: &VendorListingState,
+) -> Result<(), ServerCodecError> {
+    if listing.item_id == 0 || listing.max_stack == 0 {
+        return Err(ServerCodecError::InvalidZero { field: "listing" });
+    }
+    encoder.put_u32(listing.item_id);
+    encoder.put_string(&listing.name, "listing_name")?;
+    encoder.put_u32(listing.unit_price);
+    encoder.put_u32(listing.remaining_quantity);
+    encoder.put_u32(listing.max_stack);
+    Ok(())
+}
+
+fn decode_listing(decoder: &mut ServerDecoder<'_>) -> Result<VendorListingState, ServerCodecError> {
+    Ok(VendorListingState {
+        item_id: decoder.take_nonzero_u32("item_id")?,
+        name: decoder.take_string("listing_name")?,
+        unit_price: decoder.take_u32("unit_price")?,
+        remaining_quantity: decoder.take_u32("remaining_quantity")?,
+        max_stack: decoder.take_nonzero_u32("max_stack")?,
+    })
+}
+
+fn encode_offer(
+    encoder: &mut ServerEncoder,
+    offer: &QuestOfferState,
+) -> Result<(), ServerCodecError> {
+    if offer.quest_id == 0 {
+        return Err(ServerCodecError::InvalidZero { field: "quest_id" });
+    }
+    encoder.put_u32(offer.quest_id);
+    encoder.put_string(&offer.name, "quest_name")?;
+    encoder.put_string(&offer.description, "quest_description")?;
+    Ok(())
+}
+
+fn decode_offer(decoder: &mut ServerDecoder<'_>) -> Result<QuestOfferState, ServerCodecError> {
+    Ok(QuestOfferState {
+        quest_id: decoder.take_nonzero_u32("quest_id")?,
+        name: decoder.take_string("quest_name")?,
+        description: decoder.take_string("quest_description")?,
+    })
+}
+
+fn encode_server_event(
+    encoder: &mut ServerEncoder,
+    event: &ServerEvent,
+) -> Result<(), ServerCodecError> {
+    match event {
+        ServerEvent::PlayerJoined { player } => {
+            encoder.put_u8(1);
+            encode_player(encoder, player)?;
+        }
+        ServerEvent::PlayerLeft { player_id } => {
+            encoder.put_u8(2);
+            encoder.put_u64(*player_id, "player_id")?;
+        }
+        ServerEvent::PlayerMoved {
+            player_id,
+            position,
+            area,
+        } => {
+            encoder.put_u8(3);
+            encoder.put_u64(*player_id, "player_id")?;
+            encode_position(encoder, *position)?;
+            encoder.put_u8(*area as u8);
+        }
+        ServerEvent::TargetSelected {
+            player_id,
+            target_id,
+        } => {
+            encoder.put_u8(4);
+            encoder.put_u64(*player_id, "player_id")?;
+            encoder.put_u64(*target_id, "target_id")?;
+        }
+        ServerEvent::AttackResolved {
+            player_id,
+            target_id,
+            damage,
+            target_health,
+        } => {
+            encoder.put_u8(5);
+            encoder.put_u64(*player_id, "player_id")?;
+            encoder.put_u64(*target_id, "target_id")?;
+            encoder.put_u32(*damage);
+            encoder.put_u32(*target_health);
+        }
+        ServerEvent::EnemyDefeated { enemy_id } => {
+            encoder.put_u8(6);
+            encoder.put_u64(*enemy_id, "enemy_id")?;
+        }
+        ServerEvent::VendorListed {
+            player_id,
+            vendor_id,
+            listings,
+        } => {
+            encoder.put_u8(7);
+            encoder.put_u64(*player_id, "player_id")?;
+            encoder.put_u64(*vendor_id, "vendor_id")?;
+            encoder.put_count(listings.len(), "listings")?;
+            for listing in listings {
+                encode_listing(encoder, listing)?;
+            }
+        }
+        ServerEvent::ItemPurchased {
+            player_id,
+            vendor_id,
+            item_id,
+            quantity,
+            total_price,
+            gold_remaining,
+        } => {
+            encoder.put_u8(8);
+            encoder.put_u64(*player_id, "player_id")?;
+            encoder.put_u64(*vendor_id, "vendor_id")?;
+            if *item_id == 0 || *quantity == 0 {
+                return Err(ServerCodecError::InvalidZero { field: "purchase" });
+            }
+            encoder.put_u32(*item_id);
+            encoder.put_u32(*quantity);
+            encoder.put_u32(*total_price);
+            encoder.put_u32(*gold_remaining);
+        }
+        ServerEvent::LootRewarded {
+            player_id,
+            enemy_id,
+            item_id,
+            quantity,
+        } => {
+            encoder.put_u8(9);
+            encoder.put_u64(*player_id, "player_id")?;
+            encoder.put_u64(*enemy_id, "enemy_id")?;
+            if *item_id == 0 || *quantity == 0 {
+                return Err(ServerCodecError::InvalidZero { field: "loot" });
+            }
+            encoder.put_u32(*item_id);
+            encoder.put_u32(*quantity);
+        }
+        ServerEvent::TransactionRejected { player_id, reason } => {
+            encoder.put_u8(10);
+            encoder.put_u64(*player_id, "player_id")?;
+            encoder.put_string(reason, "reason")?;
+        }
+        ServerEvent::QuestOffersListed {
+            player_id,
+            npc_id,
+            quests,
+        } => {
+            encoder.put_u8(11);
+            encoder.put_u64(*player_id, "player_id")?;
+            encoder.put_u64(*npc_id, "npc_id")?;
+            encoder.put_count(quests.len(), "quests")?;
+            for quest in quests {
+                encode_offer(encoder, quest)?;
+            }
+        }
+        ServerEvent::QuestAccepted {
+            player_id,
+            npc_id,
+            quest_id,
+        } => {
+            encoder.put_u8(12);
+            encoder.put_u64(*player_id, "player_id")?;
+            encoder.put_u64(*npc_id, "npc_id")?;
+            if *quest_id == 0 {
+                return Err(ServerCodecError::InvalidZero { field: "quest_id" });
+            }
+            encoder.put_u32(*quest_id);
+        }
+        ServerEvent::QuestProgressed {
+            player_id,
+            quest_id,
+            progress,
+            required_count,
+        } => {
+            encoder.put_u8(13);
+            encoder.put_u64(*player_id, "player_id")?;
+            if *quest_id == 0 || *required_count == 0 {
+                return Err(ServerCodecError::InvalidZero { field: "quest" });
+            }
+            encoder.put_u32(*quest_id);
+            encoder.put_u32(*progress);
+            encoder.put_u32(*required_count);
+        }
+        ServerEvent::QuestCompleted {
+            player_id,
+            quest_id,
+        } => {
+            encoder.put_u8(14);
+            encoder.put_u64(*player_id, "player_id")?;
+            if *quest_id == 0 {
+                return Err(ServerCodecError::InvalidZero { field: "quest_id" });
+            }
+            encoder.put_u32(*quest_id);
+        }
+        ServerEvent::QuestRewarded {
+            player_id,
+            quest_id,
+            gold,
+            item_id,
+            item_quantity,
+            gold_remaining,
+        } => {
+            encoder.put_u8(15);
+            encoder.put_u64(*player_id, "player_id")?;
+            if *quest_id == 0 {
+                return Err(ServerCodecError::InvalidZero { field: "quest_id" });
+            }
+            encoder.put_u32(*quest_id);
+            encoder.put_u32(*gold);
+            encoder.put_optional_u32(*item_id, "item_id")?;
+            encoder.put_u32(*item_quantity);
+            encoder.put_u32(*gold_remaining);
+        }
+        ServerEvent::QuestRejected { player_id, reason } => {
+            encoder.put_u8(16);
+            encoder.put_u64(*player_id, "player_id")?;
+            encoder.put_string(reason, "reason")?;
+        }
+        ServerEvent::CommandRejected { reason } => {
+            encoder.put_u8(17);
+            encoder.put_string(reason, "reason")?;
+        }
+    }
+    Ok(())
+}
+
+fn decode_server_event(decoder: &mut ServerDecoder<'_>) -> Result<ServerEvent, ServerCodecError> {
+    match decoder.take_u8("event")? {
+        1 => Ok(ServerEvent::PlayerJoined {
+            player: decode_player(decoder)?,
+        }),
+        2 => Ok(ServerEvent::PlayerLeft {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+        }),
+        3 => Ok(ServerEvent::PlayerMoved {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            position: decode_position(decoder)?,
+            area: ZoneAreaCode::try_from(decoder.take_u8("zone_area")?)?,
+        }),
+        4 => Ok(ServerEvent::TargetSelected {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            target_id: decoder.take_nonzero_u64("target_id")?,
+        }),
+        5 => Ok(ServerEvent::AttackResolved {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            target_id: decoder.take_nonzero_u64("target_id")?,
+            damage: decoder.take_u32("damage")?,
+            target_health: decoder.take_u32("target_health")?,
+        }),
+        6 => Ok(ServerEvent::EnemyDefeated {
+            enemy_id: decoder.take_nonzero_u64("enemy_id")?,
+        }),
+        7 => {
+            let player_id = decoder.take_nonzero_u64("player_id")?;
+            let vendor_id = decoder.take_nonzero_u64("vendor_id")?;
+            let count = decoder.take_count("listings")?;
+            let mut listings = Vec::with_capacity(count);
+            for _ in 0..count {
+                listings.push(decode_listing(decoder)?);
+            }
+            Ok(ServerEvent::VendorListed {
+                player_id,
+                vendor_id,
+                listings,
+            })
+        }
+        8 => Ok(ServerEvent::ItemPurchased {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            vendor_id: decoder.take_nonzero_u64("vendor_id")?,
+            item_id: decoder.take_nonzero_u32("item_id")?,
+            quantity: decoder.take_nonzero_u32("quantity")?,
+            total_price: decoder.take_u32("total_price")?,
+            gold_remaining: decoder.take_u32("gold_remaining")?,
+        }),
+        9 => Ok(ServerEvent::LootRewarded {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            enemy_id: decoder.take_nonzero_u64("enemy_id")?,
+            item_id: decoder.take_nonzero_u32("item_id")?,
+            quantity: decoder.take_nonzero_u32("quantity")?,
+        }),
+        10 => Ok(ServerEvent::TransactionRejected {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            reason: decoder.take_string("reason")?,
+        }),
+        11 => {
+            let player_id = decoder.take_nonzero_u64("player_id")?;
+            let npc_id = decoder.take_nonzero_u64("npc_id")?;
+            let count = decoder.take_count("quests")?;
+            let mut quests = Vec::with_capacity(count);
+            for _ in 0..count {
+                quests.push(decode_offer(decoder)?);
+            }
+            Ok(ServerEvent::QuestOffersListed {
+                player_id,
+                npc_id,
+                quests,
+            })
+        }
+        12 => Ok(ServerEvent::QuestAccepted {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            npc_id: decoder.take_nonzero_u64("npc_id")?,
+            quest_id: decoder.take_nonzero_u32("quest_id")?,
+        }),
+        13 => Ok(ServerEvent::QuestProgressed {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            quest_id: decoder.take_nonzero_u32("quest_id")?,
+            progress: decoder.take_u32("progress")?,
+            required_count: decoder.take_nonzero_u32("required_count")?,
+        }),
+        14 => Ok(ServerEvent::QuestCompleted {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            quest_id: decoder.take_nonzero_u32("quest_id")?,
+        }),
+        15 => Ok(ServerEvent::QuestRewarded {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            quest_id: decoder.take_nonzero_u32("quest_id")?,
+            gold: decoder.take_u32("gold")?,
+            item_id: decoder.take_optional_u32("item_id")?,
+            item_quantity: decoder.take_u32("item_quantity")?,
+            gold_remaining: decoder.take_u32("gold_remaining")?,
+        }),
+        16 => Ok(ServerEvent::QuestRejected {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            reason: decoder.take_string("reason")?,
+        }),
+        17 => Ok(ServerEvent::CommandRejected {
+            reason: decoder.take_string("reason")?,
+        }),
+        opcode => Err(ServerCodecError::UnknownOpcode(opcode)),
+    }
+}
+
+/// Errors found while encoding or decoding typed server payloads.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ServerCodecError {
+    Empty,
+    Truncated {
+        field: &'static str,
+    },
+    UnknownOpcode(u8),
+    InvalidEnum {
+        field: &'static str,
+        value: u8,
+    },
+    InvalidZero {
+        field: &'static str,
+    },
+    InvalidFloat {
+        field: &'static str,
+    },
+    InvalidString {
+        field: &'static str,
+    },
+    InvalidUtf8 {
+        field: &'static str,
+    },
+    CountTooLarge {
+        field: &'static str,
+        count: usize,
+        maximum: usize,
+    },
+    TrailingBytes {
+        count: usize,
+    },
+}
+
+impl fmt::Display for ServerCodecError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("server payload is empty"),
+            Self::Truncated { field } => write!(formatter, "server field '{field}' is truncated"),
+            Self::UnknownOpcode(opcode) => write!(formatter, "unknown server opcode {opcode}"),
+            Self::InvalidEnum { field, value } => {
+                write!(
+                    formatter,
+                    "server field '{field}' has invalid value {value}"
+                )
+            }
+            Self::InvalidZero { field } => {
+                write!(formatter, "server field '{field}' must be nonzero")
+            }
+            Self::InvalidFloat { field } => {
+                write!(formatter, "server field '{field}' is not finite")
+            }
+            Self::InvalidString { field } => {
+                write!(formatter, "server field '{field}' is invalid")
+            }
+            Self::InvalidUtf8 { field } => {
+                write!(formatter, "server field '{field}' is not UTF-8")
+            }
+            Self::CountTooLarge {
+                field,
+                count,
+                maximum,
+            } => write!(
+                formatter,
+                "server collection '{field}' has {count} entries; maximum is {maximum}"
+            ),
+            Self::TrailingBytes { count } => {
+                write!(formatter, "server payload has {count} trailing bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ServerCodecError {}
+
 impl TryFrom<u8> for MessageKind {
     type Error = DecodeError;
 
@@ -720,6 +1819,134 @@ mod tests {
             ClientCommand::decode_payload(&payload),
             Err(CommandCodecError::TrailingBytes { count: 1 })
         );
+    }
+
+    #[test]
+    fn typed_server_snapshot_round_trips_nested_player_state() {
+        let message = ServerMessage::Snapshot(WorldSnapshot {
+            tick: 42,
+            player_count: 1,
+            npc_count: 1,
+            enemy_count: 1,
+            vendor_count: 0,
+            players: vec![PlayerState {
+                player_id: 7,
+                name: "Aria".to_owned(),
+                role: RoleCode::Healer,
+                position: PositionState { x: -2.5, y: 4.0 },
+                health: 80,
+                max_health: 100,
+                target_id: Some(9),
+                gold: 12,
+                inventory: vec![ItemStackState {
+                    item_id: 2,
+                    quantity: 4,
+                }],
+                quests: vec![QuestState {
+                    quest_id: 1,
+                    progress: 2,
+                    required_count: 3,
+                    status: QuestStatusCode::Accepted,
+                }],
+            }],
+            npcs: vec![NpcState {
+                entity_id: 9,
+                template_id: 2,
+                name: "Field Wolf".to_owned(),
+                kind: NpcKindCode::Enemy,
+                position: PositionState { x: 24.0, y: 0.0 },
+                health: 25,
+                max_health: 100,
+            }],
+        });
+
+        let payload = message.encode_payload().expect("snapshot should encode");
+        assert_eq!(ServerMessage::decode_payload(&payload), Ok(message));
+        let envelope = Envelope::new(MessageKind::Event, payload)
+            .expect("snapshot envelope should encode")
+            .encode()
+            .expect("snapshot frame should encode");
+        assert_eq!(
+            decode_one(&envelope).unwrap().envelope.kind,
+            MessageKind::Event
+        );
+    }
+
+    #[test]
+    fn typed_server_events_round_trip_collection_and_optional_values() {
+        let messages = [
+            ServerMessage::Welcome {
+                server: "mmorpg-server".to_owned(),
+            },
+            ServerMessage::Connected {
+                player_id: 7,
+                role: RoleCode::DamageDealer,
+            },
+            ServerMessage::Error {
+                message: "connect first".to_owned(),
+            },
+            ServerMessage::Event(ServerEvent::VendorListed {
+                player_id: 7,
+                vendor_id: 1,
+                listings: vec![VendorListingState {
+                    item_id: 2,
+                    name: "Town Ration".to_owned(),
+                    unit_price: 2,
+                    remaining_quantity: 98,
+                    max_stack: 20,
+                }],
+            }),
+            ServerMessage::Event(ServerEvent::QuestRewarded {
+                player_id: 7,
+                quest_id: 1,
+                gold: 10,
+                item_id: None,
+                item_quantity: 0,
+                gold_remaining: 22,
+            }),
+        ];
+
+        for message in messages {
+            let payload = message
+                .encode_payload()
+                .expect("server message should encode");
+            assert_eq!(ServerMessage::decode_payload(&payload), Ok(message));
+        }
+    }
+
+    #[test]
+    fn typed_server_payload_rejects_trailing_bytes_and_oversized_collections() {
+        let mut payload = ServerMessage::Error {
+            message: "bad".to_owned(),
+        }
+        .encode_payload()
+        .unwrap();
+        payload.push(0);
+        assert_eq!(
+            ServerMessage::decode_payload(&payload),
+            Err(ServerCodecError::TrailingBytes { count: 1 })
+        );
+
+        let snapshot = WorldSnapshot {
+            tick: 1,
+            player_count: 0,
+            npc_count: 0,
+            enemy_count: 0,
+            vendor_count: 0,
+            players: Vec::new(),
+            npcs: Vec::new(),
+        };
+        let mut payload = ServerMessage::Snapshot(snapshot).encode_payload().unwrap();
+        let count_offset = 1 + 8 + 4 * 4;
+        payload[count_offset..count_offset + 4]
+            .copy_from_slice(&((MAX_SERVER_COLLECTION_ENTRIES as u32) + 1).to_be_bytes());
+        assert!(matches!(
+            ServerMessage::decode_payload(&payload),
+            Err(ServerCodecError::CountTooLarge {
+                field: "players",
+                ..
+            })
+        ));
     }
 
     #[test]

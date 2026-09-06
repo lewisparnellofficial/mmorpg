@@ -1,9 +1,9 @@
 # `mmorpg-wire`
 
-This standalone crate is a prototype for the production protocol boundary. It
+This crate is a prototype for the production protocol boundary. It
 defines a small, transport-independent envelope for versioned commands and
 events. The envelope remains independent of sockets and the simulation, while
-the first typed client-command payload schema now lives alongside it.
+typed client-command and server-message payload schemas live alongside it.
 
 ## Frame format
 
@@ -44,7 +44,23 @@ rejected. The server session adapter now consumes these commands on its
 optional wire listener; the opcode table remains an explicitly versioned Rust
 contract until a stable external compatibility document is accepted.
 
-## Why the current TCP output is not production protocol
+## Typed server messages
+
+`ServerMessage` encodes welcome/connect/error responses, every current
+authoritative gameplay event, and a bounded bootstrap `WorldSnapshot`. Player
+state includes inventory stacks and quest progress; NPCs, vendor listings, and
+quest offers use explicit bounded collections. IDs, enum values, strings,
+floats, collection counts, and trailing bytes are validated during both encode
+and decode. `WireConnection::read_server_message` consumes these messages
+without interpreting diagnostic text.
+
+The server currently places all server messages in the envelope's `Event`
+message kind. This keeps the envelope small while the payload discriminator
+distinguishes welcome, event, error, and snapshot records. A future protocol
+version can separate channels if replication or reliability requirements make
+that useful.
+
+## Why the diagnostic TCP output is not production protocol
 
 The development server currently writes human-readable lines such as
 `EVENT ...`, `WORLD ...`, and `PLAYER ...`. That output is useful while
@@ -63,8 +79,8 @@ debugging, but it is not a safe or stable production protocol:
 - Parsing server display text would make client state dependent on wording
   rather than stable IDs and typed fields.
 
-This prototype addresses framing, envelope metadata, and the first typed
-command payload schema. It does not yet define typed event/snapshot payloads,
+This prototype addresses framing, envelope metadata, typed command payloads,
+and typed server event/snapshot payloads. It does not yet provide
 authentication, encryption, compression,
 capability negotiation, replay protection, sequencing, acknowledgements,
 interest-managed replication, or socket ownership. A future network adapter
