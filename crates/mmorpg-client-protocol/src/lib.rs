@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-pub use mmorpg_core::{EntityId, ItemId, NpcKind, Position, QuestId, Role, ZoneArea};
+pub use mmorpg_core::{EntityId, ItemId, NpcKind, Position, QuestId, QuestStatus, Role, ZoneArea};
 
 const MAX_NAME_BYTES: usize = 24;
 const MAX_MOVE_PER_COMMAND: f32 = 10.0;
@@ -218,15 +218,16 @@ impl CommandLine {
 /// A decoded line from the temporary development server.
 ///
 /// This is intentionally limited to the state and events needed by the
-/// graphical client. Human-oriented lines such as `WELCOME`, `HELP`, `ITEM`,
-/// and `QUEST` remain unsupported until they receive an explicit schema here;
-/// the machine-readable `EVENT` forms are decoded below.
+/// graphical client. Human-oriented lines such as `WELCOME` and `HELP` are
+/// ignored; machine-readable snapshot and `EVENT` forms are decoded below.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServerLine {
     SnapshotBegin { version: u32 },
     World(WorldState),
     Player(PlayerState),
     Npc(NpcState),
+    Item(ItemState),
+    Quest(QuestState),
     Connected(ConnectedState),
     Event(ServerEvent),
     SnapshotEnd,
@@ -244,6 +245,8 @@ pub struct Snapshot {
     pub world: WorldState,
     pub players: BTreeMap<EntityId, PlayerState>,
     pub npcs: BTreeMap<EntityId, NpcState>,
+    pub items: BTreeMap<EntityId, Vec<ItemState>>,
+    pub quests: BTreeMap<EntityId, Vec<QuestState>>,
 }
 
 /// The record kinds recognized by [`SnapshotAssembler`] errors.
@@ -253,6 +256,8 @@ pub enum SnapshotRecordKind {
     World,
     Player,
     Npc,
+    Item,
+    Quest,
     End,
 }
 
@@ -263,6 +268,8 @@ impl fmt::Display for SnapshotRecordKind {
             Self::World => "world",
             Self::Player => "player",
             Self::Npc => "npc",
+            Self::Item => "item",
+            Self::Quest => "quest",
             Self::End => "end",
         };
         formatter.write_str(name)
@@ -278,11 +285,17 @@ pub enum SnapshotError {
     SnapshotNotActive { record: SnapshotRecordKind },
     /// A second begin marker arrived before the active frame ended.
     DuplicateBegin,
-    /// A world, player, or NPC record was repeated. Entity IDs are unique
-    /// across player and NPC records in a snapshot.
+    /// A world, player, NPC, item, or quest record was repeated. Entity IDs
+    /// are unique across player and NPC records; item and quest keys are
+    /// unique per player in a snapshot.
     DuplicateRecord {
         record: SnapshotRecordKind,
         id: Option<EntityId>,
+    },
+    /// An item or quest record referred to a player absent from the frame.
+    UnknownPlayer {
+        record: SnapshotRecordKind,
+        player_id: EntityId,
     },
     /// An end marker arrived without an active frame.
     EndOutsideSnapshot,
@@ -320,6 +333,12 @@ impl fmt::Display for SnapshotError {
                 ),
                 None => write!(formatter, "duplicate snapshot {record} record"),
             },
+            Self::UnknownPlayer { record, player_id } => {
+                write!(
+                    formatter,
+                    "snapshot {record} record refers to unknown player {player_id}"
+                )
+            }
             Self::EndOutsideSnapshot => {
                 formatter.write_str("snapshot end marker received outside an active frame")
             }
@@ -403,7 +422,9 @@ impl SnapshotAssembler {
             Some(SnapshotRecordKind::Begin) => self.push_begin(line),
             Some(SnapshotRecordKind::World)
             | Some(SnapshotRecordKind::Player)
-            | Some(SnapshotRecordKind::Npc) => self.push_record(line),
+            | Some(SnapshotRecordKind::Npc)
+            | Some(SnapshotRecordKind::Item)
+            | Some(SnapshotRecordKind::Quest) => self.push_record(line),
             Some(SnapshotRecordKind::End) => self.push_end(line),
             None if line.split_whitespace().next() == Some("TEMP_SNAPSHOT") => {
                 self.push_record(line)
@@ -445,12 +466,18 @@ impl SnapshotAssembler {
             ServerLine::World(_) => pending.world.is_some(),
             ServerLine::Player(player) => pending.ids.contains(&player.id),
             ServerLine::Npc(npc) => pending.ids.contains(&npc.id),
+            ServerLine::Item(item) => pending.item_keys.contains(&(item.player_id, item.item_id)),
+            ServerLine::Quest(quest) => pending
+                .quest_keys
+                .contains(&(quest.player_id, quest.quest_id)),
             _ => unreachable!("snapshot record classifier and decoder disagree"),
         };
         if duplicate {
             let id = match decoded {
                 ServerLine::Player(player) => Some(player.id),
                 ServerLine::Npc(npc) => Some(npc.id),
+                ServerLine::Item(item) => Some(item.player_id),
+                ServerLine::Quest(quest) => Some(quest.player_id),
                 ServerLine::World(_) => None,
                 _ => unreachable!("snapshot record classifier and decoder disagree"),
             };
@@ -476,6 +503,18 @@ impl SnapshotAssembler {
             ServerLine::Npc(npc) => {
                 pending.ids.insert(npc.id);
                 pending.npcs.insert(npc.id, npc);
+            }
+            ServerLine::Item(item) => {
+                pending.item_keys.insert((item.player_id, item.item_id));
+                pending.items.entry(item.player_id).or_default().push(item);
+            }
+            ServerLine::Quest(quest) => {
+                pending.quest_keys.insert((quest.player_id, quest.quest_id));
+                pending
+                    .quests
+                    .entry(quest.player_id)
+                    .or_default()
+                    .push(quest);
             }
             _ => unreachable!("snapshot record classifier and decoder disagree"),
         }
@@ -507,6 +546,8 @@ impl SnapshotAssembler {
             world,
             players: pending.players,
             npcs: pending.npcs,
+            items: pending.items,
+            quests: pending.quests,
         }))
     }
 
@@ -531,7 +572,11 @@ struct PendingSnapshot {
     world: Option<WorldState>,
     players: BTreeMap<EntityId, PlayerState>,
     npcs: BTreeMap<EntityId, NpcState>,
+    items: BTreeMap<EntityId, Vec<ItemState>>,
+    quests: BTreeMap<EntityId, Vec<QuestState>>,
     ids: BTreeSet<EntityId>,
+    item_keys: BTreeSet<(EntityId, ItemId)>,
+    quest_keys: BTreeSet<(EntityId, QuestId)>,
     record_count: usize,
 }
 
@@ -542,7 +587,11 @@ impl PendingSnapshot {
             world: None,
             players: BTreeMap::new(),
             npcs: BTreeMap::new(),
+            items: BTreeMap::new(),
+            quests: BTreeMap::new(),
             ids: BTreeSet::new(),
+            item_keys: BTreeSet::new(),
+            quest_keys: BTreeSet::new(),
             record_count: 0,
         }
     }
@@ -577,6 +626,22 @@ impl PendingSnapshot {
                 });
             }
         }
+        for item in self.items.values().flatten() {
+            if !self.players.contains_key(&item.player_id) {
+                return Err(SnapshotError::UnknownPlayer {
+                    record: SnapshotRecordKind::Item,
+                    player_id: item.player_id,
+                });
+            }
+        }
+        for quest in self.quests.values().flatten() {
+            if !self.players.contains_key(&quest.player_id) {
+                return Err(SnapshotError::UnknownPlayer {
+                    record: SnapshotRecordKind::Quest,
+                    player_id: quest.player_id,
+                });
+            }
+        }
         Ok(())
     }
 }
@@ -588,6 +653,8 @@ fn snapshot_line_kind(line: &str) -> Option<SnapshotRecordKind> {
             Some("WORLD") => Some(SnapshotRecordKind::World),
             Some("PLAYER") => Some(SnapshotRecordKind::Player),
             Some("NPC") => Some(SnapshotRecordKind::Npc),
+            Some("ITEM") => Some(SnapshotRecordKind::Item),
+            Some("QUEST") => Some(SnapshotRecordKind::Quest),
             _ => None,
         },
         "TEMP_SNAPSHOT_END" => Some(SnapshotRecordKind::End),
@@ -600,6 +667,8 @@ fn snapshot_record_kind(line: &ServerLine) -> SnapshotRecordKind {
         ServerLine::World(_) => SnapshotRecordKind::World,
         ServerLine::Player(_) => SnapshotRecordKind::Player,
         ServerLine::Npc(_) => SnapshotRecordKind::Npc,
+        ServerLine::Item(_) => SnapshotRecordKind::Item,
+        ServerLine::Quest(_) => SnapshotRecordKind::Quest,
         _ => unreachable!("only snapshot records reach this helper"),
     }
 }
@@ -639,6 +708,24 @@ pub struct NpcState {
     pub position: Position,
     pub health: u32,
     pub max_health: u32,
+}
+
+/// One inventory stack carried by a temporary authoritative snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemState {
+    pub player_id: EntityId,
+    pub item_id: ItemId,
+    pub quantity: u32,
+}
+
+/// One quest state carried by a temporary authoritative snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuestState {
+    pub player_id: EntityId,
+    pub quest_id: QuestId,
+    pub progress: u32,
+    pub required_count: u32,
+    pub status: QuestStatus,
 }
 
 /// One vendor listing carried by a temporary authoritative event.
@@ -1011,6 +1098,14 @@ fn decode_snapshot_record(record_name: &str, tokens: Vec<&str>) -> Result<Server
             ],
             None,
         )?),
+        "ITEM" => {
+            decode_snapshot_item(parse_fields(tokens, &["player", "item", "quantity"], None)?)
+        }
+        "QUEST" => decode_snapshot_quest(parse_fields(
+            tokens,
+            &["player", "quest", "progress", "status"],
+            None,
+        )?),
         other => Err(DecodeError::UnsupportedSnapshotRecord {
             name: other.to_owned(),
         }),
@@ -1057,6 +1152,25 @@ fn decode_snapshot_npc(mut fields: BTreeMap<String, String>) -> Result<ServerLin
         position: parse_position(take(&mut fields, "position")?, "position")?,
         health,
         max_health,
+    }))
+}
+
+fn decode_snapshot_item(mut fields: BTreeMap<String, String>) -> Result<ServerLine, DecodeError> {
+    Ok(ServerLine::Item(ItemState {
+        player_id: parse_entity_id(take(&mut fields, "player")?, "player")?,
+        item_id: parse_item_id(take(&mut fields, "item")?, "item")?,
+        quantity: parse_positive_u32(take(&mut fields, "quantity")?, "quantity")?,
+    }))
+}
+
+fn decode_snapshot_quest(mut fields: BTreeMap<String, String>) -> Result<ServerLine, DecodeError> {
+    let (progress, required_count) = parse_progress(take(&mut fields, "progress")?, "progress")?;
+    Ok(ServerLine::Quest(QuestState {
+        player_id: parse_entity_id(take(&mut fields, "player")?, "player")?,
+        quest_id: parse_quest_id(take(&mut fields, "quest")?, "quest")?,
+        progress,
+        required_count,
+        status: parse_quest_status(take(&mut fields, "status")?, "status")?,
     }))
 }
 
@@ -1525,6 +1639,15 @@ fn parse_snapshot_npc_kind(value: String, field: &'static str) -> Result<NpcKind
     }
 }
 
+fn parse_quest_status(value: String, field: &'static str) -> Result<QuestStatus, DecodeError> {
+    match value.as_str() {
+        "Accepted" => Ok(QuestStatus::Accepted),
+        "Completed" => Ok(QuestStatus::Completed),
+        "Rewarded" => Ok(QuestStatus::Rewarded),
+        _ => Err(DecodeError::InvalidValue { field }),
+    }
+}
+
 fn parse_zone_area(value: String, field: &'static str) -> Result<ZoneArea, DecodeError> {
     match value.as_str() {
         "Town" => Ok(ZoneArea::Town),
@@ -1795,6 +1918,24 @@ mod tests {
                 position: Position::new(0.0, 0.0),
                 health: 1,
                 max_health: 1,
+            }))
+        );
+        assert_eq!(
+            decode_server_line("TEMP_SNAPSHOT ITEM player=5 item=2 quantity=4"),
+            Ok(ServerLine::Item(ItemState {
+                player_id: EntityId(5),
+                item_id: ItemId(2),
+                quantity: 4,
+            }))
+        );
+        assert_eq!(
+            decode_server_line("TEMP_SNAPSHOT QUEST player=5 quest=1 progress=2/3 status=Accepted"),
+            Ok(ServerLine::Quest(QuestState {
+                player_id: EntityId(5),
+                quest_id: QuestId(1),
+                progress: 2,
+                required_count: 3,
+                status: QuestStatus::Accepted,
             }))
         );
         assert_eq!(
@@ -2168,6 +2309,61 @@ mod tests {
         assert_eq!(snapshot.players[&EntityId(5)].name, "Aria");
         assert_eq!(snapshot.npcs[&EntityId(1)].kind, NpcKind::Vendor);
         assert_eq!(snapshot.npcs[&EntityId(2)].kind, NpcKind::Enemy);
+        assert!(snapshot.items.is_empty());
+        assert!(snapshot.quests.is_empty());
+    }
+
+    #[test]
+    fn assembles_player_inventory_and_quest_records() {
+        let snapshot = assemble([
+            "TEMP_SNAPSHOT_BEGIN version=1".to_owned(),
+            "TEMP_SNAPSHOT WORLD tick=9 players=1 npcs=0 enemies=0 vendors=0".to_owned(),
+            "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=0,0 health=100 max_health=100 gold=20 target=none".to_owned(),
+            "TEMP_SNAPSHOT ITEM player=5 item=2 quantity=4".to_owned(),
+            "TEMP_SNAPSHOT QUEST player=5 quest=1 progress=2/3 status=Accepted".to_owned(),
+            "TEMP_SNAPSHOT_END".to_owned(),
+        ]);
+
+        assert_eq!(snapshot.items[&EntityId(5)][0].quantity, 4);
+        assert_eq!(snapshot.quests[&EntityId(5)][0].progress, 2);
+        assert_eq!(
+            snapshot.quests[&EntityId(5)][0].status,
+            QuestStatus::Accepted
+        );
+    }
+
+    #[test]
+    fn rejects_item_and_quest_records_for_players_missing_from_the_frame() {
+        let mut assembler = SnapshotAssembler::new();
+        for line in [
+            "TEMP_SNAPSHOT_BEGIN version=1",
+            "TEMP_SNAPSHOT WORLD tick=9 players=0 npcs=0 enemies=0 vendors=0",
+            "TEMP_SNAPSHOT ITEM player=5 item=2 quantity=4",
+        ] {
+            assembler.push_line(line).unwrap();
+        }
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT_END"),
+            Err(SnapshotError::UnknownPlayer {
+                record: SnapshotRecordKind::Item,
+                player_id: EntityId(5),
+            })
+        );
+
+        for line in [
+            "TEMP_SNAPSHOT_BEGIN version=1",
+            "TEMP_SNAPSHOT WORLD tick=9 players=0 npcs=0 enemies=0 vendors=0",
+            "TEMP_SNAPSHOT QUEST player=5 quest=1 progress=0/3 status=Accepted",
+        ] {
+            assembler.push_line(line).unwrap();
+        }
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT_END"),
+            Err(SnapshotError::UnknownPlayer {
+                record: SnapshotRecordKind::Quest,
+                player_id: EntityId(5),
+            })
+        );
     }
 
     #[test]
@@ -2184,6 +2380,24 @@ mod tests {
             assembler.push_line("TEMP_SNAPSHOT_END"),
             Err(SnapshotError::EndOutsideSnapshot)
         );
+
+        assembler
+            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .unwrap();
+        assembler
+            .push_line("TEMP_SNAPSHOT WORLD tick=7 players=0 npcs=0 enemies=0 vendors=0")
+            .unwrap();
+        assembler
+            .push_line("TEMP_SNAPSHOT ITEM player=5 item=2 quantity=1")
+            .unwrap();
+        assert_eq!(
+            assembler.push_line("TEMP_SNAPSHOT ITEM player=5 item=2 quantity=1"),
+            Err(SnapshotError::DuplicateRecord {
+                record: SnapshotRecordKind::Item,
+                id: Some(EntityId(5)),
+            })
+        );
+        assert!(!assembler.is_active());
 
         assert_eq!(
             assembler.push_line("TEMP_SNAPSHOT_BEGIN version=1"),

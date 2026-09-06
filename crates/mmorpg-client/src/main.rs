@@ -603,7 +603,9 @@ fn apply_server_line(state: &mut ClientState, line: &str) {
         // Legacy diagnostic records are intentionally not projected. The
         // graphical client consumes complete TEMP_SNAPSHOT frames and typed
         // EVENT records so its renderer has one authoritative state source.
-        Ok(ServerLine::Player(_) | ServerLine::Npc(_)) => {}
+        Ok(
+            ServerLine::Player(_) | ServerLine::Npc(_) | ServerLine::Item(_) | ServerLine::Quest(_),
+        ) => {}
         Ok(ServerLine::Event(event)) => apply_event(state, event),
         Err(_) => match line.split_whitespace().next() {
             Some("ERR") => state.log(line.to_owned()),
@@ -745,6 +747,11 @@ mod tests {
             &mut state,
             "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=3.0,-4.0 health=88 max_health=100 gold=20 target=2",
         );
+        apply_server_line(&mut state, "TEMP_SNAPSHOT ITEM player=5 item=2 quantity=2");
+        apply_server_line(
+            &mut state,
+            "TEMP_SNAPSHOT QUEST player=5 quest=1 progress=1/3 status=Accepted",
+        );
         apply_server_line(
             &mut state,
             "TEMP_SNAPSHOT NPC id=2 template_id=2 name=Field%20Wolf kind=enemy position=24.0,0.0 health=100 max_health=100",
@@ -757,6 +764,19 @@ mod tests {
             mmorpg_client_protocol::Position::new(3.0, -4.0)
         );
         assert_eq!(state.presentation.player(EntityId(5)).unwrap().gold, 20);
+        assert_eq!(
+            state
+                .presentation
+                .player(EntityId(5))
+                .unwrap()
+                .inventory
+                .quantity(mmorpg_content::ItemId::TOWN_RATION),
+            2
+        );
+        assert_eq!(
+            state.presentation.player(EntityId(5)).unwrap().quests[0].progress,
+            1
+        );
         assert_eq!(
             state.presentation.npc(EntityId(2)).unwrap().template_id,
             mmorpg_content::NpcTemplateId::FIELD_WOLF

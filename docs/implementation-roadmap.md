@@ -52,6 +52,8 @@ architecture and research remain in `docs/architecture/` and
   and quest event vocabulary.
 - Standalone protocol-to-presentation adapter with atomic snapshot replacement
   and content-ID metadata resolution.
+- Complete temporary bootstrap snapshot records for player inventory and quest
+  state.
 - Bounded stream-level snapshot assembly with atomic publication, duplicate
   detection, count validation, truncation handling, and stale-entity removal.
 - Bounded graphical-client command/deferred queues and connection timeout.
@@ -123,12 +125,13 @@ The first foundations from this batch now exist:
 
 The window, terrain-core, and first interactive client reliability spikes now
 run locally. The protocol-to-presentation adapter is exercised by the client,
-and player/NPC rendering now consumes the model directly. The snapshot schema
-still omits inventory/quest details. The remaining technology
+and player/NPC rendering now consumes the model directly. The temporary
+snapshot now carries inventory/quest details, with a fixed starter inventory
+capacity pending protocol versioning. The remaining technology
 work in this batch is to add visible inventory/vendor/quest interfaces,
-connect native tablet events, extend snapshots to complete authoritative
-state, and validate the protected UI scripting boundary with an embedded
-runtime.
+connect native tablet events, version the snapshot contract beyond the
+temporary fixed-capacity bootstrap, and validate the protected UI scripting
+boundary with an embedded runtime.
 
 The timing, AI, wire-envelope, and development-transport additions are still
 prototypes. They do not yet provide a production event schema, async

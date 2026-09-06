@@ -576,6 +576,18 @@ fn format_machine_snapshot(world: &World) -> Vec<String> {
                 .target
                 .map_or_else(|| "none".to_owned(), |target| target.to_string())
         ));
+        for stack in player.inventory.stacks() {
+            lines.push(format!(
+                "TEMP_SNAPSHOT ITEM player={} item={} quantity={}",
+                player.id, stack.item_id, stack.quantity
+            ));
+        }
+        for quest in &player.quests {
+            lines.push(format!(
+                "TEMP_SNAPSHOT QUEST player={} quest={} progress={}/{} status={:?}",
+                player.id, quest.quest_id, quest.progress, quest.required_count, quest.status
+            ));
+        }
     }
     for npc in world.npcs() {
         lines.push(format!(
@@ -954,6 +966,43 @@ mod tests {
                 "TEMP_SNAPSHOT_END",
             ]
         );
+    }
+
+    #[test]
+    fn machine_snapshot_includes_player_inventory_and_quest_state() {
+        let mut world = World::new_starter_zone();
+        world.step([Command::JoinPlayer {
+            name: "Aria".to_owned(),
+            role: Role::DamageDealer,
+        }]);
+        let player_id = world.players().next().expect("player joined").id;
+        let vendor_id = world
+            .npcs()
+            .find(|npc| npc.kind == mmorpg_core::NpcKind::Vendor)
+            .expect("starter vendor exists")
+            .id;
+
+        world.step([Command::BuyItem {
+            player_id,
+            vendor_id,
+            item_id: ItemId::TOWN_RATION,
+            quantity: 2,
+        }]);
+        world.step([Command::AcceptQuest {
+            player_id,
+            npc_id: vendor_id,
+            quest_id: QuestId::CLEAR_THE_FIELD,
+        }]);
+
+        let lines = format_machine_snapshot(&world);
+        assert!(
+            lines
+                .iter()
+                .any(|line| { line == "TEMP_SNAPSHOT ITEM player=5 item=2 quantity=2" })
+        );
+        assert!(lines.iter().any(|line| {
+            line == "TEMP_SNAPSHOT QUEST player=5 quest=1 progress=0/3 status=Accepted"
+        }));
     }
 
     #[test]

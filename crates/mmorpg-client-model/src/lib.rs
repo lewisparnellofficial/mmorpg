@@ -290,6 +290,56 @@ impl ClientWorld {
         }
     }
 
+    /// Replaces one player's inventory from a validated authoritative
+    /// snapshot record. Returns `false` without mutation if the player,
+    /// item, stack, or capacity is invalid.
+    pub fn replace_inventory_snapshot(
+        &mut self,
+        player_id: EntityId,
+        capacity: usize,
+        stacks: Vec<ClientItemStack>,
+    ) -> bool {
+        let mut item_ids = BTreeSet::new();
+        if stacks.len() > capacity {
+            return false;
+        }
+        for stack in &stacks {
+            let Some(definition) = item_definition(stack.item_id) else {
+                return false;
+            };
+            if stack.quantity == 0
+                || stack.quantity > definition.max_stack
+                || !item_ids.insert(stack.item_id)
+            {
+                return false;
+            }
+        }
+        let Some(player) = self.player_mut(player_id) else {
+            return false;
+        };
+        player.inventory = ClientInventory { capacity, stacks };
+        true
+    }
+
+    /// Replaces one player's quest state from a validated authoritative
+    /// snapshot record. Returns `false` without mutation for an unknown
+    /// player or duplicate quest IDs.
+    pub fn replace_quest_snapshot(
+        &mut self,
+        player_id: EntityId,
+        quests: Vec<ClientQuestState>,
+    ) -> bool {
+        let mut quest_ids = BTreeSet::new();
+        if quests.iter().any(|quest| !quest_ids.insert(quest.quest_id)) {
+            return false;
+        }
+        let Some(player) = self.player_mut(player_id) else {
+            return false;
+        };
+        player.quests = quests;
+        true
+    }
+
     /// Applies one authoritative server snapshot for an NPC.
     ///
     /// The current core event stream has no NPC snapshot event, so a client

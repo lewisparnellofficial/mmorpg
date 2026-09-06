@@ -14,8 +14,9 @@ server adapter.
 `ClientWorld::replace_from_snapshot` performs a whole-projection replacement
 and records the snapshot tick. It clears stale entities and transient vendor
 or quest query results, which gives reconnect and reconciliation code an
-explicit atomic replacement boundary. The adapter must translate and validate
-all records before calling it.
+explicit atomic replacement boundary. Inventory and quest snapshot records
+are applied through the corresponding replacement methods only after the
+adapter has translated and validated the complete frame.
 
 ## Current projection
 

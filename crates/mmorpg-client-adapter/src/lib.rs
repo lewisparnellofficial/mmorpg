@@ -4,15 +4,17 @@
 //! values that have already passed the protocol decoder into the
 //! renderer-independent `mmorpg-client-model`.
 
-use mmorpg_client_model::{ApplyEventResult, ClientWorld};
+use mmorpg_client_model::{ApplyEventResult, ClientItemStack, ClientQuestState, ClientWorld};
 use mmorpg_client_protocol::{
-    EntityId, ItemId, NpcState, QuestOfferState, ServerEvent, Snapshot, VendorListingState,
+    EntityId, ItemId, ItemState, NpcState, QuestOfferState, QuestState, ServerEvent, Snapshot,
+    VendorListingState,
 };
 use mmorpg_content::{NpcTemplateId, item_definition, starter_catalog};
 use mmorpg_core::{
     EntityId as CoreEntityId, Event, Inventory, Npc, PlayerSnapshot, QuestId, QuestOffer,
     VendorListing,
 };
+use std::collections::BTreeSet;
 use std::fmt;
 
 const TEMPORARY_BOOTSTRAP_INVENTORY_CAPACITY: usize = 16;
@@ -25,6 +27,9 @@ pub enum AdapterError {
     NpcTemplateOutOfRange { npc_id: EntityId, template_id: u64 },
     UnknownItem { item_id: ItemId },
     UnknownQuest { quest_id: QuestId },
+    UnknownPlayer { player_id: EntityId },
+    InvalidInventory { player_id: EntityId },
+    InvalidQuestState { player_id: EntityId },
 }
 
 impl fmt::Display for AdapterError {
@@ -52,6 +57,24 @@ impl fmt::Display for AdapterError {
                     "quest {quest_id} is not present in the content catalog"
                 )
             }
+            Self::UnknownPlayer { player_id } => {
+                write!(
+                    formatter,
+                    "snapshot record refers to unknown player {player_id}"
+                )
+            }
+            Self::InvalidInventory { player_id } => {
+                write!(
+                    formatter,
+                    "inventory snapshot for player {player_id} is invalid"
+                )
+            }
+            Self::InvalidQuestState { player_id } => {
+                write!(
+                    formatter,
+                    "quest snapshot for player {player_id} is invalid"
+                )
+            }
         }
     }
 }
@@ -74,8 +97,100 @@ pub fn apply_snapshot(model: &mut ClientWorld, snapshot: &Snapshot) -> Result<()
         .values()
         .map(protocol_npc)
         .collect::<Result<Vec<_>, _>>()?;
+    let inventories = snapshot
+        .items
+        .iter()
+        .map(|(player_id, stacks)| {
+            if !snapshot.players.contains_key(player_id) {
+                return Err(AdapterError::UnknownPlayer {
+                    player_id: *player_id,
+                });
+            }
+            let stacks = stacks
+                .iter()
+                .map(|stack| {
+                    if stack.player_id != *player_id {
+                        return Err(AdapterError::InvalidInventory {
+                            player_id: *player_id,
+                        });
+                    }
+                    protocol_item_stack(stack)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if stacks.len() > TEMPORARY_BOOTSTRAP_INVENTORY_CAPACITY {
+                return Err(AdapterError::InvalidInventory {
+                    player_id: *player_id,
+                });
+            }
+            let mut item_ids = BTreeSet::new();
+            if stacks.iter().any(|stack| !item_ids.insert(stack.item_id)) {
+                return Err(AdapterError::InvalidInventory {
+                    player_id: *player_id,
+                });
+            }
+            Ok((*player_id, stacks))
+        })
+        .collect::<Result<Vec<_>, AdapterError>>()?;
+    let quests = snapshot
+        .quests
+        .iter()
+        .map(|(player_id, quests)| {
+            if !snapshot.players.contains_key(player_id) {
+                return Err(AdapterError::UnknownPlayer {
+                    player_id: *player_id,
+                });
+            }
+            let mut quest_ids = BTreeSet::new();
+            for quest in quests {
+                if quest.player_id != *player_id {
+                    return Err(AdapterError::InvalidQuestState {
+                        player_id: *player_id,
+                    });
+                }
+                if !starter_catalog()
+                    .quests
+                    .iter()
+                    .any(|definition| definition.id == quest.quest_id)
+                {
+                    return Err(AdapterError::UnknownQuest {
+                        quest_id: quest.quest_id,
+                    });
+                }
+                if quest.required_count == 0 || quest.progress > quest.required_count {
+                    return Err(AdapterError::InvalidQuestState {
+                        player_id: *player_id,
+                    });
+                }
+                if !quest_ids.insert(quest.quest_id) {
+                    return Err(AdapterError::InvalidQuestState {
+                        player_id: *player_id,
+                    });
+                }
+            }
+            Ok((
+                *player_id,
+                quests.iter().map(protocol_quest_state).collect::<Vec<_>>(),
+            ))
+        })
+        .collect::<Result<Vec<_>, AdapterError>>()?;
 
-    model.replace_from_snapshot(snapshot.world.tick, players, npcs);
+    let mut projected = model.clone();
+    projected.replace_from_snapshot(snapshot.world.tick, players, npcs);
+    for (player_id, stacks) in inventories {
+        if !projected.replace_inventory_snapshot(
+            player_id,
+            TEMPORARY_BOOTSTRAP_INVENTORY_CAPACITY,
+            stacks,
+        ) {
+            return Err(AdapterError::InvalidInventory { player_id });
+        }
+    }
+    for (player_id, quests) in quests {
+        if !projected.replace_quest_snapshot(player_id, quests) {
+            return Err(AdapterError::InvalidQuestState { player_id });
+        }
+    }
+    *model = projected;
     Ok(())
 }
 
@@ -122,6 +237,32 @@ fn protocol_npc(npc: &NpcState) -> Result<Npc, AdapterError> {
         health: npc.health,
         max_health: npc.max_health,
     })
+}
+
+fn protocol_item_stack(stack: &ItemState) -> Result<ClientItemStack, AdapterError> {
+    let Some(definition) = item_definition(stack.item_id) else {
+        return Err(AdapterError::UnknownItem {
+            item_id: stack.item_id,
+        });
+    };
+    if stack.quantity == 0 || stack.quantity > definition.max_stack {
+        return Err(AdapterError::InvalidInventory {
+            player_id: stack.player_id,
+        });
+    }
+    Ok(ClientItemStack {
+        item_id: stack.item_id,
+        quantity: stack.quantity,
+    })
+}
+
+fn protocol_quest_state(state: &QuestState) -> ClientQuestState {
+    ClientQuestState {
+        quest_id: state.quest_id,
+        progress: state.progress,
+        required_count: Some(state.required_count),
+        status: state.status,
+    }
 }
 
 fn core_event(event: &ServerEvent) -> Result<Event, AdapterError> {
@@ -321,8 +462,8 @@ fn core_entity_id(id: EntityId) -> CoreEntityId {
 mod tests {
     use super::*;
     use mmorpg_client_protocol::{
-        NpcKind, PlayerState, Position, QuestId, QuestOfferState, Role, ServerEvent, Snapshot,
-        WorldState,
+        ItemState, NpcKind, PlayerState, Position, QuestId, QuestOfferState, QuestState,
+        QuestStatus, Role, ServerEvent, Snapshot, WorldState,
     };
 
     fn snapshot() -> Snapshot {
@@ -364,6 +505,28 @@ mod tests {
             )]
             .into_iter()
             .collect(),
+            items: [(
+                EntityId(5),
+                vec![ItemState {
+                    player_id: EntityId(5),
+                    item_id: ItemId(2),
+                    quantity: 2,
+                }],
+            )]
+            .into_iter()
+            .collect(),
+            quests: [(
+                EntityId(5),
+                vec![QuestState {
+                    player_id: EntityId(5),
+                    quest_id: QuestId(1),
+                    progress: 1,
+                    required_count: 3,
+                    status: QuestStatus::Accepted,
+                }],
+            )]
+            .into_iter()
+            .collect(),
         }
     }
 
@@ -374,6 +537,15 @@ mod tests {
 
         assert_eq!(model.world_tick(), Some(7));
         assert_eq!(model.player(EntityId(5)).unwrap().gold, 20);
+        assert_eq!(
+            model
+                .player(EntityId(5))
+                .unwrap()
+                .inventory
+                .quantity(ItemId(2)),
+            2
+        );
+        assert_eq!(model.player(EntityId(5)).unwrap().quests[0].progress, 1);
         assert_eq!(
             model.npc(EntityId(2)).unwrap().template_id,
             NpcTemplateId(2)

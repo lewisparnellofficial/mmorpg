@@ -5,14 +5,13 @@ into the renderer-independent `mmorpg-client-model`. It is the seam between
 transport/schema code and Bevy (or a future renderer); it does not open
 sockets, render frames, or make gameplay decisions.
 
-Snapshots are applied as complete replacements. The current temporary
-snapshot schema contains player identity/combat/economy scalars and NPC
-identity/combat state, but does not yet contain inventory stacks or quest
-progress. The adapter therefore creates a newly joined presentation player
-with the authoritative scalar values and an empty default inventory for that
-temporary bootstrap path. Live economy and quest events subsequently populate
-the model. The production snapshot schema must carry the full player state
-before reconnect/reconciliation can preserve those fields.
+Snapshots are applied as complete replacements. The temporary snapshot schema
+contains player identity/combat/economy scalars, NPC identity/combat state,
+inventory stack records, and quest state records. The adapter translates those
+records into the model so reconnect and reconciliation preserve the current
+starter inventory and quest state. Inventory capacity is still the temporary
+starter capacity of 16 slots; it should become an explicit versioned field
+before generalized content is supported.
 
 NPC and item/quest display metadata are resolved by stable IDs from the
 validated starter content catalog. Unknown IDs and out-of-range template IDs

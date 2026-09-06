@@ -65,8 +65,8 @@ distributions; consult the Bevy setup documentation for the selected host.
 The client now uses the shared bounded development decoder and the
 protocol-to-presentation adapter for snapshot and event records, and the
 renderer reads player/NPC state directly from `ClientWorld`. The current
-temporary snapshot does not yet include inventory stacks or quest progress;
-the adapter documents and bounds that limitation. The next client spike is
-to add visible inventory/vendor/quest interfaces and then replace the
+temporary snapshot now includes inventory stacks and quest progress, but
+inventory capacity remains a temporary fixed value until the protocol is
+versioned. The next client spike is to add visible inventory/vendor/quest interfaces and then replace the
 temporary line transport with the versioned wire protocol. Pen-tablet input
 and the separate content editor remain independent technology spikes.
