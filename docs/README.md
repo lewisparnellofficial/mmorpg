@@ -31,6 +31,7 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [Wire envelope spike](../crates/mmorpg-wire/README.md) — versioned length-prefixed framing prototype for the future machine-readable protocol.
 - [Development authentication decision](decisions/ADR-005-development-authentication-boundary.md) — loopback-only typed session and character-selection handshake for the current wire/client slice.
 - [Account/character repository decision](decisions/ADR-006-account-character-repository-boundary.md) — replaceable server storage boundary for identity and character lookup.
+- [Durable character checkpoint experiment](experiments/EXP-005-durable-character-checkpoint.md) — required restore, validation, and crash-safety prototype for persistent characters.
 - [AI/respawn experiment](../experiments/ai-respawn/README.md) — deterministic patrol, aggro, leash, death, and respawn behavior model.
 - [Persistence and recovery research](research/persistence-and-recovery.md) — durable state, idempotency, snapshots, journals, and crash recovery.
 - [Content validation tool](../tools/README.md) — current starter-catalog validation command and future authoring-tool boundary.

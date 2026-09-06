@@ -71,6 +71,11 @@ quest state, currency, positions, credentials, or sessions. It is a narrow
 replacement seam and should not be described as satisfying the project's
 persistence requirement.
 
+The next implementation milestone is defined by
+[`EXP-005`](../experiments/EXP-005-durable-character-checkpoint.md). It must
+add validated restore state to the core before a file-backed or database-backed
+repository attempts to load a character into the active world.
+
 ## Transactional operations
 
 The following must have clear atomicity and retry behavior:
