@@ -17,8 +17,8 @@ use mmorpg_client_protocol::{
 };
 use mmorpg_content::{ItemId, QuestId, item_definition, starter_catalog};
 use mmorpg_wire::{
-    ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope, MessageKind,
-    ServerMessage, decode_one,
+    CharacterSummary, ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope,
+    MessageKind, ServerMessage, decode_one,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
@@ -66,6 +66,8 @@ struct ClientState {
     server_address: String,
     connection_status: String,
     player_id: Option<EntityId>,
+    available_characters: Vec<CharacterSummary>,
+    selected_character_id: Option<u64>,
     target_cursor: usize,
     logs: VecDeque<String>,
     snapshot: SnapshotAssembler,
@@ -78,6 +80,8 @@ impl ClientState {
             server_address,
             connection_status: "connecting".to_owned(),
             player_id: None,
+            available_characters: Vec::new(),
+            selected_character_id: None,
             target_cursor: 0,
             logs: VecDeque::from(["WASD move  Tab target  Space attack".to_owned()]),
             snapshot: SnapshotAssembler::new(),
@@ -95,6 +99,9 @@ impl ClientState {
 
 #[derive(Debug)]
 enum ClientCommand {
+    SelectCharacter {
+        character_id: u64,
+    },
     Move {
         dx: f32,
         dy: f32,
@@ -494,10 +501,19 @@ fn spawn_wire_network_worker(
             );
             let mut incoming = Vec::new();
             let mut session_ready = false;
+            let mut selection_ready = false;
 
             'connection: loop {
                 match command_rx.try_recv() {
                     Err(TryRecvError::Disconnected) => return,
+                    Ok(ClientCommand::SelectCharacter { character_id }) if selection_ready => {
+                        queue_wire_command(
+                            &mut outgoing,
+                            WireCommand::SelectCharacter { character_id },
+                        );
+                        selection_ready = false;
+                    }
+                    Ok(ClientCommand::SelectCharacter { .. }) => {}
                     Ok(command) if session_ready => {
                         queue_wire_command(&mut outgoing, client_command_to_wire(command))
                     }
@@ -577,19 +593,13 @@ fn spawn_wire_network_worker(
                         queue_wire_command(&mut outgoing, WireCommand::ListCharacters);
                     }
                     if let ServerMessage::CharacterList { characters, .. } = &message {
-                        if let Some(character) = characters.first() {
-                            queue_wire_command(
-                                &mut outgoing,
-                                WireCommand::SelectCharacter {
-                                    character_id: character.character_id,
-                                },
-                            );
-                        } else {
+                        if characters.is_empty() {
                             let _ = event_tx.send(NetworkEvent::Status(
-                                "authenticated account has no characters; reconnecting".to_owned(),
+                                "authenticated account has no characters".to_owned(),
                             ));
-                            break 'connection;
+                            continue;
                         }
+                        selection_ready = true;
                     }
                     if let ServerMessage::CharacterSelected { .. } = message {
                         queue_wire_command(&mut outgoing, WireCommand::EnterWorld);
@@ -615,6 +625,9 @@ fn spawn_wire_network_worker(
 
 fn client_command_to_wire(command: ClientCommand) -> WireCommand {
     match command {
+        ClientCommand::SelectCharacter { character_id } => {
+            WireCommand::SelectCharacter { character_id }
+        }
         ClientCommand::Move { dx, dy } => WireCommand::Move { dx, dy },
         ClientCommand::Target(EntityId(target_id)) => WireCommand::SelectTarget { target_id },
         ClientCommand::Attack => WireCommand::BasicAttack,
@@ -673,6 +686,9 @@ fn queue_command_bounded(outgoing: &mut VecDeque<Vec<u8>>, command: ClientComman
         return;
     }
     match command {
+        // Character selection is a typed-wire session transition. The legacy
+        // development line protocol has no account or character catalog.
+        ClientCommand::SelectCharacter { .. } => {}
         ClientCommand::Move { dx, dy } => queue_command_line(outgoing, &format!("move {dx} {dy}")),
         ClientCommand::Target(EntityId(id)) => {
             queue_command_line(outgoing, &format!("target {id}"));
@@ -731,6 +747,12 @@ fn consume_network_events(bridge: Res<NetworkBridge>, mut state: ResMut<ClientSt
                 if let Err(error) = state.snapshot.finish() {
                     state.log(format!("discarded incomplete snapshot: {error}"));
                 }
+                if status.starts_with("connecting to typed wire") {
+                    state.player_id = None;
+                    state.available_characters.clear();
+                    state.selected_character_id = None;
+                    state.presentation = ClientWorld::default();
+                }
                 state.connection_status = status.clone();
                 state.log(status);
             }
@@ -747,6 +769,23 @@ fn keyboard_input(
     bridge: Res<NetworkBridge>,
     mut state: ResMut<ClientState>,
 ) {
+    if input.just_pressed(KeyCode::Enter)
+        && state.player_id.is_none()
+        && state.selected_character_id.is_none()
+        && let Some(character_id) = state
+            .available_characters
+            .first()
+            .map(|character| character.character_id)
+    {
+        state.selected_character_id = Some(character_id);
+        state.connection_status = "selecting character".to_owned();
+        send_command(
+            &bridge,
+            &mut state,
+            ClientCommand::SelectCharacter { character_id },
+        );
+    }
+
     let mut dx = 0.0;
     let mut dy = 0.0;
     if input.pressed(KeyCode::KeyA) {
@@ -965,6 +1004,23 @@ fn update_status_text(state: Res<ClientState>, mut query: Query<&mut Text, With<
 }
 
 fn format_hud_text(state: &ClientState) -> String {
+    let character_selection = if state.player_id.is_some() {
+        String::new()
+    } else if state.available_characters.is_empty() {
+        "characters: waiting for account response".to_owned()
+    } else if state.selected_character_id.is_some() {
+        "characters: selection sent; entering world".to_owned()
+    } else {
+        format!(
+            "characters: {} — press Enter to select",
+            state
+                .available_characters
+                .iter()
+                .map(|character| format!("{} ({:?})", character.name, character.role))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let player = state.player_id.and_then(|id| state.presentation.player(id));
     let target = player.and_then(|player| player.target).map_or_else(
         || "none".to_owned(),
@@ -1085,9 +1141,10 @@ fn format_hud_text(state: &ClientState) -> String {
         |notification| format!("\nnotice: {notification:?}"),
     );
     format!(
-        "server: {} ({})\n{}  tick {}\n{}\n{}\n{}\n{}\n\ncontrols: WASD move | Tab target | Space attack | L loot | V vendor | B buy | O offers | E accept | R turn in{}\n\n{}",
+        "server: {} ({})\n{}\n{}  tick {}\n{}\n{}\n{}\n{}\n\ncontrols: Enter select character | WASD move | Tab target | Space attack | L loot | V vendor | B buy | O offers | E accept | R turn in{}\n\n{}",
         state.connection_status,
         state.server_address,
+        character_selection,
         player_summary,
         tick,
         inventory,
@@ -1141,12 +1198,16 @@ fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
             state.log(format!("authenticated account {account_id}"));
         }
         ServerMessage::CharacterList { characters, .. } => {
+            state.available_characters = characters.clone();
+            state.selected_character_id = None;
+            state.connection_status = "select a character with Enter".to_owned();
             state.log(format!(
                 "received {} available character(s)",
                 characters.len()
             ));
         }
         ServerMessage::CharacterSelected { name, role, .. } => {
+            state.connection_status = "character selected; entering world".to_owned();
             state.log(format!("selected character {name} ({role:?})"));
         }
         ServerMessage::Connected { player_id, .. } => {
@@ -1324,6 +1385,38 @@ mod tests {
                 "loot 2\n",
             ]
         );
+    }
+
+    #[test]
+    fn typed_character_list_requires_a_user_selection_intent() {
+        let mut state = ClientState::new(DEFAULT_SERVER_ADDRESS.to_owned());
+        apply_server_message(
+            &mut state,
+            &ServerMessage::CharacterList {
+                account_id: 1,
+                characters: vec![CharacterSummary {
+                    character_id: 7,
+                    name: "Aria".to_owned(),
+                    role: mmorpg_wire::RoleCode::DamageDealer,
+                }],
+            },
+        );
+
+        assert_eq!(state.available_characters.len(), 1);
+        assert_eq!(state.available_characters[0].character_id, 7);
+        assert_eq!(state.selected_character_id, None);
+        assert!(format_hud_text(&state).contains("press Enter to select"));
+        assert!(matches!(
+            client_command_to_wire(ClientCommand::SelectCharacter { character_id: 7 }),
+            WireCommand::SelectCharacter { character_id: 7 }
+        ));
+
+        let mut legacy_outgoing = VecDeque::new();
+        queue_command_bounded(
+            &mut legacy_outgoing,
+            ClientCommand::SelectCharacter { character_id: 7 },
+        );
+        assert!(legacy_outgoing.is_empty());
     }
 
     #[test]

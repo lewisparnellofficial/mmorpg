@@ -37,8 +37,9 @@ cargo run --manifest-path crates/mmorpg-client/Cargo.toml -- \
 
 In wire mode the background worker sends the loopback-only development token,
 waits for the typed `Authenticated` response, lists available characters,
-selects the first character, enters the world, requests a typed bootstrap
-snapshot, and passes typed
+displays the account's available characters, waits for the user to press
+`Enter` to select the displayed development character, enters the world,
+requests a typed bootstrap snapshot, and passes typed
 `ServerMessage` values through `mmorpg-client-adapter`. The default line mode
 remains available while the two paths are compared locally. This handshake is
 not production authentication or an internet-safe credential flow. If the
@@ -49,11 +50,12 @@ snapshot; this is reconnect-by-restore, not a production session-resume
 protocol.
 
 The window can be closed using the normal window controls. With the server
-running in another terminal, use `WASD` to move, `Tab` to select the next
-known NPC, `Space` to attack, and `L` to loot the selected target. `V` lists
-vendor stock, `B` buys one unit of the first listing, `O` requests quest offers,
-`E` accepts the first offer, and `R` attempts to turn in the first quest. The
-first build may take several minutes because Bevy and its graphics
+running in another terminal, press `Enter` at the character-selection prompt,
+then use `WASD` to move, `Tab` to select the next known NPC, `Space` to attack,
+and `L` to loot the selected target. `V` lists vendor stock, `B` buys one unit
+of the first listing, `O` requests quest offers, `E` accepts the first offer,
+and `R` attempts to turn in the first quest. The first build may take several
+minutes because Bevy and its graphics
 dependencies are compiled locally.
 
 On Linux, the host needs a working desktop session and graphics stack. Bevy's
