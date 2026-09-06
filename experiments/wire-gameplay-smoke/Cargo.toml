@@ -1,0 +1,14 @@
+[package]
+name = "wire-gameplay-smoke"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+mmorpg-client-transport = { path = "../../crates/mmorpg-client-transport" }
+mmorpg-wire = { path = "../../crates/mmorpg-wire" }
+
+[lints.rust]
+unsafe_code = "forbid"

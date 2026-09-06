@@ -176,6 +176,15 @@ python3 experiments/replication-model/model.py \
   --budget-kib 64
 ```
 
+Typed wire gameplay smoke test (requires a server started with
+`--wire-address`):
+
+```bash
+cargo fmt --manifest-path experiments/wire-gameplay-smoke/Cargo.toml -- --check
+cargo test --manifest-path experiments/wire-gameplay-smoke/Cargo.toml
+cargo run --quiet --manifest-path experiments/wire-gameplay-smoke/Cargo.toml
+```
+
 The experiment README files and records under `docs/experiments/` define the
 meaning and limitations of each result. Do not present a synthetic benchmark
 as proof of production capacity.

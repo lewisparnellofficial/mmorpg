@@ -66,6 +66,7 @@ architecture and research remain in `docs/architecture/` and
   and shared content-ID validation.
 - Opt-in Bevy client wire mode with bounded background frame I/O and typed
   server-message projection.
+- Repeatable TCP wire gameplay smoke tool covering the complete starter loop.
 - Complete temporary bootstrap snapshot records for player inventory and quest
   state.
 - Bounded stream-level snapshot assembly with atomic publication, duplicate
