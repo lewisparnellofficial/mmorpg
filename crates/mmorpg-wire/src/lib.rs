@@ -400,6 +400,12 @@ impl<'a> CommandDecoder<'a> {
 pub const MAX_SERVER_COLLECTION_ENTRIES: usize = 4096;
 const MAX_SERVER_STRING_BYTES: usize = 4096;
 
+/// Version of the complete world-snapshot payload, independent of the
+/// surrounding gameplay envelope version. Version 2 makes player inventory
+/// capacity explicit instead of requiring clients to assume the starter
+/// value.
+pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
+
 /// Wire representation of an entity position.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PositionState {
@@ -459,6 +465,7 @@ pub struct PlayerState {
     pub max_health: u32,
     pub target_id: Option<u64>,
     pub gold: u32,
+    pub inventory_capacity: u32,
     pub inventory: Vec<ItemStackState>,
     pub quests: Vec<QuestState>,
 }
@@ -527,6 +534,7 @@ pub struct CharacterSummary {
 /// Complete authoritative bootstrap state for the current world.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorldSnapshot {
+    pub version: u16,
     pub tick: u64,
     pub player_count: u32,
     pub npc_count: u32,
@@ -797,6 +805,10 @@ impl ServerEncoder {
         self.bytes.push(value);
     }
 
+    fn put_u16(&mut self, value: u16) {
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
     fn put_u32(&mut self, value: u32) {
         self.bytes.extend_from_slice(&value.to_be_bytes());
     }
@@ -899,6 +911,14 @@ impl<'a> ServerDecoder<'a> {
 
     fn take_u8(&mut self, field: &'static str) -> Result<u8, ServerCodecError> {
         Ok(self.take(1, field)?[0])
+    }
+
+    fn take_u16(&mut self, field: &'static str) -> Result<u16, ServerCodecError> {
+        Ok(u16::from_be_bytes(
+            self.take(2, field)?
+                .try_into()
+                .expect("two bytes requested"),
+        ))
     }
 
     fn take_u32(&mut self, field: &'static str) -> Result<u32, ServerCodecError> {
@@ -1041,6 +1061,7 @@ fn encode_player(
     encoder.put_u32(player.max_health);
     encoder.put_optional_u64(player.target_id, "target_id")?;
     encoder.put_u32(player.gold);
+    encoder.put_u32(player.inventory_capacity);
     encoder.put_count(player.inventory.len(), "inventory")?;
     for stack in &player.inventory {
         if stack.item_id == 0 || stack.quantity == 0 {
@@ -1073,6 +1094,7 @@ fn decode_player(decoder: &mut ServerDecoder<'_>) -> Result<PlayerState, ServerC
     let max_health = decoder.take_u32("max_health")?;
     let target_id = decoder.take_optional_u64("target_id")?;
     let gold = decoder.take_u32("gold")?;
+    let inventory_capacity = decoder.take_u32("inventory_capacity")?;
     let inventory_count = decoder.take_count("inventory")?;
     let mut inventory = Vec::with_capacity(inventory_count);
     for _ in 0..inventory_count {
@@ -1100,6 +1122,7 @@ fn decode_player(decoder: &mut ServerDecoder<'_>) -> Result<PlayerState, ServerC
         max_health,
         target_id,
         gold,
+        inventory_capacity,
         inventory,
         quests,
     })
@@ -1137,6 +1160,13 @@ fn encode_snapshot(
     encoder: &mut ServerEncoder,
     snapshot: &WorldSnapshot,
 ) -> Result<(), ServerCodecError> {
+    if snapshot.version != SNAPSHOT_SCHEMA_VERSION {
+        return Err(ServerCodecError::UnsupportedSnapshotVersion {
+            version: snapshot.version,
+            supported: SNAPSHOT_SCHEMA_VERSION,
+        });
+    }
+    encoder.put_u16(snapshot.version);
     encoder.put_u64_unchecked(snapshot.tick);
     encoder.put_u32(snapshot.player_count);
     encoder.put_u32(snapshot.npc_count);
@@ -1154,6 +1184,13 @@ fn encode_snapshot(
 }
 
 fn decode_snapshot(decoder: &mut ServerDecoder<'_>) -> Result<WorldSnapshot, ServerCodecError> {
+    let version = decoder.take_u16("snapshot_version")?;
+    if version != SNAPSHOT_SCHEMA_VERSION {
+        return Err(ServerCodecError::UnsupportedSnapshotVersion {
+            version,
+            supported: SNAPSHOT_SCHEMA_VERSION,
+        });
+    }
     let tick = decoder.take_u64("tick")?;
     let player_count = decoder.take_u32("player_count")?;
     let npc_count = decoder.take_u32("npc_count")?;
@@ -1170,6 +1207,7 @@ fn decode_snapshot(decoder: &mut ServerDecoder<'_>) -> Result<WorldSnapshot, Ser
         npcs.push(decode_npc(decoder)?);
     }
     Ok(WorldSnapshot {
+        version,
         tick,
         player_count,
         npc_count,
@@ -1523,6 +1561,10 @@ pub enum ServerCodecError {
         field: &'static str,
     },
     UnknownOpcode(u8),
+    UnsupportedSnapshotVersion {
+        version: u16,
+        supported: u16,
+    },
     InvalidEnum {
         field: &'static str,
         value: u8,
@@ -1555,6 +1597,10 @@ impl fmt::Display for ServerCodecError {
             Self::Empty => formatter.write_str("server payload is empty"),
             Self::Truncated { field } => write!(formatter, "server field '{field}' is truncated"),
             Self::UnknownOpcode(opcode) => write!(formatter, "unknown server opcode {opcode}"),
+            Self::UnsupportedSnapshotVersion { version, supported } => write!(
+                formatter,
+                "snapshot schema version {version} is unsupported; expected {supported}"
+            ),
             Self::InvalidEnum { field, value } => {
                 write!(
                     formatter,
@@ -1958,6 +2004,7 @@ mod tests {
     #[test]
     fn typed_server_snapshot_round_trips_nested_player_state() {
         let message = ServerMessage::Snapshot(WorldSnapshot {
+            version: SNAPSHOT_SCHEMA_VERSION,
             tick: 42,
             player_count: 1,
             npc_count: 1,
@@ -1972,6 +2019,7 @@ mod tests {
                 max_health: 100,
                 target_id: Some(9),
                 gold: 12,
+                inventory_capacity: 16,
                 inventory: vec![ItemStackState {
                     item_id: 2,
                     quantity: 4,
@@ -2003,6 +2051,31 @@ mod tests {
         assert_eq!(
             decode_one(&envelope).unwrap().envelope.kind,
             MessageKind::Event
+        );
+    }
+
+    #[test]
+    fn typed_snapshot_schema_rejects_an_unsupported_version() {
+        let snapshot = WorldSnapshot {
+            version: SNAPSHOT_SCHEMA_VERSION,
+            tick: 1,
+            player_count: 0,
+            npc_count: 0,
+            enemy_count: 0,
+            vendor_count: 0,
+            players: Vec::new(),
+            npcs: Vec::new(),
+        };
+        let mut payload = ServerMessage::Snapshot(snapshot)
+            .encode_payload()
+            .expect("valid snapshot should encode");
+        payload[1..3].copy_from_slice(&1_u16.to_be_bytes());
+        assert_eq!(
+            ServerMessage::decode_payload(&payload),
+            Err(ServerCodecError::UnsupportedSnapshotVersion {
+                version: 1,
+                supported: SNAPSHOT_SCHEMA_VERSION,
+            })
         );
     }
 
@@ -2079,6 +2152,7 @@ mod tests {
         );
 
         let snapshot = WorldSnapshot {
+            version: SNAPSHOT_SCHEMA_VERSION,
             tick: 1,
             player_count: 0,
             npc_count: 0,

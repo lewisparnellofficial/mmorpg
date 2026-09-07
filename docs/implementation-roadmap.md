@@ -148,8 +148,9 @@ The first foundations from this batch now exist:
 - `mmorpg-content-check` validates the starter catalog and prints a compact
   content summary for local tooling and CI smoke checks.
 - Client and editor research records the provisional technology candidates;
-  these recommendations still require local windowing, rendering, tablet, and
-  scripting spikes before they become accepted decisions.
+  local windowing/rendering and real-device validation remain open, while the
+  tablet normalization and Luau sandbox foundations now have standalone
+  prototypes and focused tests.
 
 The window, terrain-core, and first interactive client reliability spikes now
 run locally. The protocol-to-presentation adapter is exercised by the client,
@@ -158,10 +159,14 @@ snapshot now carries inventory/quest details, while the versioned wire
 snapshot carries the same state through typed bounded fields. The compact HUD
 now exposes inventory,
 vendor stock, quest offers, quest progress, and server notifications, with
-keyboard intents for the first vendor and quest interactions. The remaining
-technology work in this batch is to connect native tablet events, version the
-snapshot contract beyond the temporary fixed-capacity bootstrap, and validate
-the protected UI scripting boundary with an embedded runtime.
+keyboard intents for the first vendor and quest interactions. The tablet
+bridge now normalizes native-shaped events into bounded editor strokes, and the
+Luau sandbox now exercises the protected UI scripting boundary with an
+embedded runtime. The snapshot contract has an explicit schema version and
+per-player inventory capacity in both the temporary line and typed wire paths.
+The remaining work is to connect the tablet bridge to a real Qt/SDL shell,
+measure hardware/render-loop behavior, and resolve the production addon
+packaging and isolation policy.
 
 The timing, AI, wire-envelope, and development-transport additions are still
 prototypes. They do not yet provide async backpressure, production

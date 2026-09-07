@@ -12,6 +12,10 @@ The crate currently provides:
 - `NormalizedTabletSample`, which normalizes pressure and rotation to
   `0.0..=1.0`, tilt axes to `-1.0..=1.0`, and carries eraser and proximity
   state.
+- `NativeTabletEvent` and `TabletEventBridge`, which convert Qt-shaped native
+  lifecycle/axis events into a bounded stroke stream. The bridge validates
+  native ranges, wraps rotation, limits points per stroke, and cancels an
+  active stroke when proximity is lost.
 - `TabletPoint`, pairing a document-space coordinate with a normalized sample.
 - `HeightMap`, a row-major grid of finite `f32` values with a configured
   inclusive minimum and maximum. Every constructor and mutation clamps sample
@@ -22,10 +26,12 @@ The crate currently provides:
 - Deterministic text save/load through `TerrainDocument::to_source` and
   `TerrainDocument::from_source`.
 
-A future Qt or SDL shell can convert native tablet events into
-`NormalizedTabletSample` and feed `TabletPoint` values into
-`TerrainEditor::apply_stroke`. GUI and device integration remain outside this
-crate by design.
+The bridge is deliberately GUI-free: a future Qt or SDL shell can construct a
+`NativeTabletEvent` from its native callback, feed it to `TabletEventBridge`,
+and submit the completed `TabletPoint` list to
+`TerrainEditor::apply_stroke`. Actual OS event capture and a real-tablet
+Wayland/X11 diagnostic remain outside this crate and still require the native
+desktop shell spike.
 
 ## Brush behavior
 

@@ -36,9 +36,9 @@ The decoder is exposed as `decode_server_line` and
 required key/value fields. It currently decodes:
 
 ```text
-TEMP_SNAPSHOT_BEGIN version=1
+TEMP_SNAPSHOT_BEGIN version=2
 TEMP_SNAPSHOT WORLD ...
-TEMP_SNAPSHOT PLAYER ...
+TEMP_SNAPSHOT PLAYER ... capacity=...
 TEMP_SNAPSHOT NPC ...
 TEMP_SNAPSHOT ITEM ...
 TEMP_SNAPSHOT QUEST ...
@@ -98,7 +98,7 @@ for line in lines_from_the_transport {
 assembler.finish()?; // reports an incomplete frame at end-of-stream
 ```
 
-Only a valid sequence beginning with `TEMP_SNAPSHOT_BEGIN version=1` and
+Only a valid sequence beginning with `TEMP_SNAPSHOT_BEGIN version=2` and
 ending with `TEMP_SNAPSHOT_END` produces a `Snapshot`. The assembler buffers
 the world, player, NPC, item, and quest records and does not publish any of
 them individually. Item and quest records must refer to a player present in
@@ -107,6 +107,11 @@ record entries, missing world data, unsupported versions, malformed records,
 inconsistent world counts, and truncated frames. A failed frame is discarded,
 so a caller can retain its last completed snapshot and start assembling the
 next one.
+
+Version 2 requires every `TEMP_SNAPSHOT PLAYER` record to include its
+authoritative `capacity` value. The decoded `PlayerState` exposes this as
+`inventory_capacity`; a missing value is rejected rather than silently
+replacing it with the starter capacity.
 
 Player and NPC entity IDs must be unique across the whole frame. The default
 limit is `MAX_SNAPSHOT_RECORDS` (4,096 records total);

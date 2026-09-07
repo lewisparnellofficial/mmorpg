@@ -50,12 +50,14 @@ contract until a stable external compatibility document is accepted.
 
 `ServerMessage` encodes welcome, development-authentication,
 character-list/selection, connect/error responses, every current authoritative
-gameplay event, and a bounded bootstrap `WorldSnapshot`. Player
-state includes inventory stacks and quest progress; NPCs, vendor listings, and
-quest offers use explicit bounded collections. IDs, enum values, strings,
-floats, collection counts, and trailing bytes are validated during both encode
-and decode. `WireConnection::read_server_message` consumes these messages
-without interpreting diagnostic text.
+gameplay event, and a bounded bootstrap `WorldSnapshot`. The snapshot has its
+own schema version (`SNAPSHOT_SCHEMA_VERSION`, currently 2) inside the
+protocol envelope. Player state includes an explicit inventory capacity,
+inventory stacks, and quest progress; NPCs, vendor listings, and quest offers
+use explicit bounded collections. IDs, enum values, strings, floats,
+collection counts, schema versions, and trailing bytes are validated during
+both encode and decode. `WireConnection::read_server_message` consumes these
+messages without interpreting diagnostic text.
 
 The server currently places all server messages in the envelope's `Event`
 message kind. This keeps the envelope small while the payload discriminator

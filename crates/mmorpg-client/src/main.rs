@@ -1279,14 +1279,14 @@ mod tests {
     fn projects_player_and_npc_state_only_from_server_lines() {
         let mut state = ClientState::new(DEFAULT_SERVER_ADDRESS.to_owned());
         apply_server_line(&mut state, "CONNECTED player_id=5 role=damage");
-        apply_server_line(&mut state, "TEMP_SNAPSHOT_BEGIN version=1");
+        apply_server_line(&mut state, "TEMP_SNAPSHOT_BEGIN version=2");
         apply_server_line(
             &mut state,
             "TEMP_SNAPSHOT WORLD tick=10 players=1 npcs=1 enemies=1 vendors=0",
         );
         apply_server_line(
             &mut state,
-            "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=4.0,-2.0 health=90 max_health=100 gold=20 target=2",
+            "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=4.0,-2.0 health=90 max_health=100 gold=20 capacity=16 target=2",
         );
         apply_server_line(
             &mut state,
@@ -1319,7 +1319,7 @@ mod tests {
     fn tab_targeting_cycles_server_known_entities() {
         let mut state = ClientState::new(DEFAULT_SERVER_ADDRESS.to_owned());
         for line in [
-            "TEMP_SNAPSHOT_BEGIN version=1",
+            "TEMP_SNAPSHOT_BEGIN version=2",
             "TEMP_SNAPSHOT WORLD tick=1 players=0 npcs=2 enemies=2 vendors=0",
             "TEMP_SNAPSHOT NPC id=4 template_id=2 name=Wolf_4 kind=enemy position=0.0,0.0 health=100 max_health=100",
             "TEMP_SNAPSHOT NPC id=2 template_id=2 name=Wolf_2 kind=enemy position=0.0,0.0 health=100 max_health=100",
@@ -1623,14 +1623,14 @@ mod tests {
     fn projects_the_machine_snapshot_records_used_by_the_graphical_client() {
         let mut state = ClientState::new(DEFAULT_SERVER_ADDRESS.to_owned());
         apply_server_line(&mut state, "CONNECTED player_id=5 role=damage");
-        apply_server_line(&mut state, "TEMP_SNAPSHOT_BEGIN version=1");
+        apply_server_line(&mut state, "TEMP_SNAPSHOT_BEGIN version=2");
         apply_server_line(
             &mut state,
             "TEMP_SNAPSHOT WORLD tick=17 players=1 npcs=2 enemies=1 vendors=1",
         );
         apply_server_line(
             &mut state,
-            "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=3.0,-4.0 health=88 max_health=100 gold=20 target=2",
+            "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=3.0,-4.0 health=88 max_health=100 gold=20 capacity=16 target=2",
         );
         apply_server_line(&mut state, "TEMP_SNAPSHOT ITEM player=5 item=2 quantity=2");
         apply_server_line(

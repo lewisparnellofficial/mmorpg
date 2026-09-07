@@ -22,7 +22,9 @@ use mmorpg_wire::{
     ServerMessage, WorldSnapshot,
 };
 
-const TEMPORARY_BOOTSTRAP_INVENTORY_CAPACITY: usize = 16;
+/// Capacity used only for event projections whose payload is not a complete
+/// player snapshot. Complete snapshots carry their own explicit capacity.
+const EVENT_INVENTORY_CAPACITY_FALLBACK: usize = 16;
 
 /// Failure to translate an otherwise syntactically valid protocol value into
 /// content-backed presentation state.
@@ -32,6 +34,7 @@ pub enum AdapterError {
     NpcTemplateOutOfRange { npc_id: EntityId, template_id: u64 },
     UnknownItem { item_id: ItemId },
     UnknownQuest { quest_id: QuestId },
+    UnsupportedSnapshotVersion { version: u32, supported: u32 },
     UnknownPlayer { player_id: EntityId },
     InvalidInventory { player_id: EntityId },
     InvalidQuestState { player_id: EntityId },
@@ -62,6 +65,10 @@ impl fmt::Display for AdapterError {
                     "quest {quest_id} is not present in the content catalog"
                 )
             }
+            Self::UnsupportedSnapshotVersion { version, supported } => write!(
+                formatter,
+                "snapshot schema version {version} is unsupported; expected {supported}"
+            ),
             Self::UnknownPlayer { player_id } => {
                 write!(
                     formatter,
@@ -92,11 +99,17 @@ impl std::error::Error for AdapterError {}
 /// successfully. A bad content reference therefore cannot leave a partially
 /// replaced presentation world.
 pub fn apply_snapshot(model: &mut ClientWorld, snapshot: &Snapshot) -> Result<(), AdapterError> {
+    if snapshot.version != mmorpg_client_protocol::TEMP_SNAPSHOT_VERSION {
+        return Err(AdapterError::UnsupportedSnapshotVersion {
+            version: snapshot.version,
+            supported: mmorpg_client_protocol::TEMP_SNAPSHOT_VERSION,
+        });
+    }
     let players = snapshot
         .players
         .values()
         .map(protocol_player_snapshot)
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     let npcs = snapshot
         .npcs
         .values()
@@ -111,6 +124,13 @@ pub fn apply_snapshot(model: &mut ClientWorld, snapshot: &Snapshot) -> Result<()
                     player_id: *player_id,
                 });
             }
+            let capacity = snapshot
+                .players
+                .get(player_id)
+                .and_then(|player| player.inventory_capacity)
+                .ok_or(AdapterError::InvalidInventory {
+                    player_id: *player_id,
+                })?;
             let stacks = stacks
                 .iter()
                 .map(|stack| {
@@ -122,7 +142,7 @@ pub fn apply_snapshot(model: &mut ClientWorld, snapshot: &Snapshot) -> Result<()
                     protocol_item_stack(stack)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            if stacks.len() > TEMPORARY_BOOTSTRAP_INVENTORY_CAPACITY {
+            if stacks.len() > capacity {
                 return Err(AdapterError::InvalidInventory {
                     player_id: *player_id,
                 });
@@ -184,7 +204,11 @@ pub fn apply_snapshot(model: &mut ClientWorld, snapshot: &Snapshot) -> Result<()
     for (player_id, stacks) in inventories {
         if !projected.replace_inventory_snapshot(
             player_id,
-            TEMPORARY_BOOTSTRAP_INVENTORY_CAPACITY,
+            snapshot
+                .players
+                .get(&player_id)
+                .and_then(|player| player.inventory_capacity)
+                .ok_or(AdapterError::InvalidInventory { player_id })?,
             stacks,
         ) {
             return Err(AdapterError::InvalidInventory { player_id });
@@ -236,8 +260,14 @@ fn apply_wire_snapshot(
     model: &mut ClientWorld,
     snapshot: &WorldSnapshot,
 ) -> Result<(), AdapterError> {
+    if snapshot.version != mmorpg_wire::SNAPSHOT_SCHEMA_VERSION {
+        return Err(AdapterError::UnsupportedSnapshotVersion {
+            version: u32::from(snapshot.version),
+            supported: u32::from(mmorpg_wire::SNAPSHOT_SCHEMA_VERSION),
+        });
+    }
     let protocol = mmorpg_client_protocol::Snapshot {
-        version: 1,
+        version: u32::from(snapshot.version),
         world: mmorpg_client_protocol::WorldState {
             tick: snapshot.tick,
             players: u64::from(snapshot.player_count),
@@ -310,6 +340,7 @@ fn wire_player(player: &WirePlayerState) -> mmorpg_client_protocol::PlayerState 
         health: player.health,
         max_health: player.max_health,
         gold: player.gold,
+        inventory_capacity: Some(player.inventory_capacity as usize),
         target: player.target_id.map(EntityId),
     }
 }
@@ -357,7 +388,7 @@ fn wire_event(event: &WireServerEvent) -> Result<Event, AdapterError> {
                 max_health: player.max_health,
                 target: player.target_id.map(CoreEntityId),
                 gold: player.gold,
-                inventory: Inventory::new(TEMPORARY_BOOTSTRAP_INVENTORY_CAPACITY),
+                inventory: Inventory::new(EVENT_INVENTORY_CAPACITY_FALLBACK),
                 quests: Vec::new(),
             },
         },
@@ -538,8 +569,15 @@ fn wire_quest_offer(offer: &mmorpg_wire::QuestOfferState) -> Result<QuestOffer, 
     })
 }
 
-fn protocol_player_snapshot(player: &mmorpg_client_protocol::PlayerState) -> PlayerSnapshot {
-    PlayerSnapshot {
+fn protocol_player_snapshot(
+    player: &mmorpg_client_protocol::PlayerState,
+) -> Result<PlayerSnapshot, AdapterError> {
+    let Some(capacity) = player.inventory_capacity else {
+        return Err(AdapterError::InvalidInventory {
+            player_id: player.id,
+        });
+    };
+    Ok(PlayerSnapshot {
         id: core_entity_id(player.id),
         name: player.name.clone(),
         role: player.role,
@@ -548,9 +586,9 @@ fn protocol_player_snapshot(player: &mmorpg_client_protocol::PlayerState) -> Pla
         max_health: player.max_health,
         target: player.target.map(core_entity_id),
         gold: player.gold,
-        inventory: Inventory::new(TEMPORARY_BOOTSTRAP_INVENTORY_CAPACITY),
+        inventory: Inventory::new(capacity),
         quests: Vec::new(),
-    }
+    })
 }
 
 fn protocol_npc(npc: &NpcState) -> Result<Npc, AdapterError> {
@@ -617,7 +655,7 @@ fn core_event(event: &ServerEvent) -> Result<Event, AdapterError> {
                 max_health: 100,
                 target: None,
                 gold: 20,
-                inventory: Inventory::new(TEMPORARY_BOOTSTRAP_INVENTORY_CAPACITY),
+                inventory: Inventory::new(EVENT_INVENTORY_CAPACITY_FALLBACK),
                 quests: Vec::new(),
             },
         },
@@ -803,7 +841,7 @@ mod tests {
 
     fn snapshot() -> Snapshot {
         Snapshot {
-            version: 1,
+            version: mmorpg_client_protocol::TEMP_SNAPSHOT_VERSION,
             world: WorldState {
                 tick: 7,
                 players: 1,
@@ -821,6 +859,7 @@ mod tests {
                     health: 88,
                     max_health: 100,
                     gold: 20,
+                    inventory_capacity: Some(24),
                     target: Some(EntityId(2)),
                 },
             )]
@@ -886,7 +925,7 @@ mod tests {
             NpcTemplateId(2)
         );
         assert_eq!(model.npc(EntityId(2)).unwrap().name, "Field Wolf");
-        assert_eq!(model.player(EntityId(5)).unwrap().inventory.capacity(), 16);
+        assert_eq!(model.player(EntityId(5)).unwrap().inventory.capacity(), 24);
     }
 
     #[test]
@@ -956,6 +995,7 @@ mod tests {
     fn applies_typed_wire_snapshot_atomically_with_inventory_and_quests() {
         let mut model = ClientWorld::default();
         let message = ServerMessage::Snapshot(WorldSnapshot {
+            version: mmorpg_wire::SNAPSHOT_SCHEMA_VERSION,
             tick: 12,
             player_count: 1,
             npc_count: 1,
@@ -970,6 +1010,7 @@ mod tests {
                 max_health: 100,
                 target_id: Some(2),
                 gold: 20,
+                inventory_capacity: 24,
                 inventory: vec![mmorpg_wire::ItemStackState {
                     item_id: 2,
                     quantity: 2,
@@ -996,6 +1037,7 @@ mod tests {
 
         assert_eq!(model.world_tick(), Some(12));
         assert_eq!(model.player(EntityId(5)).unwrap().gold, 20);
+        assert_eq!(model.player(EntityId(5)).unwrap().inventory.capacity(), 24);
         assert_eq!(
             model
                 .player(EntityId(5))
@@ -1034,5 +1076,40 @@ mod tests {
             model.vendor_listings(EntityId(1)).unwrap()[0].remaining_quantity,
             99
         );
+    }
+
+    #[test]
+    fn rejects_a_snapshot_without_explicit_inventory_capacity_atomically() {
+        let mut model = ClientWorld::default();
+        let mut snapshot = snapshot();
+        snapshot
+            .players
+            .get_mut(&EntityId(5))
+            .expect("fixture player")
+            .inventory_capacity = None;
+
+        assert_eq!(
+            apply_snapshot(&mut model, &snapshot),
+            Err(AdapterError::InvalidInventory {
+                player_id: EntityId(5)
+            })
+        );
+        assert_eq!(model, ClientWorld::default());
+    }
+
+    #[test]
+    fn rejects_an_unsupported_snapshot_version_atomically() {
+        let mut model = ClientWorld::default();
+        let mut snapshot = snapshot();
+        snapshot.version = 1;
+
+        assert_eq!(
+            apply_snapshot(&mut model, &snapshot),
+            Err(AdapterError::UnsupportedSnapshotVersion {
+                version: 1,
+                supported: mmorpg_client_protocol::TEMP_SNAPSHOT_VERSION,
+            })
+        );
+        assert_eq!(model, ClientWorld::default());
     }
 }

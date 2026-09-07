@@ -900,6 +900,7 @@ fn wire_player(player: &mmorpg_core::PlayerSnapshot) -> PlayerState {
         max_health: player.max_health,
         target_id: player.target.map(|target| target.0),
         gold: player.gold,
+        inventory_capacity: player.inventory.capacity() as u32,
         inventory: player
             .inventory
             .stacks()
@@ -934,6 +935,7 @@ fn wire_live_player(player: &mmorpg_core::Player) -> PlayerState {
         max_health: player.max_health,
         target_id: player.target.map(|target| target.0),
         gold: player.gold,
+        inventory_capacity: player.inventory.capacity() as u32,
         inventory: player
             .inventory
             .stacks()
@@ -1133,6 +1135,7 @@ fn wire_event(event: &Event) -> Option<ServerEvent> {
 fn wire_snapshot(world: &World) -> WorldSnapshot {
     let summary = world.summary();
     WorldSnapshot {
+        version: mmorpg_wire::SNAPSHOT_SCHEMA_VERSION,
         tick: summary.tick,
         player_count: summary.player_count as u32,
         npc_count: summary.npc_count as u32,
@@ -1302,7 +1305,7 @@ fn format_event(event: &Event) -> String {
 /// record shape. Positions use Rust's shortest round-trippable float format.
 fn format_machine_snapshot(world: &World) -> Vec<String> {
     let summary = world.summary();
-    let mut lines = vec!["TEMP_SNAPSHOT_BEGIN version=1".to_owned()];
+    let mut lines = vec!["TEMP_SNAPSHOT_BEGIN version=2".to_owned()];
     lines.push(format!(
         "TEMP_SNAPSHOT WORLD tick={} players={} npcs={} enemies={} vendors={}",
         summary.tick,
@@ -1313,7 +1316,7 @@ fn format_machine_snapshot(world: &World) -> Vec<String> {
     ));
     for player in world.players() {
         lines.push(format!(
-            "TEMP_SNAPSHOT PLAYER id={} name={} role={} position={:?},{:?} health={} max_health={} gold={} target={}",
+            "TEMP_SNAPSHOT PLAYER id={} name={} role={} position={:?},{:?} health={} max_health={} gold={} capacity={} target={}",
             player.id,
             encode_snapshot_text(&player.name),
             player.role.as_str(),
@@ -1322,6 +1325,7 @@ fn format_machine_snapshot(world: &World) -> Vec<String> {
             player.health,
             player.max_health,
             player.gold,
+            player.inventory.capacity(),
             player
                 .target
                 .map_or_else(|| "none".to_owned(), |target| target.to_string())
@@ -1824,9 +1828,9 @@ mod tests {
         assert_eq!(
             format_machine_snapshot(&world),
             vec![
-                "TEMP_SNAPSHOT_BEGIN version=1",
+                "TEMP_SNAPSHOT_BEGIN version=2",
                 "TEMP_SNAPSHOT WORLD tick=1 players=1 npcs=4 enemies=3 vendors=1",
-                "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=0.0,0.0 health=100 max_health=100 gold=20 target=none",
+                "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=0.0,0.0 health=100 max_health=100 gold=20 capacity=16 target=none",
                 "TEMP_SNAPSHOT NPC id=1 template_id=1 name=Mira%20the%20Merchant kind=vendor position=0.0,0.0 health=1 max_health=1",
                 "TEMP_SNAPSHOT NPC id=2 template_id=2 name=Field%20Wolf kind=enemy position=24.0,0.0 health=100 max_health=100",
                 "TEMP_SNAPSHOT NPC id=3 template_id=2 name=Field%20Wolf kind=enemy position=30.0,6.0 health=100 max_health=100",

@@ -105,6 +105,7 @@ authoritative notifications. `V` lists vendor stock, `B` buys one unit of the
 first displayed listing, `O` requests quest offers, `E` accepts the first
 displayed offer, `R` attempts to turn in the first displayed quest, and `L`
 submits a loot request for the selected target. These keys only submit server
-intents; they do not mutate gameplay state locally. Inventory capacity remains
-a temporary fixed value until the protocol is versioned. Pen-tablet input and
-the separate content editor remain independent technology spikes.
+intents; they do not mutate gameplay state locally. Snapshot schema version 2
+supplies each player's inventory capacity explicitly; the client no longer
+assumes a fixed starter value when applying a complete snapshot. Pen-tablet
+input and the separate content editor remain independent technology spikes.

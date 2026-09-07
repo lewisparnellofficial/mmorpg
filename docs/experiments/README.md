@@ -10,6 +10,7 @@ Current experiment records:
 - [EXP-002: Replication workload model](EXP-002-replication-workload.md)
 - [EXP-003: Transparent overworld layer manager](EXP-003-layer-manager.md)
 - [EXP-004: Typed wire gameplay smoke test](EXP-004-wire-gameplay-smoke.md)
+- [EXP-006: Luau UI scripting sandbox](EXP-006-ui-scripting-sandbox.md)
 
 ## Required experiment categories
 

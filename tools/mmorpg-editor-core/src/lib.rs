@@ -82,6 +82,302 @@ impl TabletPoint {
     }
 }
 
+/// Native tablet phases that a GUI shell must translate into the editor
+/// boundary. The enum intentionally matches the lifecycle rather than a
+/// particular toolkit's event type, so a Qt, SDL, or future Linux adapter
+/// can feed the same stroke state machine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeTabletPhase {
+    ProximityEnter,
+    Press,
+    Move,
+    Release,
+    Cancel,
+    ProximityLeave,
+}
+
+/// Raw axes as reported by a native tablet event.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeTabletEvent {
+    pub phase: NativeTabletPhase,
+    pub x: f32,
+    pub y: f32,
+    pub pressure: f32,
+    pub tilt_x_degrees: f32,
+    pub tilt_y_degrees: f32,
+    pub rotation_degrees: f32,
+    pub eraser: bool,
+    pressure_min: f32,
+    pressure_max: f32,
+    tilt_limit_degrees: f32,
+    rotation_period_degrees: f32,
+}
+
+impl NativeTabletEvent {
+    /// Constructs an event using the ranges supplied by the native API.
+    /// Pressure and rotation are normalized from their declared ranges;
+    /// tilt is normalized symmetrically around zero.
+    pub fn from_axes(
+        phase: NativeTabletPhase,
+        x: f32,
+        y: f32,
+        pressure: f32,
+        pressure_min: f32,
+        pressure_max: f32,
+        tilt_x_degrees: f32,
+        tilt_y_degrees: f32,
+        tilt_limit_degrees: f32,
+        rotation_degrees: f32,
+        rotation_period_degrees: f32,
+        eraser: bool,
+    ) -> Result<Self, EditorError> {
+        if !pressure_min.is_finite() || !pressure_max.is_finite() || pressure_min >= pressure_max {
+            return Err(EditorError::InvalidTabletRange { field: "pressure" });
+        }
+        if !tilt_limit_degrees.is_finite() || tilt_limit_degrees <= 0.0 {
+            return Err(EditorError::InvalidTabletRange { field: "tilt" });
+        }
+        if !rotation_period_degrees.is_finite() || rotation_period_degrees <= 0.0 {
+            return Err(EditorError::InvalidTabletRange { field: "rotation" });
+        }
+        Ok(Self {
+            phase,
+            x,
+            y,
+            pressure,
+            tilt_x_degrees,
+            tilt_y_degrees,
+            rotation_degrees,
+            eraser,
+            pressure_min,
+            pressure_max,
+            tilt_limit_degrees,
+            rotation_period_degrees,
+        })
+    }
+
+    /// Qt's documented tablet axes use normalized pressure, +/-60-degree
+    /// tilt, and a rotation measured in degrees around a 360-degree period.
+    /// A Qt `QTabletEvent` callback can pass its values directly here.
+    pub fn from_qt(
+        phase: NativeTabletPhase,
+        x: f32,
+        y: f32,
+        pressure: f32,
+        tilt_x_degrees: f32,
+        tilt_y_degrees: f32,
+        rotation_degrees: f32,
+        eraser: bool,
+    ) -> Result<Self, EditorError> {
+        Self::from_axes(
+            phase,
+            x,
+            y,
+            pressure,
+            0.0,
+            1.0,
+            tilt_x_degrees,
+            tilt_y_degrees,
+            60.0,
+            rotation_degrees,
+            360.0,
+            eraser,
+        )
+    }
+
+    /// Converts this native event to the device-neutral project sample.
+    pub fn normalized_sample(self, proximity: bool) -> NormalizedTabletSample {
+        let pressure = if self.pressure.is_finite() {
+            (self.pressure - self.pressure_min) / (self.pressure_max - self.pressure_min)
+        } else {
+            0.0
+        };
+        let tilt_x = if self.tilt_x_degrees.is_finite() {
+            self.tilt_x_degrees / self.tilt_limit_degrees
+        } else {
+            0.0
+        };
+        let tilt_y = if self.tilt_y_degrees.is_finite() {
+            self.tilt_y_degrees / self.tilt_limit_degrees
+        } else {
+            0.0
+        };
+        let rotation = if self.rotation_degrees.is_finite() {
+            self.rotation_degrees
+                .rem_euclid(self.rotation_period_degrees)
+                / self.rotation_period_degrees
+        } else {
+            0.0
+        };
+        NormalizedTabletSample::new(pressure, tilt_x, tilt_y, rotation, self.eraser, proximity)
+    }
+}
+
+/// Result emitted by [`TabletEventBridge`] after consuming one native event.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TabletBridgeOutput {
+    Ignored,
+    ProximityEntered,
+    ProximityLeft,
+    StrokeStarted(TabletPoint),
+    StrokePoint(TabletPoint),
+    StrokeFinished(Vec<TabletPoint>),
+    StrokeCancelled,
+}
+
+/// Errors produced while converting and buffering native tablet events.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TabletBridgeError {
+    InvalidEventCoordinate,
+    StrokeAlreadyActive,
+    NoActiveStroke,
+    StrokeTooLong { maximum: usize },
+}
+
+impl fmt::Display for TabletBridgeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidEventCoordinate => {
+                formatter.write_str("tablet event coordinates must be finite")
+            }
+            Self::StrokeAlreadyActive => formatter.write_str("tablet stroke is already active"),
+            Self::NoActiveStroke => formatter.write_str("tablet stroke is not active"),
+            Self::StrokeTooLong { maximum } => {
+                write!(formatter, "tablet stroke exceeds the {maximum}-point limit")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TabletBridgeError {}
+
+/// Maximum native points retained for one in-progress stroke in this spike.
+pub const MAX_STROKE_POINTS: usize = 8192;
+
+/// Converts native tablet lifecycle events into bounded, device-neutral
+/// points. It owns no GUI handles and does not apply gameplay or terrain
+/// mutations; the caller submits a completed point list to
+/// [`TerrainEditor::apply_stroke`].
+#[derive(Clone, Debug)]
+pub struct TabletEventBridge {
+    in_proximity: bool,
+    points: Vec<TabletPoint>,
+    maximum_points: usize,
+}
+
+impl Default for TabletEventBridge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TabletEventBridge {
+    pub fn new() -> Self {
+        Self {
+            in_proximity: false,
+            points: Vec::new(),
+            maximum_points: MAX_STROKE_POINTS,
+        }
+    }
+
+    pub fn with_maximum_points(maximum_points: usize) -> Result<Self, TabletBridgeError> {
+        if maximum_points == 0 || maximum_points > MAX_STROKE_POINTS {
+            return Err(TabletBridgeError::StrokeTooLong {
+                maximum: MAX_STROKE_POINTS,
+            });
+        }
+        Ok(Self {
+            in_proximity: false,
+            points: Vec::new(),
+            maximum_points,
+        })
+    }
+
+    pub fn is_in_proximity(&self) -> bool {
+        self.in_proximity
+    }
+
+    pub fn is_stroke_active(&self) -> bool {
+        !self.points.is_empty()
+    }
+
+    /// Feeds one native event into the bounded stroke lifecycle.
+    pub fn push(
+        &mut self,
+        event: NativeTabletEvent,
+    ) -> Result<TabletBridgeOutput, TabletBridgeError> {
+        if !event.x.is_finite() || !event.y.is_finite() {
+            return Err(TabletBridgeError::InvalidEventCoordinate);
+        }
+        match event.phase {
+            NativeTabletPhase::ProximityEnter => {
+                self.in_proximity = true;
+                Ok(TabletBridgeOutput::ProximityEntered)
+            }
+            NativeTabletPhase::ProximityLeave => {
+                self.in_proximity = false;
+                if self.points.is_empty() {
+                    Ok(TabletBridgeOutput::ProximityLeft)
+                } else {
+                    self.points.clear();
+                    Ok(TabletBridgeOutput::StrokeCancelled)
+                }
+            }
+            NativeTabletPhase::Press => {
+                if !self.points.is_empty() {
+                    return Err(TabletBridgeError::StrokeAlreadyActive);
+                }
+                self.in_proximity = true;
+                let point = self.point(event);
+                self.points.push(point);
+                Ok(TabletBridgeOutput::StrokeStarted(point))
+            }
+            NativeTabletPhase::Move => {
+                if self.points.is_empty() {
+                    return Ok(TabletBridgeOutput::Ignored);
+                }
+                self.push_point(event)
+            }
+            NativeTabletPhase::Release => {
+                if self.points.is_empty() {
+                    return Err(TabletBridgeError::NoActiveStroke);
+                }
+                self.push_point(event)?;
+                self.in_proximity = true;
+                Ok(TabletBridgeOutput::StrokeFinished(std::mem::take(
+                    &mut self.points,
+                )))
+            }
+            NativeTabletPhase::Cancel => {
+                if self.points.is_empty() {
+                    return Ok(TabletBridgeOutput::Ignored);
+                }
+                self.points.clear();
+                Ok(TabletBridgeOutput::StrokeCancelled)
+            }
+        }
+    }
+
+    fn point(&self, event: NativeTabletEvent) -> TabletPoint {
+        TabletPoint::new(event.x, event.y, event.normalized_sample(true))
+    }
+
+    fn push_point(
+        &mut self,
+        event: NativeTabletEvent,
+    ) -> Result<TabletBridgeOutput, TabletBridgeError> {
+        if self.points.len() >= self.maximum_points {
+            self.points.clear();
+            return Err(TabletBridgeError::StrokeTooLong {
+                maximum: self.maximum_points,
+            });
+        }
+        let point = self.point(event);
+        self.points.push(point);
+        Ok(TabletBridgeOutput::StrokePoint(point))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditorError {
     InvalidDimensions { width: usize, height: usize },
@@ -90,6 +386,7 @@ pub enum EditorError {
     SampleCountMismatch { expected: usize, actual: usize },
     InvalidBrushRadius(f32),
     InvalidBrushStrength(f32),
+    InvalidTabletRange { field: &'static str },
     InvalidSource(&'static str),
     InvalidSourceValue(String),
 }
@@ -126,6 +423,9 @@ impl fmt::Display for EditorError {
                     formatter,
                     "brush strength must be finite and in 0..=1, got {strength}"
                 )
+            }
+            Self::InvalidTabletRange { field } => {
+                write!(formatter, "tablet {field} range is invalid")
             }
             Self::InvalidSource(reason) => write!(formatter, "invalid terrain source: {reason}"),
             Self::InvalidSourceValue(value) => {
@@ -612,6 +912,11 @@ mod tests {
         NormalizedTabletSample::new(pressure, 0.0, 0.0, 0.0, false, true)
     }
 
+    fn qt_event(phase: NativeTabletPhase, x: f32, y: f32, pressure: f32) -> NativeTabletEvent {
+        NativeTabletEvent::from_qt(phase, x, y, pressure, 30.0, -15.0, 90.0, false)
+            .expect("valid Qt-shaped tablet event")
+    }
+
     fn point(x: f32, y: f32, pressure: f32) -> TabletPoint {
         TabletPoint::new(x, y, sample(pressure))
     }
@@ -706,5 +1011,106 @@ mod tests {
         editor.apply_stroke(&[point(1.0, 0.0, 1.0)], brush).unwrap();
         assert!(editor.document().heightmap().sample(1, 0).unwrap() < 1.0);
         assert!(editor.document().heightmap().sample(0, 0).unwrap() > 0.0);
+    }
+
+    #[test]
+    fn qt_axes_normalize_into_the_device_neutral_sample() {
+        let event = qt_event(NativeTabletPhase::Move, 1.0, 2.0, 0.75);
+        let sample = event.normalized_sample(true);
+        assert_eq!(sample.pressure, 0.75);
+        assert_eq!(sample.tilt_x, 0.5);
+        assert_eq!(sample.tilt_y, -0.25);
+        assert_eq!(sample.rotation, 0.25);
+        assert!(sample.proximity);
+
+        let wrapped = qt_event(NativeTabletPhase::Move, 1.0, 2.0, 0.75);
+        let wrapped = NativeTabletEvent {
+            rotation_degrees: 450.0,
+            ..wrapped
+        };
+        assert_eq!(wrapped.normalized_sample(true).rotation, 0.25);
+    }
+
+    #[test]
+    fn tablet_bridge_preserves_a_qt_stroke_lifecycle_and_points() {
+        let mut bridge = TabletEventBridge::new();
+        assert_eq!(
+            bridge.push(qt_event(NativeTabletPhase::ProximityEnter, 0.0, 0.0, 0.0)),
+            Ok(TabletBridgeOutput::ProximityEntered)
+        );
+        assert_eq!(
+            bridge.push(qt_event(NativeTabletPhase::Press, 2.0, 3.0, 0.5)),
+            Ok(TabletBridgeOutput::StrokeStarted(TabletPoint::new(
+                2.0,
+                3.0,
+                NormalizedTabletSample::new(0.5, 0.5, -0.25, 0.25, false, true),
+            )))
+        );
+        assert!(bridge.is_stroke_active());
+        assert!(matches!(
+            bridge.push(qt_event(NativeTabletPhase::Move, 2.5, 3.5, 1.0)),
+            Ok(TabletBridgeOutput::StrokePoint(_))
+        ));
+        let Ok(TabletBridgeOutput::StrokeFinished(points)) =
+            bridge.push(qt_event(NativeTabletPhase::Release, 3.0, 4.0, 0.25))
+        else {
+            panic!("release must finish the active stroke");
+        };
+        assert_eq!(points.len(), 3);
+        assert_eq!(points[0].x, 2.0);
+        assert_eq!(points[2].sample.pressure, 0.25);
+        assert!(!bridge.is_stroke_active());
+    }
+
+    #[test]
+    fn tablet_bridge_bounds_strokes_and_cancels_on_proximity_loss() {
+        let mut bridge = TabletEventBridge::with_maximum_points(2).unwrap();
+        bridge
+            .push(qt_event(NativeTabletPhase::Press, 1.0, 1.0, 1.0))
+            .unwrap();
+        bridge
+            .push(qt_event(NativeTabletPhase::Move, 1.0, 2.0, 1.0))
+            .unwrap();
+        assert_eq!(
+            bridge.push(qt_event(NativeTabletPhase::Move, 1.0, 3.0, 1.0)),
+            Err(TabletBridgeError::StrokeTooLong { maximum: 2 })
+        );
+        assert!(!bridge.is_stroke_active());
+
+        bridge
+            .push(qt_event(NativeTabletPhase::Press, 1.0, 1.0, 1.0))
+            .unwrap();
+        assert_eq!(
+            bridge.push(qt_event(NativeTabletPhase::ProximityLeave, 1.0, 1.0, 0.0)),
+            Ok(TabletBridgeOutput::StrokeCancelled)
+        );
+        assert!(!bridge.is_in_proximity());
+        assert!(!bridge.is_stroke_active());
+    }
+
+    #[test]
+    fn tablet_bridge_rejects_invalid_native_ranges_and_coordinates() {
+        assert_eq!(
+            NativeTabletEvent::from_axes(
+                NativeTabletPhase::Move,
+                0.0,
+                0.0,
+                0.5,
+                1.0,
+                1.0,
+                0.0,
+                0.0,
+                60.0,
+                0.0,
+                360.0,
+                false,
+            ),
+            Err(EditorError::InvalidTabletRange { field: "pressure" })
+        );
+        let mut bridge = TabletEventBridge::new();
+        assert_eq!(
+            bridge.push(qt_event(NativeTabletPhase::Move, f32::NAN, 0.0, 1.0)),
+            Err(TabletBridgeError::InvalidEventCoordinate)
+        );
     }
 }

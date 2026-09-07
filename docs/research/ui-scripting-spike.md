@@ -1,7 +1,7 @@
 # Player UI Scripting Spike
 
-**Status:** Research complete; implementation recommendation remains
-provisional
+**Status:** Research complete; Luau implementation spike measured; production
+recommendation remains provisional
 
 **Date:** 2026-09-04
 
@@ -52,6 +52,22 @@ This is not a security proof or a final language selection. The first local
 spike should implement the same minimal API twice: once with Luau and once
 with a deliberately hostile test suite. Acceptance depends on the host API
 and test results, not on a hello-world script.
+
+### Local implementation result
+
+The first Luau host spike now exists in
+[`experiments/ui-scripting`](../../experiments/ui-scripting/README.md), with
+the measured results recorded in
+[EXP-006](../experiments/EXP-006-ui-scripting-sandbox.md). It uses one embedded
+state per addon, a small `ui.v1`-shaped API, explicit source/memory/
+instruction/node/event/text limits, globally unique opaque node IDs, and a
+native-only secure-input method. Eight adversarial tests pass locally,
+including OS/module API absence, infinite-loop interruption, cross-addon handle
+forgery, resource limits, and addon-only failure disablement.
+
+This validates the direction of the first prototype only. It does not select
+Luau as the final runtime, establish process-level isolation, measure render
+thread latency, or connect secure input to a real window system.
 
 ## Project constraints
 

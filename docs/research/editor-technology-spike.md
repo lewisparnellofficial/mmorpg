@@ -1,6 +1,7 @@
 # Research: Linux Editor Technology Spike
 
-**Status:** Preliminary findings recorded; implementation spike required
+**Status:** Preliminary findings recorded; input-normalization spike measured;
+full editor implementation remains required
 
 **Started:** 2026-09-04
 
@@ -73,6 +74,20 @@ The main risk is the Rust/Qt boundary and the need to verify stylus events in
 the actual 3D viewport, not merely in a separate test widget. Qt's open-source
 licensing obligations are another risk to record before distributing the tool
 or its runtime dependencies.
+
+### Local input-bridge result
+
+The device-neutral editor core now includes a bounded native-event bridge. Its
+Qt-shaped adapter accepts proximity, press, motion, release, cancellation, and
+proximity-loss phases; normalizes pressure, x/y tilt, rotation, eraser state,
+and range metadata; and produces bounded `TabletPoint` stroke output. Focused
+tests cover axis conversion, lifecycle transitions, invalid ranges, the stroke
+point limit, and cancellation when the pen leaves proximity.
+
+This is a measured normalization/lifecycle prototype, not evidence of real
+hardware capture. The actual Qt or SDL event callback, QML/Quick 3D delivery,
+mouse fallback, and real-pen responsiveness still require the disposable
+editor-shell spike described below.
 
 SDL3 is a credible low-level alternative and has an explicit pen API, but it
 does not provide the editor application layer. A Rust SDL3 plus immediate-mode
@@ -817,4 +832,6 @@ Qt, GTK, SDL, libinput, Khronos, OpenEXR, Serde, RON, and CXX-Qt documentation.
 The terrain data model, engine-neutral particle schema, comparison ratings,
 and phased recommendation are project-specific inferences and recommendations
 based on the current requirements. No capacity claim is made here, and no
-local tablet or rendering measurements have yet been recorded.
+local hardware-tablet, QML/Quick 3D, or rendering measurements have yet been
+recorded; the local result so far is limited to deterministic event
+normalization and stroke lifecycle tests.

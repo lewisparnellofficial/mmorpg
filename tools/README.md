@@ -38,7 +38,10 @@ cargo fmt --manifest-path tools/mmorpg-editor-core/Cargo.toml -- --check
 cargo test --manifest-path tools/mmorpg-editor-core/Cargo.toml
 ```
 
-The next editor spike should connect Qt or SDL tablet events to this API and
+The tablet bridge now accepts Qt-shaped native phases and axes, normalizes
+pressure/tilt/rotation, and owns bounded stroke lifecycle state. It is covered
+by the editor-core tests but does not capture hardware or open a GUI; the next
+editor shell spike should connect Qt or SDL callbacks to this bridge and
 validate the interaction on a real pen tablet.
 
 From the repository root, the current CLI editor spike can be launched with:

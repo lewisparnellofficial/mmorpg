@@ -16,7 +16,10 @@ const MAX_MOVE_PER_COMMAND: f32 = 10.0;
 
 /// Maximum accepted size of one server result line, measured in UTF-8 bytes.
 pub const MAX_SERVER_LINE_BYTES: usize = 4096;
-const TEMP_SNAPSHOT_VERSION: u32 = 1;
+/// Version of the temporary line snapshot contract. Version 2 carries each
+/// player's inventory capacity explicitly instead of making the client assume
+/// the starter value.
+pub const TEMP_SNAPSHOT_VERSION: u32 = 2;
 const MAX_SERVER_FIELD_BYTES: usize = 256;
 const MAX_SERVER_NAME_BYTES: usize = 64;
 const MAX_SERVER_REASON_BYTES: usize = 256;
@@ -693,6 +696,9 @@ pub struct PlayerState {
     pub health: u32,
     pub max_health: u32,
     pub gold: u32,
+    /// Present for snapshot records. Legacy diagnostic `PLAYER` lines do not
+    /// carry inventory state and therefore leave this unset.
+    pub inventory_capacity: Option<usize>,
     pub target: Option<EntityId>,
 }
 
@@ -1038,6 +1044,7 @@ fn decode_player(mut fields: BTreeMap<String, String>) -> Result<ServerLine, Dec
         health,
         max_health,
         gold: parse_u32(take(&mut fields, "gold")?, "gold")?,
+        inventory_capacity: None,
         target: parse_target(take(&mut fields, "target")?, "target")?,
     }))
 }
@@ -1082,6 +1089,7 @@ fn decode_snapshot_record(record_name: &str, tokens: Vec<&str>) -> Result<Server
                 "max_health",
                 "gold",
                 "target",
+                "capacity",
             ],
             None,
         )?),
@@ -1129,6 +1137,7 @@ fn decode_snapshot_player(mut fields: BTreeMap<String, String>) -> Result<Server
         health,
         max_health,
         gold: parse_u32(take(&mut fields, "gold")?, "gold")?,
+        inventory_capacity: Some(parse_u32(take(&mut fields, "capacity")?, "capacity")? as usize),
         target: parse_target(take(&mut fields, "target")?, "target")?,
     }))
 }
@@ -1834,6 +1843,7 @@ mod tests {
                 health: 87,
                 max_health: 100,
                 gold: 20,
+                inventory_capacity: None,
                 target: Some(EntityId(9)),
             }))
         );
@@ -1870,6 +1880,7 @@ mod tests {
                 health: 100,
                 max_health: 100,
                 gold: 20,
+                inventory_capacity: None,
                 target: None,
             }))
         );
@@ -1878,8 +1889,8 @@ mod tests {
     #[test]
     fn decodes_temporary_machine_snapshot_records() {
         assert_eq!(
-            decode_server_line("TEMP_SNAPSHOT_BEGIN version=1"),
-            Ok(ServerLine::SnapshotBegin { version: 1 })
+            decode_server_line("TEMP_SNAPSHOT_BEGIN version=2"),
+            Ok(ServerLine::SnapshotBegin { version: 2 })
         );
         assert_eq!(
             decode_server_line("TEMP_SNAPSHOT WORLD tick=1 players=1 npcs=4 enemies=3 vendors=1"),
@@ -1893,7 +1904,7 @@ mod tests {
         );
         assert_eq!(
             decode_server_line(
-                "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=0.0,0.0 health=100 max_health=100 gold=20 target=none"
+                "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=0.0,0.0 health=100 max_health=100 gold=20 capacity=16 target=none"
             ),
             Ok(ServerLine::Player(PlayerState {
                 id: EntityId(5),
@@ -1903,8 +1914,15 @@ mod tests {
                 health: 100,
                 max_health: 100,
                 gold: 20,
+                inventory_capacity: Some(16),
                 target: None,
             }))
+        );
+        assert_eq!(
+            decode_server_line(
+                "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=0.0,0.0 health=100 max_health=100 gold=20 target=none"
+            ),
+            Err(DecodeError::MissingField { field: "capacity" })
         );
         assert_eq!(
             decode_server_line(
@@ -2175,8 +2193,8 @@ mod tests {
             })
         );
         assert_eq!(
-            decode_server_line("TEMP_SNAPSHOT_BEGIN version=2"),
-            Err(DecodeError::UnsupportedSnapshotVersion { version: 2 })
+            decode_server_line("TEMP_SNAPSHOT_BEGIN version=1"),
+            Err(DecodeError::UnsupportedSnapshotVersion { version: 1 })
         );
         assert_eq!(
             decode_server_line("EVENT rejected reason=nope extra=x"),
@@ -2259,13 +2277,13 @@ mod tests {
 
     fn snapshot_lines(include_enemy: bool) -> Vec<String> {
         let mut lines = vec![
-            "TEMP_SNAPSHOT_BEGIN version=1".to_owned(),
+            "TEMP_SNAPSHOT_BEGIN version=2".to_owned(),
             format!(
                 "TEMP_SNAPSHOT WORLD tick=7 players=1 npcs={} enemies={} vendors=1",
                 if include_enemy { 2 } else { 1 },
                 if include_enemy { 1 } else { 0 }
             ),
-            "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=0,0 health=100 max_health=100 gold=20 target=none".to_owned(),
+            "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=0,0 health=100 max_health=100 gold=20 capacity=16 target=none".to_owned(),
             "TEMP_SNAPSHOT NPC id=1 template_id=1 name=Mira%20the%20Merchant kind=vendor position=0,0 health=1 max_health=1".to_owned(),
         ];
         if include_enemy {
@@ -2302,7 +2320,7 @@ mod tests {
     fn assembles_and_publishes_only_a_valid_completed_snapshot() {
         let snapshot = assemble(snapshot_lines(true));
 
-        assert_eq!(snapshot.version, 1);
+        assert_eq!(snapshot.version, 2);
         assert_eq!(snapshot.world.tick, 7);
         assert_eq!(snapshot.players.len(), 1);
         assert_eq!(snapshot.npcs.len(), 2);
@@ -2316,9 +2334,9 @@ mod tests {
     #[test]
     fn assembles_player_inventory_and_quest_records() {
         let snapshot = assemble([
-            "TEMP_SNAPSHOT_BEGIN version=1".to_owned(),
+            "TEMP_SNAPSHOT_BEGIN version=2".to_owned(),
             "TEMP_SNAPSHOT WORLD tick=9 players=1 npcs=0 enemies=0 vendors=0".to_owned(),
-            "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=0,0 health=100 max_health=100 gold=20 target=none".to_owned(),
+            "TEMP_SNAPSHOT PLAYER id=5 name=Aria role=damage position=0,0 health=100 max_health=100 gold=20 capacity=16 target=none".to_owned(),
             "TEMP_SNAPSHOT ITEM player=5 item=2 quantity=4".to_owned(),
             "TEMP_SNAPSHOT QUEST player=5 quest=1 progress=2/3 status=Accepted".to_owned(),
             "TEMP_SNAPSHOT_END".to_owned(),
@@ -2336,7 +2354,7 @@ mod tests {
     fn rejects_item_and_quest_records_for_players_missing_from_the_frame() {
         let mut assembler = SnapshotAssembler::new();
         for line in [
-            "TEMP_SNAPSHOT_BEGIN version=1",
+            "TEMP_SNAPSHOT_BEGIN version=2",
             "TEMP_SNAPSHOT WORLD tick=9 players=0 npcs=0 enemies=0 vendors=0",
             "TEMP_SNAPSHOT ITEM player=5 item=2 quantity=4",
         ] {
@@ -2351,7 +2369,7 @@ mod tests {
         );
 
         for line in [
-            "TEMP_SNAPSHOT_BEGIN version=1",
+            "TEMP_SNAPSHOT_BEGIN version=2",
             "TEMP_SNAPSHOT WORLD tick=9 players=0 npcs=0 enemies=0 vendors=0",
             "TEMP_SNAPSHOT QUEST player=5 quest=1 progress=0/3 status=Accepted",
         ] {
@@ -2382,7 +2400,7 @@ mod tests {
         );
 
         assembler
-            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .push_line("TEMP_SNAPSHOT_BEGIN version=2")
             .unwrap();
         assembler
             .push_line("TEMP_SNAPSHOT WORLD tick=7 players=0 npcs=0 enemies=0 vendors=0")
@@ -2400,17 +2418,17 @@ mod tests {
         assert!(!assembler.is_active());
 
         assert_eq!(
-            assembler.push_line("TEMP_SNAPSHOT_BEGIN version=1"),
+            assembler.push_line("TEMP_SNAPSHOT_BEGIN version=2"),
             Ok(None)
         );
         assert_eq!(
-            assembler.push_line("TEMP_SNAPSHOT_BEGIN version=1"),
+            assembler.push_line("TEMP_SNAPSHOT_BEGIN version=2"),
             Err(SnapshotError::DuplicateBegin)
         );
         assert!(!assembler.is_active());
 
         assert_eq!(
-            assembler.push_line("TEMP_SNAPSHOT_BEGIN version=1"),
+            assembler.push_line("TEMP_SNAPSHOT_BEGIN version=2"),
             Ok(None)
         );
         let world = "TEMP_SNAPSHOT WORLD tick=7 players=0 npcs=0 enemies=0 vendors=0";
@@ -2435,15 +2453,15 @@ mod tests {
         let mut assembler = SnapshotAssembler::new();
 
         assert_eq!(
-            assembler.push_line("TEMP_SNAPSHOT_BEGIN version=2"),
+            assembler.push_line("TEMP_SNAPSHOT_BEGIN version=1"),
             Err(SnapshotError::Decode(
-                DecodeError::UnsupportedSnapshotVersion { version: 2 }
+                DecodeError::UnsupportedSnapshotVersion { version: 1 }
             ))
         );
         assert!(!assembler.is_active());
 
         assembler
-            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .push_line("TEMP_SNAPSHOT_BEGIN version=2")
             .unwrap();
         assert_eq!(
             assembler.push_line("TEMP_SNAPSHOT_END"),
@@ -2452,7 +2470,7 @@ mod tests {
         assert!(!assembler.is_active());
 
         assembler
-            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .push_line("TEMP_SNAPSHOT_BEGIN version=2")
             .unwrap();
         assembler
             .push_line("TEMP_SNAPSHOT WORLD tick=7 players=1 npcs=0 enemies=0 vendors=0")
@@ -2468,7 +2486,7 @@ mod tests {
         assert!(!assembler.is_active());
 
         assembler
-            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .push_line("TEMP_SNAPSHOT_BEGIN version=2")
             .unwrap();
         assembler
             .push_line("TEMP_SNAPSHOT WORLD tick=7 players=0 npcs=0 enemies=0 vendors=0")
@@ -2477,7 +2495,7 @@ mod tests {
         assert!(!assembler.is_active());
 
         assembler
-            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .push_line("TEMP_SNAPSHOT_BEGIN version=2")
             .unwrap();
         assert_eq!(
             assembler.push_line("TEMP_SNAPSHOT WEATHER rain=true"),
@@ -2496,7 +2514,7 @@ mod tests {
         let first = assemble_with(&mut assembler, snapshot_lines(true));
 
         assembler
-            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .push_line("TEMP_SNAPSHOT_BEGIN version=2")
             .unwrap();
         assembler
             .push_line("TEMP_SNAPSHOT WORLD tick=8 players=1 npcs=1 enemies=0 vendors=1")
@@ -2538,7 +2556,7 @@ mod tests {
     fn bounds_the_number_of_buffered_records() {
         let mut assembler = SnapshotAssembler::with_max_records(3).unwrap();
         assembler
-            .push_line("TEMP_SNAPSHOT_BEGIN version=1")
+            .push_line("TEMP_SNAPSHOT_BEGIN version=2")
             .unwrap();
         assembler
             .push_line("TEMP_SNAPSHOT WORLD tick=7 players=0 npcs=2 enemies=1 vendors=1")

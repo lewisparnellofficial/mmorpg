@@ -107,10 +107,12 @@ to the connection. It exists for debugging and does not grant authority over
 another player.
 
 `snapshot` returns a temporary machine-readable bootstrap response for the
-graphical client. It is framed by `TEMP_SNAPSHOT_BEGIN version=1` and
+graphical client. It is framed by `TEMP_SNAPSHOT_BEGIN version=2` and
 `TEMP_SNAPSHOT_END`; the records between those markers include the authoritative
-world summary and player/NPC state. Text values are percent-encoded. This
-development response is not the future production wire protocol.
+world summary and player/NPC state. Each player record carries its explicit
+inventory `capacity`, alongside inventory and quest records. Text values are
+percent-encoded. This development response is not the future production wire
+protocol.
 
 The starter economy uses vendor entity `1` and these item IDs:
 

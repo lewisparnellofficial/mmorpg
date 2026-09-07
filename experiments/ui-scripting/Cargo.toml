@@ -1,0 +1,13 @@
+[package]
+name = "ui-scripting-spike"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+mlua = { version = "0.12.1", features = ["luau", "vendored"] }
+
+[lints.rust]
+unsafe_code = "forbid"
