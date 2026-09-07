@@ -7,6 +7,11 @@ playable vertical slice. It is intentionally implementation-oriented; broader
 architecture and research remain in `docs/architecture/` and
 `docs/research/`.
 
+The reconciled, test-gated milestone sequence is maintained in the repository
+root's [vertical-slice execution plan](../PLAN.md). Use that plan for active
+implementation order and exit tests; keep this document as the broader batch
+roadmap, including post-gate editor and UI-scripting work.
+
 ## Completed
 
 - Git repository and contribution guide.

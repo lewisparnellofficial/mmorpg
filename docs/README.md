@@ -20,6 +20,7 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [Overworld layering research](research/overworld-layering.md) — preliminary findings for hotspot scaling and transparent layers.
 - [Instances and layers research](research/instances-and-layers.md) — lifecycle, ownership, transfers, world-boss policy, and failure recovery.
 - [Open questions](open-questions.md) — unresolved decisions and questions requiring experiments or owner input.
+- [Vertical-slice execution plan](../PLAN.md) — reconciled milestone sequence, invariants, gates, and exit tests.
 - [Implementation roadmap](implementation-roadmap.md) — ordered vertical-slice implementation batches.
 - [Shared content schema decision](decisions/ADR-003-shared-content-schema.md) — static definitions shared by tools, client, and server.
 - [Client technology spike](research/client-technology-spike.md) — Linux/Rust runtime, rendering, input, asset, networking, and scripting candidates.

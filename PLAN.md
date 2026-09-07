@@ -129,6 +129,9 @@ durable operations/recovery before dependent work.
 
 **Outcome:** One command validates all code affected by wire/client changes.
 
+**Status:** Complete (2026-09-07). The aggregate command and its isolated
+failure-propagation self-test pass locally.
+
 **Work:**
 
 - Add `mmorpg-client-protocol`, `mmorpg-client-adapter`, and
@@ -139,6 +142,18 @@ durable operations/recovery before dependent work.
   propagate.
 - Document it in `AGENTS.md` and later CI. Link this plan from canonical
   roadmap/open-question updates without duplicating the active sequence.
+
+**Implementation note:** `scripts/validate-all.sh` is the aggregate command.
+It checks the headless workspace and standalone client/protocol, tool, and
+experiment manifests; the Bevy client is checked but not launched. Its
+`--self-test` proves that a failing child command is observed by the runner.
+
+**Evidence:** `./scripts/validate-all.sh` completed with
+`aggregate validation: PASS`; the command covered the root workspace, Bevy
+client check, three standalone client crates, two tools, five Rust
+experiments, the replication-model compile check, and whitespace validation.
+`./scripts/validate-all.sh --self-test` observed the deliberate child status
+37 and passed.
 
 **Exit tests:** `aggregate_validation_covers_standalone_client_crates` and
 `aggregate_validation_self_test_proves_failure_propagation`.

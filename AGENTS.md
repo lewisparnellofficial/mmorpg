@@ -150,6 +150,19 @@ internet deployment.
 
 ### Run validation experiments
 
+Aggregate validation for the root workspace, standalone client crates, tools,
+and Rust experiments:
+
+```bash
+./scripts/validate-all.sh
+./scripts/validate-all.sh --self-test
+```
+
+The aggregate command checks the graphical Bevy client but does not launch its
+window. `--self-test` runs an isolated deliberate child failure and succeeds
+only if the aggregate runner observes that failure; it does not edit the
+working tree.
+
 Rust region-worker benchmark:
 
 ```bash

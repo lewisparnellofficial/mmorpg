@@ -567,7 +567,9 @@ mod tests {
             WireConnection::connect(&WireConnectionConfig::new(address.to_string()))
                 .expect("connect to loopback");
         assert_eq!(
-            connection.read_server_message().expect("read typed message"),
+            connection
+                .read_server_message()
+                .expect("read typed message"),
             ServerMessage::Connected {
                 player_id: 7,
                 role: mmorpg_wire::RoleCode::Healer,
