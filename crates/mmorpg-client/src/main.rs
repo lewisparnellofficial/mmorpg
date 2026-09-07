@@ -1271,6 +1271,9 @@ fn spawn_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
 
     #[test]
     fn projects_player_and_npc_state_only_from_server_lines() {
@@ -1417,6 +1420,179 @@ mod tests {
             ClientCommand::SelectCharacter { character_id: 7 },
         );
         assert!(legacy_outgoing.is_empty());
+    }
+
+    #[test]
+    fn wire_worker_reconnects_through_user_character_selection() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("test listener should have an address")
+            .to_string();
+        let (snapshot_tx, snapshot_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            for (session_id, player_id) in [(1, 5), (2, 6)] {
+                let (mut stream, _) = listener.accept().expect("worker should connect");
+                serve_test_authenticated_connection(
+                    &mut stream,
+                    session_id,
+                    player_id,
+                    &snapshot_tx,
+                );
+            }
+        });
+
+        let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
+        let (event_tx, event_rx) = mpsc::channel();
+        spawn_wire_network_worker(address, command_rx, event_tx);
+
+        let character_list = wait_for_test_character_list(&event_rx);
+        assert_eq!(character_list[0].character_id, 7);
+        command_tx
+            .send(ClientCommand::SelectCharacter { character_id: 7 })
+            .expect("selection intent should queue");
+
+        assert_eq!(wait_for_test_connected(&event_rx), 5);
+        snapshot_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker should request a bootstrap snapshot after entering world");
+
+        let character_list = wait_for_test_character_list(&event_rx);
+        assert_eq!(character_list[0].character_id, 7);
+        command_tx
+            .send(ClientCommand::SelectCharacter { character_id: 7 })
+            .expect("reconnect selection intent should queue");
+        assert_eq!(wait_for_test_connected(&event_rx), 6);
+        snapshot_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker should request a bootstrap snapshot after reconnecting");
+        drop(command_tx);
+        server.join().expect("test wire server should finish");
+    }
+
+    fn serve_test_authenticated_connection(
+        stream: &mut TcpStream,
+        session_id: u64,
+        player_id: u64,
+        snapshot_tx: &mpsc::Sender<()>,
+    ) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("server timeout should configure");
+        assert!(matches!(
+            read_test_wire_command(stream),
+            WireCommand::Authenticate { token } if token == DEV_AUTH_TOKEN
+        ));
+        send_test_wire_message(
+            stream,
+            &ServerMessage::Authenticated {
+                account_id: 1,
+                session_id,
+            },
+        );
+        assert!(matches!(
+            read_test_wire_command(stream),
+            WireCommand::ListCharacters
+        ));
+        send_test_wire_message(
+            stream,
+            &ServerMessage::CharacterList {
+                account_id: 1,
+                characters: vec![CharacterSummary {
+                    character_id: 7,
+                    name: "Aria".to_owned(),
+                    role: mmorpg_wire::RoleCode::DamageDealer,
+                }],
+            },
+        );
+        assert!(matches!(
+            read_test_wire_command(stream),
+            WireCommand::SelectCharacter { character_id: 7 }
+        ));
+        send_test_wire_message(
+            stream,
+            &ServerMessage::CharacterSelected {
+                character_id: 7,
+                name: "Aria".to_owned(),
+                role: mmorpg_wire::RoleCode::DamageDealer,
+            },
+        );
+        assert!(matches!(
+            read_test_wire_command(stream),
+            WireCommand::EnterWorld
+        ));
+        send_test_wire_message(
+            stream,
+            &ServerMessage::Connected {
+                player_id,
+                role: mmorpg_wire::RoleCode::DamageDealer,
+            },
+        );
+        assert!(matches!(
+            read_test_wire_command(stream),
+            WireCommand::Snapshot
+        ));
+        snapshot_tx
+            .send(())
+            .expect("test should observe the bootstrap request");
+    }
+
+    fn wait_for_test_character_list(
+        event_rx: &mpsc::Receiver<NetworkEvent>,
+    ) -> Vec<CharacterSummary> {
+        loop {
+            let event = event_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("worker should report the character list");
+            if let NetworkEvent::ServerMessage(ServerMessage::CharacterList {
+                characters, ..
+            }) = event
+            {
+                return characters;
+            }
+        }
+    }
+
+    fn wait_for_test_connected(event_rx: &mpsc::Receiver<NetworkEvent>) -> u64 {
+        loop {
+            let event = event_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("worker should enter the selected character");
+            if let NetworkEvent::ServerMessage(ServerMessage::Connected { player_id, .. }) = event {
+                return player_id;
+            }
+        }
+    }
+
+    fn read_test_wire_command(stream: &mut TcpStream) -> WireCommand {
+        let mut length = [0_u8; mmorpg_wire::LENGTH_PREFIX_LEN];
+        stream
+            .read_exact(&mut length)
+            .expect("test client should write frame length");
+        let body_length = u32::from_be_bytes(length) as usize;
+        let mut frame = Vec::with_capacity(mmorpg_wire::LENGTH_PREFIX_LEN + body_length);
+        frame.extend_from_slice(&length);
+        frame.resize(mmorpg_wire::LENGTH_PREFIX_LEN + body_length, 0);
+        stream
+            .read_exact(&mut frame[mmorpg_wire::LENGTH_PREFIX_LEN..])
+            .expect("test client should write a complete frame");
+        let decoded = decode_one(&frame).expect("test client frame should decode");
+        assert_eq!(decoded.envelope.kind, MessageKind::Command);
+        WireCommand::decode_payload(&decoded.envelope.payload)
+            .expect("test client command payload should decode")
+    }
+
+    fn send_test_wire_message(stream: &mut TcpStream, message: &ServerMessage) {
+        let payload = message
+            .encode_payload()
+            .expect("test server message should encode");
+        let frame = Envelope::new(MessageKind::Event, payload)
+            .expect("test envelope should build")
+            .encode()
+            .expect("test envelope should encode");
+        stream
+            .write_all(&frame)
+            .expect("test server should write complete frame");
     }
 
     #[test]

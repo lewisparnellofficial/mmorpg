@@ -49,6 +49,11 @@ bootstrap sequence. The server therefore supplies a fresh authoritative
 snapshot; this is reconnect-by-restore, not a production session-resume
 protocol.
 
+The client test suite includes a local typed-wire peer that drops the first
+connection after bootstrap. It verifies that the real background worker
+reconnects, re-authenticates, waits for a second explicit character-selection
+intent, enters the world again, and requests a fresh bootstrap snapshot.
+
 The window can be closed using the normal window controls. With the server
 running in another terminal, press `Enter` at the character-selection prompt,
 then use `WASD` to move, `Tab` to select the next known NPC, `Space` to attack,
