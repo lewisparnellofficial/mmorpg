@@ -44,8 +44,9 @@ roadmap, including post-gate editor and UI-scripting work.
   source persistence and stroke-level undo/redo.
 - Client presentation replay experiment covering the full starter quest,
   economy, combat, and loot loop.
-- Explicit server-owned fixed-tick combat timing path with cast-time and
-  cooldown tests while preserving the original development path.
+- One server-owned fixed-tick world-step path, including empty-tick deferred
+  combat resolution, with cast-time and cooldown tests. The compatibility
+  `World::step` entry point delegates to that same machinery.
 - Versioned length-prefixed wire-envelope prototype with bounded decoding.
 - Bounded TCP transport adapter for typed development commands and diagnostic
   lines.

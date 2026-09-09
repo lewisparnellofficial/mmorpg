@@ -2,7 +2,7 @@ mod account_repository;
 
 use crate::account_repository::{AccountCharacterRepository, DevelopmentAccountRepository};
 use mmorpg_content::starter_catalog;
-use mmorpg_core::{Command, EntityId, Event, ItemId, QuestId, Role, World};
+use mmorpg_core::{CombatTiming, Command, EntityId, Event, ItemId, QuestId, Role, World};
 use mmorpg_wire::{
     ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope, ItemStackState,
     MessageKind, NpcKindCode, NpcState, PlayerState, QuestOfferState, QuestState, QuestStatusCode,
@@ -157,6 +157,7 @@ struct Server {
     account_repository: Box<dyn AccountCharacterRepository>,
     next_client_id: u64,
     next_session_id: u64,
+    combat_timing: CombatTiming,
     tick_interval: Duration,
     next_tick: Instant,
 }
@@ -179,6 +180,8 @@ impl Server {
     ) -> Self {
         let tick_hz = tick_hz.max(1);
         let tick_interval = Duration::from_secs_f64(1.0 / tick_hz as f64);
+        let combat_timing = CombatTiming::new(tick_hz.min(u32::MAX as u64) as u32, 0, 0)
+            .expect("tick_hz is clamped above zero");
         Self {
             world: World::new_starter_zone(),
             #[cfg(test)]
@@ -188,6 +191,7 @@ impl Server {
             account_repository,
             next_client_id: 1,
             next_session_id: 1,
+            combat_timing,
             tick_interval,
             next_tick: Instant::now() + tick_interval,
         }
@@ -205,12 +209,14 @@ impl Server {
     }
 
     fn read_wire_clients(&mut self) {
-        let mut commands = Vec::new();
+        let mut command_queues = Vec::new();
         let mut errors = Vec::new();
         let mut compatibility_rejections = Vec::new();
         let mut decoded_frames = 0;
         for client in &mut self.wire_clients {
+            let mut client_commands = Vec::new();
             if client.closed {
+                command_queues.push(client_commands);
                 continue;
             }
             let mut buffer = [0_u8; 4096];
@@ -294,12 +300,18 @@ impl Server {
                 }
                 match WireCommand::decode_payload(&payload) {
                     Ok(command) => {
-                        commands.push((client.id, command));
+                        client_commands.push((client.id, command));
                     }
                     Err(error) => errors.push((client.id, format!("invalid command: {error}"))),
                 }
             }
+            command_queues.push(client_commands);
         }
+
+        // A client can fill its own bounded intake window, but it cannot
+        // monopolize the simulation owner's command order. Interleave each
+        // client's already-decoded commands before applying session checks.
+        let commands = interleave_wire_commands(command_queues);
 
         for (client_id, error) in errors {
             self.queue_wire_error(client_id, error);
@@ -765,9 +777,10 @@ impl Server {
                 .then_some(pending.origin)
             })
             .collect();
-        let events = self
-            .world
-            .step(pending.into_iter().map(|pending| pending.command));
+        let events = self.world.step_with_combat_timing(
+            pending.into_iter().map(|pending| pending.command),
+            self.combat_timing,
+        );
 
         // The development protocol only accepts valid join commands, so join
         // events correspond in order to the pending join origins.
@@ -880,6 +893,19 @@ impl Server {
             }
         }
     }
+}
+
+fn interleave_wire_commands(mut queues: Vec<Vec<(u64, WireCommand)>>) -> Vec<(u64, WireCommand)> {
+    let total = queues.iter().map(Vec::len).sum();
+    let mut interleaved = Vec::with_capacity(total);
+    while queues.iter().any(|queue| !queue.is_empty()) {
+        for queue in &mut queues {
+            if !queue.is_empty() {
+                interleaved.push(queue.remove(0));
+            }
+        }
+    }
+    interleaved
 }
 
 fn wire_role(role: Role) -> mmorpg_wire::RoleCode {
@@ -1887,6 +1913,20 @@ mod tests {
             );
         }
         assert_eq!(server.commands.len(), MAX_PENDING_COMMANDS);
+    }
+
+    #[test]
+    fn typed_intake_interleaves_clients_before_authoritative_application() {
+        let commands = interleave_wire_commands(vec![
+            vec![
+                (1, WireCommand::Move { dx: 1.0, dy: 0.0 }),
+                (1, WireCommand::BasicAttack),
+                (1, WireCommand::Snapshot),
+            ],
+            vec![(2, WireCommand::Move { dx: -1.0, dy: 0.0 })],
+        ]);
+        let owners: Vec<_> = commands.iter().map(|(owner, _)| *owner).collect();
+        assert_eq!(owners, vec![1, 2, 1, 1]);
     }
 
     #[test]

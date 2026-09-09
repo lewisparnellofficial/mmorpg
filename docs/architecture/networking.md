@@ -54,7 +54,18 @@ A provisional model is:
 - Server reconciliation when prediction diverges.
 - Tick numbers or server timestamps on authoritative events.
 
-The exact tick rate must be established through profiling, especially for the 200-player encounter.
+The development server now routes every world step, including empty ticks,
+through one server-owned fixed-tick timing path. The current default is 20 Hz;
+the compatibility `World::step` API uses zero cast/cooldown timing while the
+server retains the same timing object for command and deferred-work processing.
+This is an implementation boundary, not a capacity result. The exact tick
+budget must still be established through profiling, especially for the
+200-player encounter.
+
+Typed intake is bounded per session and globally, and the server interleaves
+decoded per-session queues before handing commands to the single world owner.
+This is a fairness guard for the development path, not a production admission
+or backpressure policy.
 
 ## Interest management
 

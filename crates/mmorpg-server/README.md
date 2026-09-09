@@ -83,7 +83,9 @@ Typed intake is bounded before commands reach the simulation owner: each
 session contributes at most 32 decoded frames per poll, the server accepts at
 most 256 decoded frames per poll, and the pending authoritative command queue
 is capped at 1024 entries. Excess input is discarded with a typed error rather
-than becoming hidden simulation debt.
+than becoming hidden simulation debt. Decoded commands are interleaved across
+active sessions before authoritative application so one session's bounded
+burst cannot occupy the entire command order for the tick.
 
 Wire clients must authenticate before sending gameplay commands:
 

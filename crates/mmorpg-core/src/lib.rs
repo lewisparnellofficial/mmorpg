@@ -694,25 +694,24 @@ impl World {
     }
 
     /// Applies all commands for one simulation tick and returns authoritative
-    /// events. Commands are processed in the supplied order.
+    /// events. Commands are processed in the supplied order. This is the
+    /// compatibility entry point; it uses the same fixed-tick machinery as
+    /// [`World::step_with_combat_timing`] with zero cast/cooldown defaults.
     pub fn step<I>(&mut self, commands: I) -> Vec<Event>
     where
         I: IntoIterator<Item = Command>,
     {
-        let mut events = Vec::new();
-        for command in commands {
-            self.apply(command, &mut events);
-        }
-        self.tick = self.tick.saturating_add(1);
-        events
+        self.step_with_combat_timing(
+            commands,
+            CombatTiming::new(20, 0, 0).expect("constant compatibility timing is valid"),
+        )
     }
 
     /// Applies commands using server-owned fixed-tick combat timing.
     ///
-    /// Only [`Command::BasicAttack`] is affected by this path. A timed attack
-    /// validates its cooldown and cast state at the current server tick, then
-    /// resolves after `cast_time_ticks`. The original [`World::step`] path is
-    /// intentionally unchanged for existing development callers.
+    /// [`Command::BasicAttack`] validates its cooldown and cast state at the
+    /// current server tick, then resolves after `cast_time_ticks`. Empty
+    /// command batches still advance the tick and resolve due work.
     pub fn step_with_combat_timing<I>(&mut self, commands: I, timing: CombatTiming) -> Vec<Event>
     where
         I: IntoIterator<Item = Command>,
@@ -2370,6 +2369,33 @@ mod tests {
             }] if *resolved_player == player_id && *resolved_target == enemy_id
         ));
         assert_eq!(world.npc(enemy_id).unwrap().health, 88);
+    }
+
+    #[test]
+    fn empty_fixed_ticks_advance_and_resolve_deferred_combat() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Empty Tick", Role::DamageDealer);
+        let enemy_id = first_enemy(&world);
+        let timing = CombatTiming::new(20, 2, 0).unwrap();
+        world.step_with_combat_timing(
+            [Command::SelectTarget {
+                player_id,
+                target_id: enemy_id,
+            }],
+            timing,
+        );
+        world.step_with_combat_timing([Command::BasicAttack { player_id }], timing);
+        assert_eq!(world.npc(enemy_id).unwrap().health, 100);
+        let events = world.step_with_combat_timing([], timing);
+        assert!(matches!(
+            events.as_slice(),
+            [Event::AttackResolved {
+                target_id,
+                target_health: 88,
+                ..
+            }] if *target_id == enemy_id
+        ));
+        assert_eq!(world.tick(), 4);
     }
 
     #[test]
