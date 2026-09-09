@@ -78,6 +78,7 @@ run_step "root workspace: test" cargo test --workspace
 # explicit focused invocation here so the aggregate output names this new
 # integration gate and its contract tests remain visible in CI logs.
 run_step "UI contract: test" cargo test --manifest-path "$repo_root/crates/mmorpg-ui-contract/Cargo.toml"
+run_step "secure input registry: test" cargo test --manifest-path "$repo_root/crates/mmorpg-client-secure-input/Cargo.toml"
 run_step "client session: test" cargo test --manifest-path "$repo_root/crates/mmorpg-client-session/Cargo.toml"
 
 # The Bevy client is intentionally checked rather than run: it requires a
