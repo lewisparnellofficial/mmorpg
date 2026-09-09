@@ -15,6 +15,7 @@ Run it from the repository root:
 cargo fmt --manifest-path experiments/ui-wasm-comparison/Cargo.toml -- --check
 cargo test --manifest-path experiments/ui-wasm-comparison/Cargo.toml
 cargo run --quiet --manifest-path experiments/ui-wasm-comparison/Cargo.toml
+printf 'render\nshutdown\n' | cargo run --quiet --manifest-path experiments/ui-wasm-comparison/Cargo.toml -- --process-host
 ./scripts/smoke-ui-process-isolation.sh
 ```
 
@@ -22,4 +23,6 @@ The output is a local technology comparison, not proof that Wasm solves the
 project's addon ABI, package, renderer, or production process-isolation
 requirements. The optional process smoke uses bubblewrap when available to
 prove that this comparison can run behind an unshared namespace/private-temp
-wrapper; it does not yet integrate that wrapper into the graphical client.
+wrapper. The `--process-host` mode exercises a supervised stdin/stdout
+boundary with explicit `READY`, `PANEL`, and `BYE` lifecycle records; it is
+still not integrated into the graphical client.

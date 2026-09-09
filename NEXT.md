@@ -19,13 +19,13 @@ supported renderer/driver, then update EXP-011; do not hide the diagnostics.
 ## 3. Decide the addon runtime boundary
 
 The `ui.v1` contract, package model, bounded storage, secure-input boundary,
-adversarial gate, extended fuzz corpus, and Wasmi comparison are implemented.
-The proposed boundary and explicit acceptance criteria are recorded in
-[ADR-010](docs/decisions/ADR-010-addon-runtime-boundary.md). The process
-wrapper and modeled constrained profile now provide additional evidence, but
-the decision remains provisional until the adapter lifecycle is integrated,
-process supervision is exercised through the graphical client, and
-minimum-hardware evidence is available.
+adversarial gate, extended fuzz corpus, Wasmi guest-memory adapter, and
+opt-in graphical process-host lifecycle are implemented. The proposed
+boundary and explicit acceptance criteria are recorded in
+[ADR-010](docs/decisions/ADR-010-addon-runtime-boundary.md). The decision
+remains provisional because the process host is still a comparison adapter,
+not a package-driven production runtime, and minimum-hardware evidence is
+not available.
 
 ## 4. Finish the first vertical-slice acceptance record
 

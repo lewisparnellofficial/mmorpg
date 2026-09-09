@@ -1,3 +1,4 @@
+use std::io::{self, BufRead, Write};
 use std::time::Instant;
 
 use mmorpg_ui_contract::{
@@ -99,20 +100,84 @@ fn define_ui_imports(linker: &mut Linker<HostState>) {
         .expect("allowlisted UI import must link");
 }
 
-fn main() {
+const PANEL_MODULE: &str = r#"
+    (module
+      (import "ui" "create_panel" (func $create_panel (param i32 i32) (result i32)))
+      (memory (export "memory") 1 4)
+      (data (i32.const 16) "Town")
+      (func (export "run")
+        i32.const 16
+        i32.const 4
+        call $create_panel
+        drop))
+"#;
+
+fn render_panel() -> Result<String, String> {
     let engine = engine();
-    let source = r#"
-        (module
-          (import "ui" "create_panel" (func $create_panel (param i32 i32) (result i32)))
-          (memory (export "memory") 1 4)
-          (data (i32.const 16) "Town")
-          (func (export "run")
-            i32.const 16
-            i32.const 4
-            call $create_panel
-            drop))
-    "#;
-    let module = compile(&engine, source);
+    let module = compile(&engine, PANEL_MODULE);
+    let mut linker = Linker::new(&engine);
+    define_ui_imports(&mut linker);
+    let mut store = bounded_store(&engine);
+    store
+        .set_fuel(FUEL_BUDGET)
+        .map_err(|error| format!("fuel setup failed: {error}"))?;
+    let instance = linker
+        .instantiate_and_start(&mut store, &module)
+        .map_err(|error| format!("guest startup failed: {error}"))?;
+    let run = instance
+        .get_typed_func::<(), ()>(&store, "run")
+        .map_err(|error| format!("guest ABI is missing run: {error}"))?;
+    run.call(&mut store, ())
+        .map_err(|error| format!("guest execution failed: {error}"))?;
+    validate_operations(
+        &store.data().operations,
+        PackageId::new(7).expect("fixed package ID is non-zero"),
+        Generation::new(1).expect("fixed generation is non-zero"),
+        &UiLimits::default(),
+    )
+    .map_err(|error| format!("contract validation failed: {error}"))?;
+    match store.data().operations.as_slice() {
+        [UiOperation::CreatePanel { handle, text }] => {
+            Ok(format!("PANEL\t{}\t{}", handle.node.get(), text))
+        }
+        _ => Err("guest produced an unexpected operation batch".to_owned()),
+    }
+}
+
+fn process_host() -> Result<(), String> {
+    let stdin = io::stdin();
+    let mut stdout = io::BufWriter::new(io::stdout().lock());
+    writeln!(stdout, "READY").map_err(|error| error.to_string())?;
+    stdout.flush().map_err(|error| error.to_string())?;
+    for line in stdin.lock().lines() {
+        match line.map_err(|error| error.to_string())?.trim() {
+            "render" => {
+                let result = render_panel()?;
+                writeln!(stdout, "{result}").map_err(|error| error.to_string())?;
+                stdout.flush().map_err(|error| error.to_string())?;
+            }
+            "shutdown" => {
+                writeln!(stdout, "BYE").map_err(|error| error.to_string())?;
+                stdout.flush().map_err(|error| error.to_string())?;
+                return Ok(());
+            }
+            "" => {}
+            command => return Err(format!("unknown process-host command '{command}'")),
+        }
+    }
+    Ok(())
+}
+
+fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--process-host") {
+        if let Err(error) = process_host() {
+            eprintln!("process-host error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let engine = engine();
+    let module = compile(&engine, PANEL_MODULE);
     let mut linker = Linker::new(&engine);
     define_ui_imports(&mut linker);
     let mut store = bounded_store(&engine);

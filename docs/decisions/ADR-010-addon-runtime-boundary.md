@@ -38,7 +38,10 @@ future acceptance decision must choose one of these explicit boundaries:
 2. Wasmi may be accepted only if its guest ABI is mapped to the frozen `ui.v1`
    operations, the process or OS wrapper is integrated with the graphical
    client lifecycle, fuel/memory/host quotas are measured on supported minimum
-   hardware, and failure/restart semantics are fixture-tested.
+   hardware, and failure/restart semantics are fixture-tested. The repository
+   now has an opt-in comparison-host lifecycle and a graphical startup smoke;
+   package-driven guest loading, restart/failure fixtures, and minimum-hardware
+   calibration remain open.
 
 The process wrapper is an isolation proof for the alternative, not a claim
 that the current graphical client already executes addons out of process.
@@ -88,15 +91,17 @@ outside the player-addon threat model.
   shared `ui.v1` operation type with malformed-pointer handling.
 - `scripts/smoke-ui-process-isolation.sh` proves on capable hosts that the
   Wasmi comparison can run with unshared namespaces, an empty network route,
-  read-only system bindings, and a private `/tmp`.
+  read-only system bindings, and a private `/tmp`; it also drives the
+  supervised `--process-host` lifecycle through `READY`, a contract-backed
+  `PANEL`, and `BYE`.
 - `scripts/smoke-ui-constrained.sh` records a one-core/1-GiB modeled profile;
   it is explicitly not minimum-hardware evidence.
 - The aggregate validation passes with these checks included.
 
 ## Conditions for acceptance or revision
 
-Accept one runtime only after the missing adapter, process-lifecycle,
-minimum-hardware, and failure-isolation evidence is recorded. Revise this ADR
+Accept one runtime only after package-driven adapter behavior, minimum-hardware,
+and failure-isolation/restart evidence is recorded. Revise this ADR
 if the physical/client gate exposes a host cost that invalidates the current
 quotas, if a runtime escapes the contract, if process supervision cannot meet
 startup/shutdown bounds, or if a supported target lacks the required sandbox

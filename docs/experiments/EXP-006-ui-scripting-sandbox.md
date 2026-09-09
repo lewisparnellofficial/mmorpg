@@ -73,6 +73,7 @@ cargo run --quiet --manifest-path experiments/ui-scripting/Cargo.toml
 ./scripts/smoke-ui-adversarial.sh
 ./scripts/smoke-ui-constrained.sh
 ./scripts/smoke-ui-process-isolation.sh
+./scripts/smoke-client-addon-process.sh
 ```
 
 ## Measured local results
@@ -225,8 +226,12 @@ wasm comparison: allowlisted_import=pass host_memory_limit=pass fuel=out_of_fuel
 ```
 
 This is stronger ABI and control-boundary evidence, not a production runtime
-selection or a complete scripted-UI implementation. The graphical client and
-its process supervisor still do not use this adapter.
+selection or a complete scripted-UI implementation. The normal graphical
+client still uses the embedded Luau adapter; its opt-in
+`--addon-process-host` path now starts this comparison host, consumes its
+`READY` and contract-backed `PANEL` records, reaches the typed world, and
+retains the child until shutdown. Package-driven Wasmi loading,
+restart/failure fixtures, and minimum-hardware calibration remain open.
 
 ## Result
 
@@ -247,8 +252,10 @@ mode, because sandbox mode makes the global table read-only.
 - The host integration covers one real Bevy secure-action presentation and
   native dispatch path, but does not yet cover every pointer hit-test,
   reload, overlay, or addon-unload scenario end to end.
-- There is no full scripted-HUD renderer integration, process-level isolation,
-  or minimum-hardware calibration. The fuzz campaigns are bounded local
+- There is no full scripted-HUD renderer integration or minimum-hardware
+  calibration. The Wasmi process smoke now exercises a bounded process-level
+  `READY`/`PANEL`/`BYE` lifecycle, but it remains a comparison host rather
+  than the graphical client's runtime. The fuzz campaigns are bounded local
   evidence rather than exhaustive fuzzing; more varied seeds, sanitizers, and
   host configurations remain required before a production runtime decision.
 - The empty `game` namespace is a placeholder, not the final public API.

@@ -45,6 +45,13 @@ dependency order and the first two become the default and ordinary UI proof
 panels. This is a local development path and does not provide a remote package
 repository or signature privilege.
 
+For the Wasmi isolation comparison, `--addon-process-host PATH` starts an
+explicit supervised process host, waits for its `READY` record, requests a
+contract-backed panel, and retains the child until client shutdown. The host
+executable is launched as `PATH --process-host`. This is lifecycle and
+failure-boundary evidence for the alternative runtime, not the production
+addon decision; the default client still uses the embedded Luau adapter.
+
 The background worker sends the loopback-only development token,
 waits for the typed `Authenticated` response, lists available characters,
 displays the account's available characters, waits for the user to press

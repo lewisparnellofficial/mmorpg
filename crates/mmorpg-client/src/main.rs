@@ -29,9 +29,10 @@ use mmorpg_wire::{
     MessageKind, RoleCode, SequencedServerMessage, ServerMessage, decode_one,
 };
 use std::collections::{BTreeMap, VecDeque};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -205,6 +206,117 @@ struct ScriptedUiPresentation {
     addon_label: String,
     default_node_id: u64,
     addon_node_id: u64,
+}
+
+struct AddonProcessHandle {
+    child: Child,
+    stdin: ChildStdin,
+}
+
+struct ChildGuard(Option<Child>);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let Some(mut child) = self.0.take() else {
+            return;
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+#[derive(Resource, Clone)]
+struct AddonProcessSupervisor(Arc<Mutex<Option<AddonProcessHandle>>>);
+
+impl Drop for AddonProcessSupervisor {
+    fn drop(&mut self) {
+        let Ok(mut handle) = self.0.lock() else {
+            return;
+        };
+        let Some(mut handle) = handle.take() else {
+            return;
+        };
+        let _ = writeln!(handle.stdin, "shutdown");
+        let _ = handle.stdin.flush();
+        let _ = handle.child.wait();
+    }
+}
+
+fn build_process_scripted_ui_presentation(
+    host_path: &Path,
+) -> Result<(ScriptedUiPresentation, AddonProcessSupervisor), String> {
+    let mut child_guard = ChildGuard(Some(
+        Command::new(host_path)
+            .arg("--process-host")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("cannot start addon process host: {error}"))?,
+    ));
+    let Some(stdin) = child_guard.0.as_mut().and_then(|child| child.stdin.take()) else {
+        return Err("addon process host did not expose stdin".to_owned());
+    };
+    let Some(stdout) = child_guard.0.as_mut().and_then(|child| child.stdout.take()) else {
+        return Err("addon process host did not expose stdout".to_owned());
+    };
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|error| format!("cannot read addon process host readiness: {error}"))?;
+    if line.trim() != "READY" {
+        return Err(format!(
+            "addon process host readiness was {:?}",
+            line.trim()
+        ));
+    }
+    let mut stdin = stdin;
+    writeln!(stdin, "render")
+        .and_then(|_| stdin.flush())
+        .map_err(|error| format!("cannot request addon panel: {error}"))?;
+    line.clear();
+    reader
+        .read_line(&mut line)
+        .map_err(|error| format!("cannot read addon panel: {error}"))?;
+    let mut fields = line.trim().split('\t');
+    if fields.next() != Some("PANEL") {
+        return Err(format!("addon process host returned {:?}", line.trim()));
+    }
+    let node_id = fields
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value != 0)
+        .ok_or_else(|| "addon process host returned an invalid node ID".to_owned())?;
+    let label = fields
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "addon process host returned an empty panel label".to_owned())?
+        .to_owned();
+    if fields.next().is_some() {
+        return Err("addon process host returned extra panel fields".to_owned());
+    }
+    let child = child_guard
+        .0
+        .take()
+        .expect("addon process child guard must contain the child");
+    println!(
+        "SCRIPTED_UI source=wasmi-process host={} node={node_id}",
+        host_path.display()
+    );
+    let presentation = ScriptedUiPresentation {
+        default_label: label.clone(),
+        addon_label: label,
+        default_node_id: node_id,
+        addon_node_id: node_id.saturating_add(1),
+    };
+    Ok((
+        presentation,
+        AddonProcessSupervisor(Arc::new(Mutex::new(Some(AddonProcessHandle {
+            child,
+            stdin,
+        })))),
+    ))
 }
 
 fn build_scripted_ui_presentation(
@@ -402,6 +514,7 @@ fn main() {
     let mut wire_address = None;
     let mut preferred_character_id = None;
     let mut addon_root = None;
+    let mut addon_process_host = None;
     let mut acceptance_smoke = false;
     let mut frame_time_stats = false;
     let mut render_backend = RenderBackendChoice::Automatic;
@@ -448,6 +561,17 @@ fn main() {
                     return;
                 }
             }
+            "--addon-process-host" => {
+                if addon_process_host.is_some() {
+                    eprintln!("--addon-process-host may only be specified once");
+                    return;
+                }
+                addon_process_host = arguments.next();
+                if addon_process_host.is_none() {
+                    eprintln!("--addon-process-host requires an executable path");
+                    return;
+                }
+            }
             "--render-backend" => {
                 let Some(value) = arguments.next() else {
                     eprintln!("--render-backend requires auto, vulkan, or gl");
@@ -467,14 +591,28 @@ fn main() {
     }
     let typed_address = wire_address.unwrap_or_else(|| server_address.clone());
     println!("render_backend_request={}", render_backend.label());
-    let scripted_ui = match build_scripted_ui_presentation(addon_root.as_deref().map(Path::new)) {
-        Ok(scripted_ui) => scripted_ui,
-        Err(error) => {
-            eprintln!("{error}");
-            return;
+    if addon_root.is_some() && addon_process_host.is_some() {
+        eprintln!("--addon-root and --addon-process-host are mutually exclusive");
+        return;
+    }
+    let (scripted_ui, addon_process_supervisor) = if let Some(host_path) = addon_process_host {
+        match build_process_scripted_ui_presentation(Path::new(&host_path)) {
+            Ok(result) => (result.0, Some(result.1)),
+            Err(error) => {
+                eprintln!("{error}");
+                return;
+            }
+        }
+    } else {
+        match build_scripted_ui_presentation(addon_root.as_deref().map(Path::new)) {
+            Ok(scripted_ui) => (scripted_ui, None),
+            Err(error) => {
+                eprintln!("{error}");
+                return;
+            }
         }
     };
-    if addon_root.is_none() {
+    if addon_root.is_none() && addon_process_supervisor.is_none() {
         println!("SCRIPTED_UI source=built-in");
     }
     let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
@@ -486,53 +624,56 @@ fn main() {
         event_tx,
     );
 
-    App::new()
-        .add_plugins(
-            DefaultPlugins
-                .set(render_plugin(render_backend))
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        title: "MMORPG Client — interactive slice".to_owned(),
-                        resolution: (1280, 720).into(),
-                        // Prefer low-latency presentation while allowing the
-                        // platform to select a supported swapchain mode.
-                        present_mode: PresentMode::AutoNoVsync,
-                        ..default()
-                    }),
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(render_plugin(render_backend))
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "MMORPG Client — interactive slice".to_owned(),
+                    resolution: (1280, 720).into(),
+                    // Prefer low-latency presentation while allowing the
+                    // platform to select a supported swapchain mode.
+                    present_mode: PresentMode::AutoNoVsync,
                     ..default()
                 }),
+                ..default()
+            }),
+    )
+    .insert_resource(ClearColor(Color::srgb(0.08, 0.12, 0.18)))
+    .insert_resource(ClientState::new(typed_address))
+    .insert_resource(scripted_ui.clone())
+    .insert_resource(NetworkBridge {
+        command_tx,
+        event_rx: Arc::new(Mutex::new(event_rx)),
+    })
+    .insert_resource(MovementRepeat(Timer::from_seconds(
+        MOVEMENT_REPEAT_SECONDS,
+        TimerMode::Repeating,
+    )))
+    .insert_resource(AcceptanceSmoke::new(acceptance_smoke))
+    .insert_resource(FrameTimeStats::new(frame_time_stats))
+    .insert_resource(SecureInputState::new(&scripted_ui))
+    .add_systems(Startup, setup_scene)
+    .add_systems(Startup, setup_ui)
+    .add_systems(
+        Update,
+        (
+            consume_network_events,
+            sample_frame_time,
+            acceptance_smoke_input,
+            secure_window_focus,
+            native_secure_pointer_input,
+            keyboard_input,
+            sync_authoritative_presentation,
+            update_status_text,
         )
-        .insert_resource(ClearColor(Color::srgb(0.08, 0.12, 0.18)))
-        .insert_resource(ClientState::new(typed_address))
-        .insert_resource(scripted_ui.clone())
-        .insert_resource(NetworkBridge {
-            command_tx,
-            event_rx: Arc::new(Mutex::new(event_rx)),
-        })
-        .insert_resource(MovementRepeat(Timer::from_seconds(
-            MOVEMENT_REPEAT_SECONDS,
-            TimerMode::Repeating,
-        )))
-        .insert_resource(AcceptanceSmoke::new(acceptance_smoke))
-        .insert_resource(FrameTimeStats::new(frame_time_stats))
-        .insert_resource(SecureInputState::new(&scripted_ui))
-        .add_systems(Startup, setup_scene)
-        .add_systems(Startup, setup_ui)
-        .add_systems(
-            Update,
-            (
-                consume_network_events,
-                sample_frame_time,
-                acceptance_smoke_input,
-                secure_window_focus,
-                native_secure_pointer_input,
-                keyboard_input,
-                sync_authoritative_presentation,
-                update_status_text,
-            )
-                .chain(),
-        )
-        .run();
+            .chain(),
+    );
+    if let Some(supervisor) = addon_process_supervisor {
+        app.insert_resource(supervisor);
+    }
+    app.run();
 }
 
 fn sample_frame_time(time: Res<Time>, mut stats: ResMut<FrameTimeStats>) {

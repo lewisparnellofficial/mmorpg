@@ -110,6 +110,7 @@ if [[ "${MMORPG_RUN_FUZZ:-0}" == "1" ]]; then
     run_step "UI boundary fuzz smoke" "$repo_root/scripts/smoke-ui-fuzz.sh"
 fi
 run_step "client addon repository smoke" "$repo_root/scripts/smoke-client-addon-repository.sh"
+run_step "client addon process smoke" "$repo_root/scripts/smoke-client-addon-process.sh"
 
 run_manifest_checks experiments/wire-gameplay-smoke/Cargo.toml "wire gameplay smoke"
 run_step "restart persistence smoke" "$repo_root/scripts/smoke-restart-persistence.sh"
