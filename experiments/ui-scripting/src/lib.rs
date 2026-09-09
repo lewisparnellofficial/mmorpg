@@ -418,6 +418,10 @@ impl StorageWorker {
     }
 
     pub fn set(&self, request_id: u64, key: String, value: StoredValue) -> Result<(), String> {
+        if key.is_empty() || key.len() > mmorpg_ui_contract::MAX_STORAGE_KEY_BYTES {
+            return Err("invalid storage key".to_owned());
+        }
+        value.validate(0).map_err(|error| error.to_string())?;
         let sender = self
             .sender
             .as_ref()
@@ -435,6 +439,9 @@ impl StorageWorker {
     }
 
     pub fn delete(&self, request_id: u64, key: String) -> Result<(), String> {
+        if key.is_empty() || key.len() > mmorpg_ui_contract::MAX_STORAGE_KEY_BYTES {
+            return Err("invalid storage key".to_owned());
+        }
         let sender = self
             .sender
             .as_ref()
@@ -1752,16 +1759,15 @@ mod tests {
         let committed = std::fs::read_to_string(&path).unwrap();
         assert!(committed.contains("Aria"));
 
-        worker
+        let error = worker
             .set(
                 2,
                 "too-large".into(),
                 StoredValue::String("x".repeat(mmorpg_ui_contract::MAX_STORAGE_VALUE_BYTES + 1)),
             )
-            .unwrap();
-        let failed = wait_for_storage_result(&worker);
-        assert_eq!(failed.request_id, 2);
-        assert!(failed.result.is_err());
+            .expect_err("oversized value should fail before queue admission");
+        assert!(error.contains("string too large"));
+        assert!(worker.try_result().is_none());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), committed);
         drop(worker);
 

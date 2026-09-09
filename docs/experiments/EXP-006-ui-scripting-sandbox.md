@@ -108,7 +108,9 @@ event, zero secure intents, and zero errors after a normal event dispatch.
 The storage worker regression now also proves that the eleventh successful
 set/delete request in one rolling minute is rejected without changing the
 last committed file. The commit budget is shared by sets and deletes and is
-enforced on the off-thread persistence owner.
+enforced on the off-thread persistence owner. Intrinsically invalid keys and
+values are rejected before queue admission, while namespace-size and file
+commit checks remain on the persistence owner.
 
 The host also bounds retained native secure-intent diagnostics at 64 entries;
 the next host submission is rejected rather than growing the addon state
