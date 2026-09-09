@@ -101,6 +101,43 @@ fn main() {
         )
     });
 
+    let damaged_tank_health =
+        match expect_event(&mut tank.connection, "enemy attack on tank", |event| {
+            matches!(
+                event,
+                ServerEvent::EnemyAttackResolved {
+                    enemy_id: 2,
+                    target_id,
+                    target_health,
+                    ..
+                } if *target_id == tank.player_id && *target_health < 100
+            )
+        }) {
+            ServerEvent::EnemyAttackResolved { target_health, .. } => target_health,
+            _ => unreachable!(),
+        };
+    assert!(damaged_tank_health < 100);
+    healer
+        .connection
+        .send_typed_command(&ClientCommand::Heal {
+            target_id: tank.player_id,
+        })
+        .expect("healer recovery command should send");
+    expect_event(&mut healer.connection, "healer recovery", |event| {
+        matches!(
+            event,
+            ServerEvent::HealResolved {
+                player_id,
+                target_id,
+                amount,
+                target_health,
+            } if *player_id == healer.player_id
+                && *target_id == tank.player_id
+                && *amount > 0
+                && *target_health > damaged_tank_health
+        )
+    });
+
     defeat_and_loot(&mut damage, 2, 902);
     expect_event(&mut tank.connection, "first enemy respawn", |event| {
         matches!(event, ServerEvent::EnemyRespawned { enemy_id: 2, .. })
