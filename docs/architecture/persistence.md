@@ -78,15 +78,18 @@ accepted as a no-op, so a delayed writer cannot overwrite newer state. The core
 validates the state before restoring it; runtime-only target, health, and
 combat timing state is reset.
 
-This is deliberately **not** production persistence: it has no journal,
-database transaction, crash-safe directory sync, concurrent external writers,
-multi-character account store, migration system, credential persistence, or
-durable transactional economy/reward operation log. The server now accepts an
-additive retryable command wrapper for purchase, loot, and quest turn-in and
-keeps a bounded process-local result cache keyed by account, character, and
-operation ID. The bounded writer, revision fence, and process-local idempotency
-cache demonstrate the ownership and retry boundaries only; they do not survive
-a restart. The repeatable evidence is recorded in
+This is deliberately **not** production persistence: it has no database
+transaction, concurrent external writers, multi-character account store,
+migration system, credential persistence, or durable transactional
+economy/reward operation log with commit-before-live-apply semantics. The
+server now accepts an additive retryable command wrapper for purchase, loot,
+and quest turn-in and keeps a bounded result cache keyed by account,
+character, and operation ID. With `--character-store`, completed result
+payloads are appended by a bounded off-thread operation journal and loaded at
+the next process start; without it, the cache is process-local. The journal,
+bounded writer, and revision fence demonstrate ownership and retry boundaries,
+but do not reconcile a crash between live mutation and result publication. The
+repeatable evidence is recorded in
 [`EXP-005`](../experiments/EXP-005-durable-character-checkpoint.md).
 
 ## Transactional operations

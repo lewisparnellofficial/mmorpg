@@ -2,6 +2,7 @@ mod account_repository;
 
 use crate::account_repository::{
     AccountCharacterRepository, CheckpointJob, CheckpointWorker, DevelopmentAccountRepository,
+    OperationJournalJob, OperationJournalWorker, OperationKey,
 };
 use mmorpg_content::starter_catalog;
 use mmorpg_core::{CombatTiming, Command, EntityId, Event, ItemId, PartyId, QuestId, Role, World};
@@ -182,13 +183,6 @@ struct PendingCommand {
     operation: Option<OperationKey>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct OperationKey {
-    account_id: u64,
-    character_id: u64,
-    operation_id: u64,
-}
-
 struct Server {
     world: World,
     #[cfg(test)]
@@ -196,7 +190,8 @@ struct Server {
     wire_clients: Vec<WireClient>,
     detached_characters: BTreeMap<(u64, u64), DetachedCharacter>,
     commands: VecDeque<PendingCommand>,
-    completed_operations: BTreeMap<OperationKey, Vec<Event>>,
+    completed_operations: BTreeMap<OperationKey, Vec<ServerMessage>>,
+    operation_journal_worker: OperationJournalWorker,
     account_repository: Arc<dyn AccountCharacterRepository>,
     checkpoint_worker: CheckpointWorker,
     next_client_id: u64,
@@ -208,6 +203,9 @@ struct Server {
 
 impl Server {
     fn new(tick_hz: u64, dev_auth_enabled: bool, checkpoint_path: Option<PathBuf>) -> Self {
+        let operation_journal_path = checkpoint_path
+            .as_ref()
+            .map(|path| path.with_extension("operations"));
         let repository: Box<dyn AccountCharacterRepository> = match checkpoint_path {
             Some(path) => Box::new(DevelopmentAccountRepository::with_checkpoint_store(
                 dev_auth_enabled,
@@ -215,12 +213,13 @@ impl Server {
             )),
             None => Box::new(DevelopmentAccountRepository::new(dev_auth_enabled)),
         };
-        Self::with_account_repository(tick_hz, repository)
+        Self::with_account_repository_and_journal(tick_hz, repository, operation_journal_path)
     }
 
-    fn with_account_repository(
+    fn with_account_repository_and_journal(
         tick_hz: u64,
         account_repository: Box<dyn AccountCharacterRepository>,
+        operation_journal_path: Option<PathBuf>,
     ) -> Self {
         let tick_hz = tick_hz.max(1);
         let tick_interval = Duration::from_secs_f64(1.0 / tick_hz as f64);
@@ -228,6 +227,11 @@ impl Server {
             .expect("tick_hz is clamped above zero");
         let account_repository: Arc<dyn AccountCharacterRepository> = Arc::from(account_repository);
         let checkpoint_worker = CheckpointWorker::new(Arc::clone(&account_repository));
+        let (operation_journal_worker, completed_operations) = operation_journal_path
+            .map(|path| {
+                OperationJournalWorker::new(path).expect("operation journal should load and start")
+            })
+            .unwrap_or_else(|| (OperationJournalWorker::disabled(), BTreeMap::new()));
         Self {
             world: World::new_starter_zone(),
             #[cfg(test)]
@@ -235,7 +239,17 @@ impl Server {
             wire_clients: Vec::new(),
             detached_characters: BTreeMap::new(),
             commands: VecDeque::new(),
-            completed_operations: BTreeMap::new(),
+            completed_operations: completed_operations
+                .into_iter()
+                .map(|(key, payloads)| {
+                    let messages = payloads
+                        .into_iter()
+                        .filter_map(|payload| ServerMessage::decode_payload(&payload).ok())
+                        .collect();
+                    (key, messages)
+                })
+                .collect(),
+            operation_journal_worker,
             checkpoint_worker,
             account_repository,
             next_client_id: 1,
@@ -632,10 +646,8 @@ impl Server {
                     .iter_mut()
                     .find(|client| client.id == client_id)
                 {
-                    for event in events {
-                        if let Some(event) = wire_event(&event) {
-                            client.queue_server_message(&ServerMessage::Event(event));
-                        }
+                    for message in events {
+                        client.queue_server_message(&message);
                     }
                 }
                 return;
@@ -955,7 +967,7 @@ impl Server {
             let result = events
                 .iter()
                 .filter(|event| event_recipient(event) == Some(player_id))
-                .cloned()
+                .filter_map(|event| wire_event(event).map(ServerMessage::Event))
                 .collect::<Vec<_>>();
             if self.completed_operations.len() >= MAX_COMPLETED_OPERATIONS
                 && !self.completed_operations.contains_key(&key)
@@ -964,7 +976,33 @@ impl Server {
                     self.completed_operations.remove(&oldest);
                 }
             }
+            let journal_payloads = result
+                .iter()
+                .filter_map(|message| message.encode_payload().ok())
+                .collect();
             self.completed_operations.insert(key, result);
+            if self
+                .operation_journal_worker
+                .try_enqueue(OperationJournalJob {
+                    key,
+                    result_payloads: journal_payloads,
+                })
+                .is_err()
+            {
+                eprintln!(
+                    "operation_journal_queue_full account={} character={} operation={}",
+                    key.account_id, key.character_id, key.operation_id
+                );
+            }
+        }
+
+        for result in self.operation_journal_worker.drain_results() {
+            if let Err(error) = result.result {
+                eprintln!(
+                    "operation_journal_error account={} character={} operation={} error={error}",
+                    result.key.account_id, result.key.character_id, result.key.operation_id
+                );
+            }
         }
 
         // The development protocol only accepts valid join commands, so join

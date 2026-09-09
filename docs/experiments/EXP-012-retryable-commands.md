@@ -25,7 +25,9 @@ durable operation journal.
 - Linux development server with the typed wire listener on loopback.
 - `experiments/wire-gameplay-smoke` sends wrapped purchase, loot, and quest
   turn-in commands with distinct operation identifiers.
-- The server retains at most 256 completed operation results in process memory.
+- The server retains at most 256 completed operation results in process memory;
+  with `--character-store`, result payloads are also appended to an operation
+  journal and loaded on restart.
 - The focused server test submits the same purchase operation twice and checks
   that the second submission returns the cached event without changing gold or
   queueing another authoritative command.
@@ -51,11 +53,12 @@ cache without reapplying the core command.
 
 ## Limitations
 
-- The result cache is process-local and is lost on restart.
-- Cache insertion currently follows successful world-step application; it is
-  not a commit-before-live-apply transaction boundary.
-- The prototype does not provide a durable operation journal, fsync policy,
-  cross-process fencing, or recovery of in-flight operations.
+- Without `--character-store`, the result cache is process-local and is lost on
+  restart.
+- Journal insertion currently follows successful world-step application; it
+  is not a commit-before-live-apply transaction boundary.
+- The prototype does not provide pending/failed journal states, cross-process
+  fencing, or recovery of in-flight operations.
 - Rejected operations do not yet carry a durable typed result record suitable
   for replay; this slice is primarily a successful-operation duplicate fence.
 - The graphical client runtime gate remains partial because Vulkan validation

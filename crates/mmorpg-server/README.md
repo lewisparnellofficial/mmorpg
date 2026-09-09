@@ -91,10 +91,13 @@ boundary, not production spatial replication or backpressure.
 
 Purchase, loot, and quest-turn-in commands may use the additive retryable
 wrapper with a nonzero operation ID. The server caches up to 256 completed
-process-local results per instance, scoped by account and character, and
-returns the cached event on a duplicate instead of reapplying the command.
-This is an idempotency boundary for the development protocol, not yet a
-durable journal or commit-before-live-apply transaction.
+results per instance, scoped by account and character, and returns the cached
+event on a duplicate instead of reapplying the command. When
+`--character-store` is enabled, completed result payloads are also appended by
+the off-thread operation journal and reloaded on the next process start. The
+journal is still a development boundary: it does not yet provide
+commit-before-live-apply ordering or crash reconciliation for an operation
+that fails between live mutation and result publication.
 
 The typed gameplay vocabulary includes authoritative BasicAttack, party
 membership, and Heal { target_id } intents. Party invites and membership are

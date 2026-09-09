@@ -101,8 +101,9 @@ roadmap, including post-gate editor and UI-scripting work.
   bounded replaceable movement coalescing; production interest management
   remains open.
 - Additive retryable typed commands for purchase, loot, and quest turn-in with
-  a bounded process-local operation-result cache; durable cross-restart
-  transaction journaling remains open.
+  a bounded result cache and an opt-in off-thread restart-readable operation
+  journal. Commit-before-live-apply ordering and crash reconciliation remain
+  open.
 
 ## Completed batch: town/field gameplay loop
 

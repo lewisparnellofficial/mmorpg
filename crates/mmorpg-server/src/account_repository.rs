@@ -10,6 +10,7 @@ use mmorpg_core::{
     QuestStatus, Role,
 };
 use mmorpg_wire::{CharacterSummary, RoleCode};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -150,6 +151,105 @@ pub struct CheckpointResult {
     pub character_id: u64,
     pub revision: u64,
     pub result: Result<(), String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct OperationKey {
+    pub account_id: u64,
+    pub character_id: u64,
+    pub operation_id: u64,
+}
+
+#[derive(Debug)]
+pub struct OperationJournalJob {
+    pub key: OperationKey,
+    pub result_payloads: Vec<Vec<u8>>,
+}
+
+pub struct OperationJournalResult {
+    pub key: OperationKey,
+    pub result: Result<(), String>,
+}
+
+enum OperationJournalMessage {
+    Complete(OperationJournalJob),
+    Stop,
+}
+
+/// Bounded append-only operation-result handoff. The simulation owner only
+/// enqueues immutable result bytes; the journal thread performs file I/O.
+pub struct OperationJournalWorker {
+    sender: Option<SyncSender<OperationJournalMessage>>,
+    results: Receiver<OperationJournalResult>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl OperationJournalWorker {
+    pub fn disabled() -> Self {
+        let (_sender, results) = mpsc::channel();
+        Self {
+            sender: None,
+            results,
+            thread: None,
+        }
+    }
+
+    pub fn new(path: PathBuf) -> Result<(Self, BTreeMap<OperationKey, Vec<Vec<u8>>>), String> {
+        let completed = load_operation_journal(&path)?;
+        let (sender, receiver) = mpsc::sync_channel(128);
+        let (result_sender, results) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("mmorpg-operation-journal".to_owned())
+            .spawn(move || {
+                while let Ok(message) = receiver.recv() {
+                    match message {
+                        OperationJournalMessage::Complete(job) => {
+                            let key = job.key;
+                            let result = append_operation_journal(&path, &job);
+                            let _ = result_sender.send(OperationJournalResult { key, result });
+                        }
+                        OperationJournalMessage::Stop => break,
+                    }
+                }
+            })
+            .map_err(|error| format!("cannot start operation journal: {error}"))?;
+        Ok((
+            Self {
+                sender: Some(sender),
+                results,
+                thread: Some(thread),
+            },
+            completed,
+        ))
+    }
+
+    pub fn try_enqueue(&self, job: OperationJournalJob) -> Result<(), OperationJournalJob> {
+        let Some(sender) = &self.sender else {
+            return Err(job);
+        };
+        match sender.try_send(OperationJournalMessage::Complete(job)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(OperationJournalMessage::Complete(job)))
+            | Err(TrySendError::Disconnected(OperationJournalMessage::Complete(job))) => Err(job),
+            Err(TrySendError::Full(OperationJournalMessage::Stop))
+            | Err(TrySendError::Disconnected(OperationJournalMessage::Stop)) => unreachable!(),
+        }
+    }
+
+    pub fn drain_results(&self) -> impl Iterator<Item = OperationJournalResult> + '_ {
+        std::iter::from_fn(|| self.results.try_recv().ok())
+    }
+}
+
+impl Drop for OperationJournalWorker {
+    fn drop(&mut self) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(OperationJournalMessage::Stop);
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 enum CheckpointMessage {
@@ -415,6 +515,98 @@ impl LocalCheckpointStore {
         fs::rename(&temporary, &self.path)
             .map_err(|error| format!("cannot replace checkpoint: {error}"))
     }
+}
+
+fn load_operation_journal(path: &Path) -> Result<BTreeMap<OperationKey, Vec<Vec<u8>>>, String> {
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("cannot read operation journal: {error}"))?;
+    let mut completed = BTreeMap::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<_> = line.split('\t').collect();
+        if fields.len() != 6 || fields[0] != "version=1" || fields[1] != "completed" {
+            return Err("malformed operation journal record".to_owned());
+        }
+        let account_id = parse_journal_field(fields[2], "account")?;
+        let character_id = parse_journal_field(fields[3], "character")?;
+        let operation_id = parse_journal_field(fields[4], "operation")?;
+        let payloads = if let Some(encoded) = fields[5].strip_prefix("results=") {
+            if encoded.is_empty() {
+                Vec::new()
+            } else {
+                encoded
+                    .split(',')
+                    .map(decode_hex)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+        } else {
+            return Err("malformed operation journal result field".to_owned());
+        };
+        completed.insert(
+            OperationKey {
+                account_id,
+                character_id,
+                operation_id,
+            },
+            payloads,
+        );
+    }
+    Ok(completed)
+}
+
+fn append_operation_journal(path: &Path, job: &OperationJournalJob) -> Result<(), String> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("cannot create operation journal directory: {error}"))?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("cannot open operation journal: {error}"))?;
+    let results = job
+        .result_payloads
+        .iter()
+        .map(|payload| encode_hex(payload))
+        .collect::<Vec<_>>()
+        .join(",");
+    writeln!(
+        file,
+        "version=1\tcompleted\taccount={}\tcharacter={}\toperation={}\tresults={}",
+        job.key.account_id, job.key.character_id, job.key.operation_id, results
+    )
+    .map_err(|error| format!("cannot append operation journal: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("cannot sync operation journal: {error}"))
+}
+
+fn parse_journal_field(field: &str, name: &str) -> Result<u64, String> {
+    field
+        .strip_prefix(&format!("{name}="))
+        .ok_or_else(|| format!("malformed operation journal {name} field"))?
+        .parse()
+        .map_err(|_| format!("invalid operation journal {name}"))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if !value.len().is_multiple_of(2) {
+        return Err("odd-length operation journal payload".to_owned());
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&value[index..index + 2], 16)
+                .map_err(|_| "invalid operation journal payload".to_owned())
+        })
+        .collect()
 }
 
 struct CheckpointRecord {
@@ -829,5 +1021,42 @@ mod tests {
                 .expect("checkpoint should load")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn operation_journal_worker_persists_results_for_restart() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("mmorpg-operations-{unique}.journal"));
+        let key = OperationKey {
+            account_id: DEV_ACCOUNT_ID,
+            character_id: DEV_CHARACTER_ID,
+            operation_id: 99,
+        };
+        let (worker, initially_loaded) =
+            OperationJournalWorker::new(path.clone()).expect("journal should start");
+        assert!(initially_loaded.is_empty());
+        worker
+            .try_enqueue(OperationJournalJob {
+                key,
+                result_payloads: vec![vec![0x01, 0xa5, 0xff]],
+            })
+            .expect("operation should enter bounded queue");
+        let mut completed = false;
+        for _ in 0..100 {
+            if worker.drain_results().any(|result| result.result.is_ok()) {
+                completed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(completed, "journal should report completion");
+        drop(worker);
+
+        let (_worker, loaded) = OperationJournalWorker::new(path.clone()).expect("journal reload");
+        assert_eq!(loaded.get(&key), Some(&vec![vec![0x01, 0xa5, 0xff]]));
+        let _ = fs::remove_file(path);
     }
 }
