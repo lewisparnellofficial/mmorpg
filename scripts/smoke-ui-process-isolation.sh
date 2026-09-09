@@ -25,7 +25,7 @@ bwrap \
     --tmpfs /tmp \
     --ro-bind "$binary" /opt/ui-wasm-comparison \
     -- /bin/sh -c \
-    '/opt/ui-wasm-comparison >/tmp/ui-wasm-output && printf isolated >"/tmp/$0"' \
+    'test ! -s /proc/net/route && /opt/ui-wasm-comparison >/tmp/ui-wasm-output && printf isolated >"/tmp/$0"' \
     "$marker_name"
 
 if [[ -e "$host_marker" ]]; then
@@ -33,4 +33,4 @@ if [[ -e "$host_marker" ]]; then
     exit 1
 fi
 
-echo "ui process isolation smoke: Wasmi comparison ran with unshared namespaces and private /tmp"
+echo "ui process isolation smoke: Wasmi comparison ran with unshared namespaces, private /tmp, and an empty network route"
