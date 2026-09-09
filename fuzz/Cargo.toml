@@ -1,0 +1,21 @@
+[package]
+name = "mmorpg-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+mmorpg-ui-contract = { path = "../crates/mmorpg-ui-contract" }
+
+[[bin]]
+name = "ui-boundaries"
+path = "fuzz_targets/ui_boundaries.rs"
+test = false
+doc = false
+bench = false

@@ -136,8 +136,18 @@ callback p50=36484 ns, p95=55596 ns, max=67734 ns
 The callback measurement is the average of ten dispatches within each sample;
 the load measurement includes VM construction and source execution. These are
 repeatable local observations for quota calibration, not a universal
-performance guarantee. The gate does not yet provide coverage-guided fuzzing,
-renderer frame-time data, OS/process isolation, or minimum-hardware proof.
+performance guarantee. The gate now has an optional coverage-guided fuzz
+target; renderer frame-time data, OS/process isolation, and minimum-hardware
+proof remain separate gates.
+
+The repository also contains a nightly libFuzzer target at
+`fuzz/fuzz_targets/ui_boundaries.rs`. It constructs bounded arbitrary
+manifests, UI operation batches, and nested storage values and exercises the
+public contract validators. A local 1,000-run smoke completed with 201
+coverage features, a 39-entry generated corpus, and no crash or sanitizer
+finding. Run it with `./scripts/smoke-ui-fuzz.sh`; set `MMORPG_RUN_FUZZ=1` to
+include it in aggregate validation on a host with `cargo-fuzz` and nightly
+Rust. The normal aggregate remains independent of that optional tool.
 
 ## Result
 
