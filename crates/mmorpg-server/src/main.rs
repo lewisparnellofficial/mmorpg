@@ -418,6 +418,10 @@ impl Server {
                 self.queue_wire_error(client_id, "unknown character".to_owned());
                 return;
             };
+            if self.character_reserved_by_other(client_id, account_id, character_id) {
+                self.queue_wire_error(client_id, "character is already active".to_owned());
+                return;
+            }
             self.wire_clients[client_index].selected_character_id = Some(character_id);
             let summary = character.summary();
             self.wire_clients[client_index].queue_server_message(
@@ -482,6 +486,10 @@ impl Server {
                 .authenticated
                 .expect("authenticated state checked above")
                 .account_id;
+            if self.character_reserved_by_other(client_id, account_id, character_id) {
+                self.queue_wire_error(client_id, "character is already active".to_owned());
+                return;
+            }
             let Some(character) = self
                 .account_repository
                 .find_character(account_id, character_id)
@@ -546,6 +554,21 @@ impl Server {
             origin: ClientOrigin::Wire(client_id),
             command,
         });
+    }
+
+    fn character_reserved_by_other(
+        &self,
+        client_id: u64,
+        account_id: u64,
+        character_id: u64,
+    ) -> bool {
+        self.wire_clients.iter().any(|client| {
+            client.id != client_id
+                && client
+                    .authenticated
+                    .is_some_and(|session| session.account_id == account_id)
+                && client.selected_character_id == Some(character_id)
+        })
     }
 
     fn send_wire_machine_snapshot(&mut self, client_id: u64) {
@@ -1936,6 +1959,27 @@ mod tests {
         ]);
         let owners: Vec<_> = commands.iter().map(|(owner, _)| *owner).collect();
         assert_eq!(owners, vec![1, 2, 1, 1]);
+    }
+
+    #[test]
+    fn active_character_fence_is_scoped_to_account_and_character() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let _peer = TcpStream::connect(address).expect("connect test peer");
+        let (stream, _) = listener.accept().expect("accept test peer");
+        let mut server = Server::new(DEFAULT_TICK_HZ, false, None);
+        let mut first = WireClient::new(1, stream);
+        first.authenticated = Some(AuthenticatedSession {
+            account_id: 7,
+            session_id: 1,
+        });
+        first.selected_character_id = Some(42);
+        server.wire_clients.push(first);
+
+        assert!(server.character_reserved_by_other(2, 7, 42));
+        assert!(!server.character_reserved_by_other(2, 8, 42));
+        assert!(!server.character_reserved_by_other(2, 7, 43));
+        assert!(!server.character_reserved_by_other(1, 7, 42));
     }
 
     #[test]

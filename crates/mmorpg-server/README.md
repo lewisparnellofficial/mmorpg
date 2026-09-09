@@ -108,12 +108,15 @@ explicitly select one before entering the world. This is intentionally a local
 protocol smoke-test handshake; it is not production authentication,
 authorization, encryption, or account/character persistence.
 
+The server fences an account/character selection across active wire sessions;
+the same stable character cannot be entered concurrently by two sessions.
+
 The current server resolves the development token and character catalog through
 its `AccountCharacterRepository` boundary. `DevelopmentAccountRepository` is
-an in-memory local catalog used only by this slice. It does not preserve an
-account, character, inventory, quest, or position across process restarts; a
-durable implementation must replace that repository before any persistent or
-externally reachable deployment.
+an in-memory local catalog used only by this slice. The optional
+`--character-store` prototype preserves validated durable character fields at
+bounded intervals and safe logout, but it is not a durable account system or
+an externally reachable deployment implementation.
 
 The optional explicit player ID on `move` is checked against the player bound
 to the connection. It exists for debugging and does not grant authority over

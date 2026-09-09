@@ -30,7 +30,7 @@ for:
 
 `DevelopmentAccountRepository` is the initial implementation. It is a
 loopback-gated, in-memory catalog containing the current development account
-and `Aria` character. The server socket loop calls the repository; it does not
+and stable `Aria`, `Borin`, and `Celia` characters. The server socket loop calls the repository; it does not
 hold the catalog constants or implement character ownership checks itself.
 
 The repository returns core-role character records and projects them to typed
@@ -43,7 +43,11 @@ a `JoinPlayer` command only after account-scoped character lookup succeeds.
 - The character-selection flow has a testable replacement seam for durable
   storage and account policy.
 - The development repository remains intentionally non-durable; restarting the
-  server loses all active world state and does not represent a persistent MMO.
+  server loses active world state. The opt-in checkpoint file is a local
+  bounded-write prototype, not a persistent account system or production MMO
+  durability guarantee.
+- The wire server fences one stable account/character selection to one active
+  session at a time.
 - Future storage work must preserve account ownership checks and must not put
   blocking database operations in the simulation-critical path.
 
