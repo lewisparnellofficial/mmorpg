@@ -118,6 +118,14 @@ or renderer-quality acceptance gate.
   loader-chain errors but retained the swapchain reports. This identifies a
   host-layer contributor without proving that the remaining wgpu/driver
   behavior is safe; the renderer-quality gate therefore remains open.
+- **Optimized Wayland capture (2026-09-09):** After building the standalone
+  client with `cargo build --release`, a seven-second run with
+  `WINIT_UNIX_BACKEND=wayland` and the broken optional Lossless Scaling layer
+  disabled created the Vulkan window and selected the NVIDIA RTX 5070 adapter
+  with zero `VALIDATION`, `Failed to find`, or `Skipping layer` reports. This
+  is evidence that the optimized path is operational on this host, but it is
+  not a frame-time distribution and does not establish correctness for the
+  debug validation path; the fixed renderer-quality gates remain open.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,
