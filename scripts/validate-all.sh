@@ -102,6 +102,7 @@ run_step "typed diagnostic smoke" "$repo_root/scripts/smoke-typed-diagnostic.sh"
 run_manifest_checks experiments/ui-scripting/Cargo.toml "UI scripting"
 
 run_manifest_checks experiments/wire-gameplay-smoke/Cargo.toml "wire gameplay smoke"
+run_step "slow-client smoke" "$repo_root/scripts/smoke-slow-client.sh"
 run_manifest_checks experiments/client-presentation-replay/Cargo.toml "presentation replay"
 run_manifest_checks experiments/ai-respawn/Cargo.toml "AI respawn"
 run_manifest_checks experiments/layer-manager/Cargo.toml "layer manager"

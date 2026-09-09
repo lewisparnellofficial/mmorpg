@@ -107,6 +107,13 @@ impl WireClient {
             return;
         };
         if self.output.len().saturating_add(frame.len()) > MAX_WIRE_OUTPUT_BYTES {
+            eprintln!(
+                "wire_client_output_saturated id={} queued_bytes={} frame_bytes={} limit={}",
+                self.id,
+                self.output.len(),
+                frame.len(),
+                MAX_WIRE_OUTPUT_BYTES
+            );
             self.closed = true;
             return;
         }

@@ -65,6 +65,11 @@ or renderer-quality acceptance gate.
   for all three requested characters. This verifies the bounded worker
   reconnect path while the clients remain alive; it does not verify durable
   world state across the process restart.
+- **Headless slow-client result:** A real TCP gate sent 12,800 snapshot
+  requests from a non-reading client while a second client remained able to
+  receive a snapshot. The server recorded bounded output saturation and
+  isolated the slow session. This is network/queue evidence, not graphical
+  slow-client evidence or a production backpressure measurement.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,

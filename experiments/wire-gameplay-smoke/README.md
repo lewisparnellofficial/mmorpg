@@ -42,6 +42,18 @@ generations. It still does not replace the graphical run or cover process
 restart, slow-client network behavior, or repeated healer recovery across
 multiple encounter generations.
 
+The bounded slow-client gate uses two real TCP sessions. One client floods
+snapshot requests without reading responses while the other must remain able
+to receive a snapshot; the wrapper also requires the server's structured
+output-saturation record:
+
+```bash
+./scripts/smoke-slow-client.sh
+```
+
+This proves local queue bounding and failure isolation, not production network
+backpressure or capacity.
+
 ## Run
 
 Start the server with its optional wire listener:

@@ -11,6 +11,7 @@ default-run = "wire-gameplay-smoke"
 mmorpg-content = { path = "../../crates/mmorpg-content" }
 mmorpg-client-transport = { path = "../../crates/mmorpg-client-transport" }
 mmorpg-wire = { path = "../../crates/mmorpg-wire" }
+socket2 = "0.5"
 
 [lints.rust]
 unsafe_code = "forbid"
