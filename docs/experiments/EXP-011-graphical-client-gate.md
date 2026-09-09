@@ -135,18 +135,18 @@ or renderer-quality acceptance gate.
   not a frame-time distribution and does not establish correctness for the
   debug validation path; the fixed renderer-quality gates remain open.
 - **Release frame-time capture (2026-09-09):** The optimized smoke now accepts
-  `--frame-time-stats` and samples the real Bevy frame delta for the bounded
-  five-second observation. The sampler is capped at 6,000 records and reports
+  `--frame-time-stats` and samples the real Bevy frame delta after a bounded
+  two-second renderer warm-up followed by a five-second observation. The
+  sampler is capped at 6,000 records and reports
   p50, p95, p99, and maximum values, so it cannot grow without bound. The
-  An earlier run reported `samples=711 p50_ms=6.829 p95_ms=16.634
-  p99_ms=17.580 max_ms=48.413`, within the fixed thresholds. After the client
-  began requesting explicit FIFO presentation, a subsequent run reported
-  `samples=711 p50_ms=6.756 p95_ms=16.893 p99_ms=18.088 max_ms=46.820`;
-  maximum time remained within the 50 ms limit, but p95 missed the 16.7 ms
-  limit by 0.193 ms. These are release-path observations, not universal
-  performance guarantees, and the latest result means the frame-time gate is
-  not consistently passing. Debug-path Vulkan validation warnings and the
-  physical-input gate remain unresolved.
+  The warm-up-aware runs reported `samples=718 p50_ms=6.545 p95_ms=16.742
+  p99_ms=17.269 max_ms=18.659` and then `samples=719 p50_ms=6.392
+  p95_ms=16.866 p99_ms=17.470 max_ms=18.222`. Maximum time remained within
+  the 50 ms limit, but both p95 values missed the strict 16.7 ms limit. These
+  are release-path observations, not universal performance guarantees, and
+  the latest repeated results mean the frame-time gate is not passing on this
+  host. Debug-path Vulkan validation warnings and the physical-input gate
+  remain unresolved.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,

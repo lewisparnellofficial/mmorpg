@@ -286,7 +286,9 @@ struct AcceptanceSmoke {
 #[derive(Resource)]
 struct FrameTimeStats {
     enabled: bool,
+    collecting: bool,
     samples_ms: Vec<f64>,
+    warmup_timer: Timer,
     report_timer: Timer,
 }
 
@@ -294,8 +296,10 @@ impl FrameTimeStats {
     fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            collecting: false,
             samples_ms: Vec::with_capacity(FRAME_TIME_SAMPLE_CAPACITY),
             report_timer: Timer::from_seconds(5.0, TimerMode::Once),
+            warmup_timer: Timer::from_seconds(2.0, TimerMode::Once),
         }
     }
 
@@ -531,6 +535,13 @@ fn main() {
 
 fn sample_frame_time(time: Res<Time>, mut stats: ResMut<FrameTimeStats>) {
     if !stats.enabled {
+        return;
+    }
+    if !stats.collecting {
+        if stats.warmup_timer.tick(time.delta()).just_finished() {
+            stats.collecting = true;
+            stats.report_timer.reset();
+        }
         return;
     }
     if stats.samples_ms.len() < FRAME_TIME_SAMPLE_CAPACITY {
