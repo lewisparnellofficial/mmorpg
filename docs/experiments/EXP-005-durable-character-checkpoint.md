@@ -83,7 +83,10 @@ a purchased Town Ration, and rewarded quest state.
 The repository-root command `./scripts/smoke-restart-persistence.sh` repeats
 this exact two-process scenario with an isolated temporary checkpoint path.
 
-This remains a local prototype, not production durability. It does not yet
+This remains a local prototype, not production durability. The current write
+policy is bounded periodic checkpointing (20 simulation ticks at the default
+20 Hz) plus a safe-logout checkpoint; it is not a per-tick durability claim.
+It does not yet
 provide a transaction journal, retry/idempotency keys, fsync of the parent
 directory, multi-character storage, concurrent writers, migration tooling, or
 PostgreSQL-backed account data.

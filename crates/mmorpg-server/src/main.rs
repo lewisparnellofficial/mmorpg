@@ -24,6 +24,7 @@ const MAX_WIRE_OUTPUT_BYTES: usize = 256 * 1024;
 const MAX_WIRE_COMMANDS_PER_CLIENT_POLL: usize = 32;
 const MAX_WIRE_COMMANDS_PER_POLL: usize = 256;
 const MAX_PENDING_COMMANDS: usize = 1024;
+const CHECKPOINT_INTERVAL_TICKS: u64 = 20;
 
 #[cfg(test)]
 #[derive(Debug)]
@@ -812,7 +813,9 @@ impl Server {
             self.broadcast_wire_event(&event);
         }
 
-        self.checkpoint_wire_players();
+        if self.world.tick().is_multiple_of(CHECKPOINT_INTERVAL_TICKS) {
+            self.checkpoint_wire_players();
+        }
 
         self.next_tick += self.tick_interval;
         if self.next_tick <= Instant::now() {
@@ -843,6 +846,12 @@ impl Server {
     }
 
     fn queue_disconnects(&mut self) {
+        // A socket close is a safe-logout boundary for the development
+        // prototype. Persist the post-command state before removing the live
+        // entity, even when the periodic checkpoint interval is not due.
+        if self.wire_clients.iter().any(|client| client.closed) {
+            self.checkpoint_wire_players();
+        }
         for client in &mut self.wire_clients {
             if client.closed
                 && let Some(player_id) = client.player_id.take()

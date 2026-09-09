@@ -46,6 +46,9 @@ cargo build --quiet -p mmorpg-server
 
 start_server
 cargo run --quiet --manifest-path experiments/wire-gameplay-smoke/Cargo.toml -- "$wire_address"
+# Let the nonblocking server loop observe the client's orderly EOF and execute
+# the safe-logout checkpoint before the process is stopped for restart.
+sleep 0.1
 stop_server
 
 start_server

@@ -69,9 +69,10 @@ access in the simulation tick.
 The current development server now has an opt-in, single-character local
 checkpoint prototype behind `--character-store <path>`. It uses the repository
 boundary to load validated player state when the selected character enters the
-world and atomically replace a small versioned checkpoint file after each
-authoritative server step. The core validates the state before restoring it;
-runtime-only target, health, and combat timing state is reset.
+world and atomically replace a small versioned checkpoint file at a bounded
+20-tick interval at the default 20 Hz, plus at safe logout/disconnect. The core
+validates the state before restoring it; runtime-only target, health, and
+combat timing state is reset.
 
 This is deliberately **not** production persistence: it has no journal,
 database transaction, crash-safe directory sync, concurrent writers,
