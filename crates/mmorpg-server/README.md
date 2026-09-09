@@ -69,9 +69,11 @@ cargo run -p mmorpg-server -- 127.0.0.1:4400 \
 ```
 
 When a client disconnects, the server first applies and checkpoints any
-commands already read during that loop iteration, then queues the player's
-authoritative leave. This prevents a same-tick reward from being discarded
-before the local checkpoint prototype can record it.
+commands already read during that loop iteration, then detaches the selected
+character for a bounded five-second grace window. A reconnect for the same
+account and character rebinds the existing runtime entity and receives a fresh
+private snapshot; expiry queues the normal authoritative leave. This is a
+development reconnect boundary, not production session resume.
 
 The typed listener accepts versioned MMOW command envelopes containing the
 typed mmorpg-wire::ClientCommand payload. It routes those commands through

@@ -1,7 +1,7 @@
 # EXP-009: Party ownership, eligibility, and generation loot
 
-**Status:** Authoritative core and typed adapter slice integrated; disconnect
-grace and addressed party delivery remain provisional
+**Status:** Authoritative core and typed adapter slice integrated; development
+disconnect grace is integrated; addressed party delivery remains provisional
 
 ## Objective
 
@@ -38,9 +38,10 @@ details.
 
 ## Evidence
 
-- **Measured local result:** 30 root core tests pass, including bounded invite
-  expiry and two-generation party loot selection; the typed wire, client model,
-  client adapter, workspace, and aggregate validation suites pass.
+- **Measured local result:** 31 root core tests pass, including bounded invite
+  expiry and two-generation party loot selection; the server's reconnect-grace
+  tests, typed wire, client model, client adapter, workspace, and aggregate
+  validation suites pass.
 - **Implementation evidence:** authoritative party registry, five-member
   bound, invite expiry, leader checks, death-time eligibility snapshot,
   round-robin cursor, generation reset, typed codec mappings, and client
@@ -50,9 +51,9 @@ details.
 
 ## Remaining uncertainty
 
-Disconnect grace requires stable account/character identity from Milestones 7
-and 12; the current core's LeavePlayer operation removes a runtime entity
-immediately. Party event delivery is currently session-filtered but still uses
-the development server's bounded broadcast queue rather than the addressed
+The grace window is development-session state, not production session resume:
+there is no gateway handoff, reconnect token, or cross-process detached-state
+store. Party event delivery is currently session-filtered but still uses the
+development server's bounded broadcast queue rather than the addressed
 delivery/interest manager from Milestone 8. Remote party summaries and nearby
 detail will be separated when that delivery boundary is integrated.

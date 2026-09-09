@@ -110,8 +110,10 @@ aggro and explicit tank taunt are now authoritative as well; defeated players
 can release to town through a typed recovery transition, and corpse loot
 claimability expires before the stable enemy ID respawns. Patrol waypoints and
 party-scoped generation loot selection now run in the authoritative owner;
-addressed movement replication and the remaining party disconnect-grace
-policy remain provisional until their full ownership boundaries are integrated.
+addressed movement replication is integrated; the development server also has
+a bounded five-second party/member disconnect-grace rebind that preserves the
+existing runtime entity and expires through the normal authoritative leave.
+Production session resume and gateway failover remain provisional.
 
 The current server is intentionally a development process. It does not yet
 provide production authentication, durable persistence, interest-managed

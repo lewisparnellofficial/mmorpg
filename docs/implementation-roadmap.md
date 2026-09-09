@@ -95,6 +95,8 @@ roadmap, including post-gate editor and UI-scripting work.
 - Authoritative bounded party lifecycle with invite expiry, leader controls,
   privacy-filtered typed events, death-time eligibility, and deterministic
   per-generation round-robin loot selection.
+- Bounded development disconnect grace that rebinds a reconnecting
+  account/character to its existing runtime entity before authoritative expiry.
 - Minimum addressed typed delivery with nearby public-event filtering and
   bounded replaceable movement coalescing; production interest management
   remains open.

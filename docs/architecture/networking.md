@@ -90,8 +90,13 @@ Public combat and movement events now receive a 45-unit Nearby filter before
 enqueueing; player movement is replaceable and coalesced per recipient/entity,
 while transactions, party events, and other authoritative results remain
 reliable ordered messages. Party summaries are not yet a separate delivery
-audience, and remote-party-summary versus nearby-detail separation plus durable
-disconnect grace remain future work.
+audience, and remote-party-summary versus nearby-detail separation remains
+future work. A disconnected authenticated character is now retained as a
+bounded server-side detached binding for five seconds (100 fixed ticks); a
+reconnect for the same account and character rebinds the existing runtime
+entity and receives a fresh private snapshot, while expiry issues the normal
+authoritative leave. This is development-session grace, not production session
+resume or gateway failover.
 
 ## Large encounter requirements
 

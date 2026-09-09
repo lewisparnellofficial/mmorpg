@@ -30,6 +30,7 @@ const MAX_WIRE_COMMANDS_PER_CLIENT_POLL: usize = 32;
 const MAX_WIRE_COMMANDS_PER_POLL: usize = 256;
 const MAX_PENDING_COMMANDS: usize = 1024;
 const CHECKPOINT_INTERVAL_TICKS: u64 = 20;
+const DISCONNECT_GRACE_TICKS: u64 = 100;
 
 #[cfg(test)]
 #[derive(Debug)]
@@ -162,6 +163,12 @@ struct AuthenticatedSession {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DetachedCharacter {
+    player_id: EntityId,
+    expires_at_tick: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ClientOrigin {
     #[cfg(test)]
     Line(u64),
@@ -178,6 +185,7 @@ struct Server {
     #[cfg(test)]
     clients: Vec<Client>,
     wire_clients: Vec<WireClient>,
+    detached_characters: BTreeMap<(u64, u64), DetachedCharacter>,
     commands: VecDeque<PendingCommand>,
     account_repository: Arc<dyn AccountCharacterRepository>,
     checkpoint_worker: CheckpointWorker,
@@ -215,6 +223,7 @@ impl Server {
             #[cfg(test)]
             clients: Vec::new(),
             wire_clients: Vec::new(),
+            detached_characters: BTreeMap::new(),
             commands: VecDeque::new(),
             checkpoint_worker,
             account_repository,
@@ -528,6 +537,22 @@ impl Server {
                 );
                 return;
             };
+            if let Some(detached) = self.detached_characters.remove(&(account_id, character_id)) {
+                if self.world.player(detached.player_id).is_some()
+                    && detached.expires_at_tick > self.world.tick()
+                {
+                    let client = &mut self.wire_clients[client_index];
+                    client.player_id = Some(detached.player_id);
+                    client.queue_server_message(&ServerMessage::Connected {
+                        player_id: detached.player_id.0,
+                        role: wire_role(character.role),
+                    });
+                    client.queue_server_message(&ServerMessage::Snapshot(
+                        wire_snapshot_for_player(&self.world, detached.player_id),
+                    ));
+                    return;
+                }
+            }
             let command = match self
                 .account_repository
                 .load_checkpoint(account_id, character_id)
@@ -834,6 +859,7 @@ impl Server {
             return;
         }
 
+        self.expire_detached_characters();
         let pending: Vec<_> = self.commands.drain(..).collect();
         let mut join_origins: VecDeque<ClientOrigin> = pending
             .iter()
@@ -932,12 +958,44 @@ impl Server {
             self.checkpoint_wire_players();
         }
         for client in &mut self.wire_clients {
-            if client.closed
-                && let Some(player_id) = client.player_id.take()
-            {
+            if !client.closed {
+                continue;
+            }
+            let (Some(session), Some(character_id), Some(player_id)) = (
+                client.authenticated,
+                client.selected_character_id,
+                client.player_id,
+            ) else {
+                continue;
+            };
+            self.detached_characters.insert(
+                (session.account_id, character_id),
+                DetachedCharacter {
+                    player_id,
+                    expires_at_tick: self.world.tick().saturating_add(DISCONNECT_GRACE_TICKS),
+                },
+            );
+            client.player_id = None;
+        }
+    }
+
+    fn expire_detached_characters(&mut self) {
+        let current_tick = self.world.tick();
+        let expired: Vec<_> = self
+            .detached_characters
+            .iter()
+            .filter_map(|(identity, detached)| {
+                (detached.expires_at_tick <= current_tick).then_some((*identity, *detached))
+            })
+            .collect();
+        for (identity, detached) in expired {
+            self.detached_characters.remove(&identity);
+            if self.world.player(detached.player_id).is_some() {
                 self.commands.push_back(PendingCommand {
-                    origin: ClientOrigin::Wire(client.id),
-                    command: Command::LeavePlayer { player_id },
+                    origin: ClientOrigin::Wire(0),
+                    command: Command::LeavePlayer {
+                        player_id: detached.player_id,
+                    },
                 });
             }
         }
@@ -2447,6 +2505,80 @@ mod tests {
         assert!(!server.character_reserved_by_other(2, 8, 42));
         assert!(!server.character_reserved_by_other(2, 7, 43));
         assert!(!server.character_reserved_by_other(1, 7, 42));
+    }
+
+    #[test]
+    fn disconnected_character_rebinds_within_grace_without_joining_again() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let _peer = TcpStream::connect(address).expect("connect test peer");
+        let (stream, _) = listener.accept().expect("accept test peer");
+        let mut server = Server::new(DEFAULT_TICK_HZ, false, None);
+        let player = server
+            .world
+            .step([Command::JoinPlayer {
+                name: "Aria".to_owned(),
+                role: Role::DamageDealer,
+            }])
+            .into_iter()
+            .find_map(|event| match event {
+                Event::PlayerJoined { player } => Some(player.id),
+                _ => None,
+            })
+            .expect("test player should join");
+        server.detached_characters.insert(
+            (1, 1),
+            DetachedCharacter {
+                player_id: player,
+                expires_at_tick: DISCONNECT_GRACE_TICKS,
+            },
+        );
+        let mut client = WireClient::new(1, stream);
+        client.authenticated = Some(AuthenticatedSession {
+            account_id: 1,
+            session_id: 2,
+        });
+        client.selected_character_id = Some(1);
+        client.content_compatible = true;
+        server.wire_clients.push(client);
+
+        server.handle_wire_command(1, WireCommand::EnterWorld);
+
+        assert_eq!(server.wire_clients[0].player_id, Some(player));
+        assert!(server.detached_characters.is_empty());
+        assert!(server.commands.is_empty());
+    }
+
+    #[test]
+    fn disconnected_character_expires_into_an_authoritative_leave() {
+        let mut server = Server::new(DEFAULT_TICK_HZ, false, None);
+        let player = server
+            .world
+            .step([Command::JoinPlayer {
+                name: "Aria".to_owned(),
+                role: Role::DamageDealer,
+            }])
+            .into_iter()
+            .find_map(|event| match event {
+                Event::PlayerJoined { player } => Some(player.id),
+                _ => None,
+            })
+            .expect("test player should join");
+        server.detached_characters.insert(
+            (1, 1),
+            DetachedCharacter {
+                player_id: player,
+                expires_at_tick: 0,
+            },
+        );
+
+        server.expire_detached_characters();
+
+        assert!(server.detached_characters.is_empty());
+        assert!(matches!(
+            server.commands.front().map(|pending| &pending.command),
+            Some(Command::LeavePlayer { player_id }) if *player_id == player
+        ));
     }
 
     #[test]
