@@ -209,6 +209,8 @@ impl Session {
             {
                 output.push(SessionOutput::Event(event))
             }
+            SessionInput::Server(ServerMessage::SkippedEvent { .. })
+                if self.state == SessionState::Ready => {}
             SessionInput::Server(ServerMessage::Error { message }) => {
                 output.push(SessionOutput::Rejected {
                     reason: RejectReason::Server(message),
@@ -258,7 +260,9 @@ impl Session {
         }
         if !matches!(
             message,
-            ServerMessage::Snapshot(_) | ServerMessage::Event(_)
+            ServerMessage::Snapshot(_)
+                | ServerMessage::Event(_)
+                | ServerMessage::SkippedEvent { .. }
         ) {
             output.extend(self.handle(SessionInput::Server(message)));
             return;

@@ -1241,7 +1241,7 @@ fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
             state.log("content compatibility rejected".to_owned());
         }
         ServerMessage::Error { message } => state.log(format!("rejected: {message}")),
-        ServerMessage::Event(_) | ServerMessage::Snapshot(_) => {}
+        ServerMessage::Event(_) | ServerMessage::SkippedEvent { .. } | ServerMessage::Snapshot(_) => {}
     }
     if let Err(error) = apply_wire_message(&mut state.presentation, message) {
         state.log(format!("authoritative presentation rejected: {error}"));

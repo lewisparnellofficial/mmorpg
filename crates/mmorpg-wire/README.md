@@ -9,12 +9,12 @@ can carry `VersionRejected { supported_min, supported_max }`. Use
 profile; the ordinary `decode_one` path intentionally continues to reject the
 version-independent frame as a gameplay envelope.
 
-New server events may use `encode_framed_server_event` and
+Server-message event payloads use `encode_framed_server_event` and
 `decode_framed_server_event`. The five-byte event prefix declares the opcode
-and body length. A well-formed unknown opcode becomes `SkippedUnknown`; a
-length mismatch is a fatal `MalformedEventLength` error. This is an additive
-compatibility helper and does not silently reinterpret the existing unframed
-v1 payload fixtures.
+and body length. A well-formed unknown opcode becomes
+`ServerMessage::SkippedEvent`; a length mismatch is a fatal
+`MalformedEventLength` error. The standalone helpers expose the same profile
+for stream and fixture tests.
 
 This crate is a prototype for the production protocol boundary. It
 defines a small, transport-independent envelope for versioned commands and
@@ -81,7 +81,10 @@ inventory stacks, and quest progress; NPCs, vendor listings, and quest offers
 use explicit bounded collections. IDs, enum values, strings, floats,
 collection counts, schema versions, and trailing bytes are validated during
 both encode and decode. `WireConnection::read_server_message` consumes these
-messages without interpreting diagnostic text.
+messages without interpreting diagnostic text. Additive event variants are
+length-delimited; well-formed unknown variants are reported as `SkippedEvent`
+and ignored by presentation/session adapters, while malformed declared
+lengths are fatal.
 
 The server currently places all server messages in the envelope's `Event`
 message kind. This keeps the envelope small while the payload discriminator

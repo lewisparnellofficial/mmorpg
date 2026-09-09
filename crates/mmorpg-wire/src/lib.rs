@@ -677,6 +677,13 @@ pub enum ServerMessage {
         message: String,
     },
     Event(ServerEvent),
+    /// An additive event whose bounded body was well-formed but whose opcode
+    /// is not known to this client. It is intentionally presentation-only and
+    /// must never be re-encoded as a known event.
+    SkippedEvent {
+        opcode: u8,
+        length: usize,
+    },
     Snapshot(WorldSnapshot),
     Authenticated {
         account_id: u64,
@@ -831,7 +838,12 @@ impl ServerMessage {
             }
             Self::Event(event) => {
                 encoder.put_u8(4);
-                encode_server_event(&mut encoder, event)?;
+                encoder
+                    .bytes
+                    .extend_from_slice(&encode_framed_server_event(event)?);
+            }
+            Self::SkippedEvent { .. } => {
+                return Err(ServerCodecError::CannotEncodeSkippedEvent);
             }
             Self::Snapshot(snapshot) => {
                 encoder.put_u8(5);
@@ -896,7 +908,16 @@ impl ServerMessage {
             3 => Self::Error {
                 message: decoder.take_string("message")?,
             },
-            4 => Self::Event(decode_server_event(&mut decoder)?),
+            4 => {
+                let framed = decode_framed_server_event(&payload[decoder.offset..])?;
+                decoder.offset = payload.len();
+                match framed {
+                    FramedServerEvent::Known(event) => Self::Event(event),
+                    FramedServerEvent::SkippedUnknown { opcode, length } => {
+                        Self::SkippedEvent { opcode, length }
+                    }
+                }
+            }
             5 => Self::Snapshot(decode_snapshot(&mut decoder)?),
             6 => Self::Authenticated {
                 account_id: decoder.take_nonzero_u64("account_id")?,
@@ -1815,6 +1836,7 @@ pub fn decode_framed_server_event(input: &[u8]) -> Result<FramedServerEvent, Ser
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServerCodecError {
     Empty,
+    CannotEncodeSkippedEvent,
     Truncated {
         field: &'static str,
     },
@@ -1857,6 +1879,9 @@ impl fmt::Display for ServerCodecError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => formatter.write_str("server payload is empty"),
+            Self::CannotEncodeSkippedEvent => {
+                formatter.write_str("skipped additive events cannot be encoded")
+            }
             Self::Truncated { field } => write!(formatter, "server field '{field}' is truncated"),
             Self::UnknownOpcode(opcode) => write!(formatter, "unknown server opcode {opcode}"),
             Self::UnsupportedSnapshotVersion { version, supported } => write!(
@@ -2220,6 +2245,16 @@ mod tests {
             Err(ServerCodecError::MalformedEventLength {
                 declared: 4,
                 available: 2,
+            })
+        );
+
+        let mut message_payload = vec![4];
+        message_payload.extend_from_slice(&unknown);
+        assert_eq!(
+            ServerMessage::decode_payload(&message_payload),
+            Ok(ServerMessage::SkippedEvent {
+                opcode: 250,
+                length: 2,
             })
         );
     }

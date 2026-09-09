@@ -247,6 +247,7 @@ pub fn apply_wire_message(
             let _ = model.apply_event(&event);
             Ok(())
         }
+        ServerMessage::SkippedEvent { .. } => Ok(()),
         ServerMessage::Welcome { .. }
         | ServerMessage::Authenticated { .. }
         | ServerMessage::CharacterList { .. }
