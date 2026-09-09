@@ -119,8 +119,8 @@ or renderer-quality acceptance gate.
   Lossless Scaling implicit layer produced two loader-chain errors, while the
   remaining reports were application-visible Vulkan swapchain issues
   (`VK_IMAGE_LAYOUT_UNDEFINED` at present and already-signaled acquire
-  semaphores). The client now requests explicit FIFO presentation, which
-  reduces the observed report count on this host but does not eliminate the
+  semaphores). The client requests explicit mailbox presentation; this keeps
+  the same four debug reports on this host but does not eliminate the
   warnings. Repeating with
   `VK_LOADER_LAYERS_DISABLE=VK_LAYER_LSFGVK_frame_generation` removed the
   loader-chain errors but retained the swapchain reports. This identifies a
@@ -139,14 +139,17 @@ or renderer-quality acceptance gate.
   two-second renderer warm-up followed by a five-second observation. The
   sampler is capped at 6,000 records and reports
   p50, p95, p99, and maximum values, so it cannot grow without bound. The
-  The warm-up-aware runs reported `samples=718 p50_ms=6.545 p95_ms=16.742
+  The warm-up-aware FIFO runs reported `samples=718 p50_ms=6.545 p95_ms=16.742
   p99_ms=17.269 max_ms=18.659` and then `samples=719 p50_ms=6.392
   p95_ms=16.866 p99_ms=17.470 max_ms=18.222`. Maximum time remained within
   the 50 ms limit, but both p95 values missed the strict 16.7 ms limit. These
   are release-path observations, not universal performance guarantees, and
   the latest repeated results mean the frame-time gate is not passing on this
-  host. Debug-path Vulkan validation warnings and the physical-input gate
-  remain unresolved.
+  host. A subsequent mailbox run reported `samples=1596 p50_ms=3.088
+  p95_ms=3.883 p99_ms=4.418 max_ms=7.095`, passing both fixed frame-time
+  bounds with substantial margin. These are release-path observations, not
+  universal performance guarantees; debug-path Vulkan validation warnings and
+  the physical-input gate remain unresolved.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,

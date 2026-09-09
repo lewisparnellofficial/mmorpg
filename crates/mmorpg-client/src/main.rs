@@ -494,7 +494,10 @@ fn main() {
                     primary_window: Some(Window {
                         title: "MMORPG Client — interactive slice".to_owned(),
                         resolution: (1280, 720).into(),
-                        present_mode: PresentMode::Fifo,
+                        // The measured Vulkan host supports mailbox without
+                        // FIFO frame-time quantization. Graphical smokes
+                        // continue to capture validation diagnostics.
+                        present_mode: PresentMode::Mailbox,
                         ..default()
                     }),
                     ..default()
