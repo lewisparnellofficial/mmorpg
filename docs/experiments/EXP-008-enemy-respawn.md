@@ -34,18 +34,21 @@ clears the generation's threat and reward claimability, emits
 until the scheduled respawn.
 
 This is intentionally narrower than the standalone AI experiment: patrol
-waypoints now run in the authoritative owner, while corpse expiry and
-deterministic loot selection across multiple eligible players are not yet
-integrated.
+waypoints, corpse expiry, and deterministic party loot selection are integrated
+in the authoritative owner; addressed movement replication remains deferred to
+the delivery milestone. Party invitation and loot evidence is recorded
+separately in EXP-009.
 
 ## Measured local result
 
-The root workspace core suite completed with **28 passed, 0 failed**, including
+The root workspace core suite completed with **31 passed, 0 failed**, including
 `defeated_enemy_respawns_on_a_fixed_tick_and_advances_generation` and
 `enemy_threat_drives_attacks_and_leash_return`,
 `defeated_player_can_release_to_town_and_clears_transient_combat`, and
 `enemy_corpse_expires_before_respawn_and_rejects_late_loot`, plus
-`idle_enemy_patrol_is_fixed_tick_and_deterministic`. Workspace
+`idle_enemy_patrol_is_fixed_tick_and_deterministic`,
+`party_invites_are_server_owned_bounded_and_expire`, and
+`party_loot_uses_death_snapshot_and_round_robin_per_generation`. Workspace
 format/check/test validation and the aggregate validation script remain the
 authoritative regression gates.
 
@@ -58,8 +61,7 @@ authoritative regression gates.
   server mappings, and client-model application.
 - **Project inference:** keeping the entity ID stable while advancing a spawn
   generation is a viable boundary for later threat/loot lifecycle work.
-- **Remaining uncertainty:** no multi-player loot selection or graphical
-  respawn run has been measured. Patrol state is authoritative but its movement
-  event replication remains deferred to addressed delivery. Stable corpse
-  entity retention is deliberate; physical entity deletion remains out of scope
-  for this slice.
+- **Remaining uncertainty:** no graphical respawn run has been measured.
+  Patrol state is authoritative but its movement event replication remains
+  deferred to addressed delivery. Stable corpse entity retention is deliberate;
+  physical entity deletion remains out of scope for this slice.

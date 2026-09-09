@@ -56,7 +56,8 @@ bytes.
 first structured application payload above the envelope. The schema currently
 covers development authentication, character listing/selection, world entry,
 join compatibility decoding, movement, target selection, attack, vendor
-listing and purchase, loot, quest offers/acceptance/turn-in, snapshot request,
+listing and purchase, loot, quest offers/acceptance/turn-in, party
+invite/accept/decline, leave/remove/leader-transfer/disband, snapshot request,
 and pre-entry content digest exchange. Numeric IDs are
 big-endian, movement values are IEEE-754 `f32` bit patterns, names are bounded
 UTF-8 strings, and zero IDs/quantities or non-finite movement values are
@@ -77,8 +78,10 @@ character-list/selection, connect/error responses, every current authoritative
 gameplay event, and a bounded bootstrap `WorldSnapshot`. The snapshot has its
 own schema version (`SNAPSHOT_SCHEMA_VERSION`, currently 2) inside the
 protocol envelope. Player state includes an explicit inventory capacity,
-inventory stacks, and quest progress; NPCs, vendor listings, and quest offers
-use explicit bounded collections. IDs, enum values, strings, floats,
+inventory stacks, and quest progress; NPCs, vendor listings, quest offers, and
+party member summaries use explicit bounded collections. Additive party events
+carry invite, membership, leadership, and disband transitions. IDs, enum
+values, strings, floats,
 collection counts, schema versions, and trailing bytes are validated during
 both encode and decode. `WireConnection::read_server_message` consumes these
 messages without interpreting diagnostic text. Additive event variants are

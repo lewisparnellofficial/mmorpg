@@ -126,6 +126,13 @@ move <dx> <dy>
 move <player-id> <dx> <dy>
 target <entity-id>
 attack
+party-invite <player-id>
+party-accept <party-id>
+party-decline <party-id>
+party-leave
+party-remove <player-id>
+party-leader <player-id>
+party-disband
 state
 snapshot
 help

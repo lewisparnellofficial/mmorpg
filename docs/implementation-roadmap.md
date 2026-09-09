@@ -92,6 +92,9 @@ roadmap, including post-gate editor and UI-scripting work.
   repeatable server-restart smoke test.
 - Instances/layers research covering explicit instance lifecycle, transparent
   layer transfers, and the 200-player world-boss policy.
+- Authoritative bounded party lifecycle with invite expiry, leader controls,
+  privacy-filtered typed events, death-time eligibility, and deterministic
+  per-generation round-robin loot selection.
 
 ## Completed batch: town/field gameplay loop
 

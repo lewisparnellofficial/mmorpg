@@ -2,7 +2,7 @@ mod account_repository;
 
 use crate::account_repository::{AccountCharacterRepository, DevelopmentAccountRepository};
 use mmorpg_content::starter_catalog;
-use mmorpg_core::{CombatTiming, Command, EntityId, Event, ItemId, QuestId, Role, World};
+use mmorpg_core::{CombatTiming, Command, EntityId, Event, ItemId, PartyId, QuestId, Role, World};
 use mmorpg_wire::{
     ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope, ItemStackState,
     MessageKind, NpcKindCode, NpcState, PlayerState, QuestOfferState, QuestState, QuestStatusCode,
@@ -655,6 +655,13 @@ impl Server {
         client.queue_line("HELP vendor <vendor-id>");
         client.queue_line("HELP buy <vendor-id> <item-id> <quantity>");
         client.queue_line("HELP loot <enemy-id>");
+        client.queue_line("HELP party-invite <player-id>");
+        client.queue_line("HELP party-accept <party-id>");
+        client.queue_line("HELP party-decline <party-id>");
+        client.queue_line("HELP party-leave");
+        client.queue_line("HELP party-remove <player-id>");
+        client.queue_line("HELP party-leader <player-id>");
+        client.queue_line("HELP party-disband");
         client.queue_line("HELP inventory");
         client.queue_line("HELP quest-offers <npc-id>");
         client.queue_line("HELP accept-quest <npc-id> <quest-id>");
@@ -926,14 +933,14 @@ impl Server {
 
     fn broadcast_wire_event(&mut self, event: &Event) {
         let recipient = event_recipient(event);
-        let Some(event) = wire_event(event) else {
+        let Some(wire_event) = wire_event(event) else {
             return;
         };
         for client in &mut self.wire_clients {
-            if !client.closed
-                && recipient.is_none_or(|player_id| client.player_id == Some(player_id))
-            {
-                client.queue_server_message(&ServerMessage::Event(event.clone()));
+            let visible = recipient.is_none_or(|player_id| client.player_id == Some(player_id))
+                && event_visible_to_player(event, client.player_id, &self.world);
+            if !client.closed && visible {
+                client.queue_server_message(&ServerMessage::Event(wire_event.clone()));
             }
         }
     }
@@ -1206,6 +1213,71 @@ fn wire_event(event: &Event) -> Option<ServerEvent> {
             item_id: item_id.0,
             quantity: *quantity,
         },
+        Event::PartyInviteCreated {
+            party_id,
+            inviter_id,
+            invitee_id,
+            expires_at_tick,
+        } => ServerEvent::PartyInviteCreated {
+            party_id: party_id.0,
+            inviter_id: inviter_id.0,
+            invitee_id: invitee_id.0,
+            expires_at_tick: *expires_at_tick,
+        },
+        Event::PartyInviteAccepted { party, player_id } => ServerEvent::PartyInviteAccepted {
+            party: mmorpg_wire::PartyState {
+                party_id: party.id.0,
+                leader_id: party.leader_id.0,
+                member_ids: party.member_ids.iter().map(|id| id.0).collect(),
+            },
+            player_id: player_id.0,
+        },
+        Event::PartyInviteDeclined {
+            party_id,
+            player_id,
+        } => ServerEvent::PartyInviteDeclined {
+            party_id: party_id.0,
+            player_id: player_id.0,
+        },
+        Event::PartyInviteExpired {
+            party_id,
+            player_id,
+        } => ServerEvent::PartyInviteExpired {
+            party_id: party_id.0,
+            player_id: player_id.0,
+        },
+        Event::PartyMemberLeft {
+            party_id,
+            player_id,
+        } => ServerEvent::PartyMemberLeft {
+            party_id: party_id.0,
+            player_id: player_id.0,
+        },
+        Event::PartyMemberRemoved {
+            party_id,
+            player_id,
+            removed_by,
+        } => ServerEvent::PartyMemberRemoved {
+            party_id: party_id.0,
+            player_id: player_id.0,
+            removed_by: removed_by.0,
+        },
+        Event::PartyLeaderTransferred {
+            party_id,
+            previous_leader_id,
+            leader_id,
+        } => ServerEvent::PartyLeaderTransferred {
+            party_id: party_id.0,
+            previous_leader_id: previous_leader_id.0,
+            leader_id: leader_id.0,
+        },
+        Event::PartyDisbanded {
+            party_id,
+            member_ids,
+        } => ServerEvent::PartyDisbanded {
+            party_id: party_id.0,
+            member_ids: member_ids.iter().map(|id| id.0).collect(),
+        },
         Event::TransactionRejected { player_id, reason } => ServerEvent::TransactionRejected {
             player_id: player_id.0,
             reason: reason.clone(),
@@ -1314,6 +1386,48 @@ fn event_recipient(event: &Event) -> Option<EntityId> {
         | Event::QuestRewarded { player_id, .. }
         | Event::QuestRejected { player_id, .. } => Some(*player_id),
         _ => None,
+    }
+}
+
+fn event_visible_to_player(event: &Event, player_id: Option<EntityId>, world: &World) -> bool {
+    let Some(player_id) = player_id else {
+        return false;
+    };
+    let party_members = |party_id| {
+        world
+            .party(party_id)
+            .map(|party| party.member_ids)
+            .unwrap_or_default()
+    };
+    match event {
+        Event::PartyInviteCreated {
+            inviter_id,
+            invitee_id,
+            ..
+        } => player_id == *inviter_id || player_id == *invitee_id,
+        Event::PartyInviteAccepted { party, .. } => party.member_ids.contains(&player_id),
+        Event::PartyInviteDeclined {
+            party_id,
+            player_id: invitee_id,
+        }
+        | Event::PartyInviteExpired {
+            party_id,
+            player_id: invitee_id,
+        } => player_id == *invitee_id || party_members(*party_id).contains(&player_id),
+        Event::PartyMemberLeft {
+            party_id,
+            player_id: member_id,
+        }
+        | Event::PartyMemberRemoved {
+            party_id,
+            player_id: member_id,
+            ..
+        } => player_id == *member_id || party_members(*party_id).contains(&player_id),
+        Event::PartyLeaderTransferred { party_id, .. } => {
+            party_members(*party_id).contains(&player_id)
+        }
+        Event::PartyDisbanded { member_ids, .. } => member_ids.contains(&player_id),
+        _ => true,
     }
 }
 
@@ -1443,6 +1557,60 @@ fn format_event(event: &Event) -> String {
         } => format!(
             "EVENT loot_rewarded player={} enemy={} item={} quantity={}",
             player_id, enemy_id, item_id, quantity
+        ),
+        Event::PartyInviteCreated {
+            party_id,
+            inviter_id,
+            invitee_id,
+            expires_at_tick,
+        } => format!(
+            "EVENT party_invite party={} inviter={} invitee={} expires={}",
+            party_id, inviter_id, invitee_id, expires_at_tick
+        ),
+        Event::PartyInviteAccepted { party, player_id } => format!(
+            "EVENT party_joined party={} player={} leader={} members={:?}",
+            party.id, player_id, party.leader_id, party.member_ids
+        ),
+        Event::PartyInviteDeclined {
+            party_id,
+            player_id,
+        } => format!(
+            "EVENT party_invite_declined party={} player={}",
+            party_id, player_id
+        ),
+        Event::PartyInviteExpired {
+            party_id,
+            player_id,
+        } => format!(
+            "EVENT party_invite_expired party={} player={}",
+            party_id, player_id
+        ),
+        Event::PartyMemberLeft {
+            party_id,
+            player_id,
+        } => format!("EVENT party_left party={} player={}", party_id, player_id),
+        Event::PartyMemberRemoved {
+            party_id,
+            player_id,
+            removed_by,
+        } => format!(
+            "EVENT party_removed party={} player={} removed_by={}",
+            party_id, player_id, removed_by
+        ),
+        Event::PartyLeaderTransferred {
+            party_id,
+            previous_leader_id,
+            leader_id,
+        } => format!(
+            "EVENT party_leader party={} previous={} leader={}",
+            party_id, previous_leader_id, leader_id
+        ),
+        Event::PartyDisbanded {
+            party_id,
+            member_ids,
+        } => format!(
+            "EVENT party_disbanded party={} members={:?}",
+            party_id, member_ids
         ),
         Event::TransactionRejected { player_id, reason } => format!(
             "EVENT transaction_rejected player={} reason={reason}",
@@ -1698,6 +1866,76 @@ fn parse_line(line: &str, bound_player: Option<EntityId>) -> Result<ParsedLine, 
                 enemy_id: parse_entity_id(tokens[1])?,
             }))
         }
+        "party-invite" => {
+            if tokens.len() != 2 {
+                return Err("usage: party-invite <player-id>".to_owned());
+            }
+            let player_id = bound_player.ok_or_else(|| "connect first".to_owned())?;
+            Ok(ParsedLine::Command(Command::InvitePartyMember {
+                player_id,
+                target_id: parse_entity_id(tokens[1])?,
+            }))
+        }
+        "party-accept" => {
+            if tokens.len() != 2 {
+                return Err("usage: party-accept <party-id>".to_owned());
+            }
+            let player_id = bound_player.ok_or_else(|| "connect first".to_owned())?;
+            Ok(ParsedLine::Command(Command::AcceptPartyInvite {
+                player_id,
+                party_id: tokens[1]
+                    .parse()
+                    .map(mmorpg_core::PartyId)
+                    .map_err(|_| "party-id must be an integer".to_owned())?,
+            }))
+        }
+        "party-decline" => {
+            if tokens.len() != 2 {
+                return Err("usage: party-decline <party-id>".to_owned());
+            }
+            let player_id = bound_player.ok_or_else(|| "connect first".to_owned())?;
+            Ok(ParsedLine::Command(Command::DeclinePartyInvite {
+                player_id,
+                party_id: tokens[1]
+                    .parse()
+                    .map(mmorpg_core::PartyId)
+                    .map_err(|_| "party-id must be an integer".to_owned())?,
+            }))
+        }
+        "party-leave" => {
+            if tokens.len() != 1 {
+                return Err("usage: party-leave".to_owned());
+            }
+            Ok(ParsedLine::Command(Command::LeaveParty {
+                player_id: bound_player.ok_or_else(|| "connect first".to_owned())?,
+            }))
+        }
+        "party-remove" => {
+            if tokens.len() != 2 {
+                return Err("usage: party-remove <player-id>".to_owned());
+            }
+            Ok(ParsedLine::Command(Command::RemovePartyMember {
+                player_id: bound_player.ok_or_else(|| "connect first".to_owned())?,
+                target_id: parse_entity_id(tokens[1])?,
+            }))
+        }
+        "party-leader" => {
+            if tokens.len() != 2 {
+                return Err("usage: party-leader <player-id>".to_owned());
+            }
+            Ok(ParsedLine::Command(Command::TransferPartyLeader {
+                player_id: bound_player.ok_or_else(|| "connect first".to_owned())?,
+                target_id: parse_entity_id(tokens[1])?,
+            }))
+        }
+        "party-disband" => {
+            if tokens.len() != 1 {
+                return Err("usage: party-disband".to_owned());
+            }
+            Ok(ParsedLine::Command(Command::DisbandParty {
+                player_id: bound_player.ok_or_else(|| "connect first".to_owned())?,
+            }))
+        }
         "inventory" => {
             if tokens.len() != 1 {
                 return Err("usage: inventory".to_owned());
@@ -1820,6 +2058,28 @@ fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Com
             player_id,
             enemy_id: EntityId(enemy_id),
         },
+        WireCommand::InvitePartyMember { target_id } => Command::InvitePartyMember {
+            player_id,
+            target_id: EntityId(target_id),
+        },
+        WireCommand::AcceptPartyInvite { party_id } => Command::AcceptPartyInvite {
+            player_id,
+            party_id: PartyId(party_id),
+        },
+        WireCommand::DeclinePartyInvite { party_id } => Command::DeclinePartyInvite {
+            player_id,
+            party_id: PartyId(party_id),
+        },
+        WireCommand::LeaveParty => Command::LeaveParty { player_id },
+        WireCommand::RemovePartyMember { target_id } => Command::RemovePartyMember {
+            player_id,
+            target_id: EntityId(target_id),
+        },
+        WireCommand::TransferPartyLeader { target_id } => Command::TransferPartyLeader {
+            player_id,
+            target_id: EntityId(target_id),
+        },
+        WireCommand::DisbandParty => Command::DisbandParty { player_id },
         WireCommand::ListQuestOffers { npc_id } => Command::ListQuestOffers {
             player_id,
             npc_id: EntityId(npc_id),
@@ -2141,6 +2401,64 @@ mod tests {
         assert_eq!(snapshot.players.len(), 1);
         assert_eq!(snapshot.players[0].player_id, 5);
         assert_eq!(snapshot.player_count, 1);
+    }
+
+    #[test]
+    fn party_events_do_not_leak_to_unrelated_players() {
+        let mut world = World::new_starter_zone();
+        world.step([
+            Command::JoinPlayer {
+                name: "One".to_owned(),
+                role: Role::Tank,
+            },
+            Command::JoinPlayer {
+                name: "Two".to_owned(),
+                role: Role::Healer,
+            },
+            Command::JoinPlayer {
+                name: "Stranger".to_owned(),
+                role: Role::DamageDealer,
+            },
+        ]);
+        let invite = world.step([Command::InvitePartyMember {
+            player_id: EntityId(5),
+            target_id: EntityId(6),
+        }]);
+        assert!(event_visible_to_player(
+            &invite[0],
+            Some(EntityId(5)),
+            &world
+        ));
+        assert!(event_visible_to_player(
+            &invite[0],
+            Some(EntityId(6)),
+            &world
+        ));
+        assert!(!event_visible_to_player(
+            &invite[0],
+            Some(EntityId(7)),
+            &world
+        ));
+
+        let accepted = world.step([Command::AcceptPartyInvite {
+            player_id: EntityId(6),
+            party_id: PartyId(1),
+        }]);
+        assert!(event_visible_to_player(
+            &accepted[0],
+            Some(EntityId(5)),
+            &world
+        ));
+        assert!(event_visible_to_player(
+            &accepted[0],
+            Some(EntityId(6)),
+            &world
+        ));
+        assert!(!event_visible_to_player(
+            &accepted[0],
+            Some(EntityId(7)),
+            &world
+        ));
     }
 
     #[test]

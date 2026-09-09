@@ -11,8 +11,8 @@ use mmorpg_client_protocol::{
 };
 use mmorpg_content::{NpcTemplateId, item_definition, starter_catalog};
 use mmorpg_core::{
-    EntityId as CoreEntityId, Event, Inventory, Npc, PlayerSnapshot, QuestId, QuestOffer,
-    VendorListing,
+    EntityId as CoreEntityId, Event, Inventory, Npc, PartyId, PartySnapshot, PlayerSnapshot,
+    QuestId, QuestOffer, VendorListing,
 };
 use std::collections::BTreeSet;
 use std::fmt;
@@ -523,6 +523,71 @@ fn wire_event(event: &WireServerEvent) -> Result<Event, AdapterError> {
             enemy_id: CoreEntityId(*enemy_id),
             item_id: ItemId(*item_id),
             quantity: *quantity,
+        },
+        WireServerEvent::PartyInviteCreated {
+            party_id,
+            inviter_id,
+            invitee_id,
+            expires_at_tick,
+        } => Event::PartyInviteCreated {
+            party_id: PartyId(*party_id),
+            inviter_id: CoreEntityId(*inviter_id),
+            invitee_id: CoreEntityId(*invitee_id),
+            expires_at_tick: *expires_at_tick,
+        },
+        WireServerEvent::PartyInviteAccepted { party, player_id } => Event::PartyInviteAccepted {
+            party: PartySnapshot {
+                id: PartyId(party.party_id),
+                leader_id: CoreEntityId(party.leader_id),
+                member_ids: party.member_ids.iter().copied().map(CoreEntityId).collect(),
+            },
+            player_id: CoreEntityId(*player_id),
+        },
+        WireServerEvent::PartyInviteDeclined {
+            party_id,
+            player_id,
+        } => Event::PartyInviteDeclined {
+            party_id: PartyId(*party_id),
+            player_id: CoreEntityId(*player_id),
+        },
+        WireServerEvent::PartyInviteExpired {
+            party_id,
+            player_id,
+        } => Event::PartyInviteExpired {
+            party_id: PartyId(*party_id),
+            player_id: CoreEntityId(*player_id),
+        },
+        WireServerEvent::PartyMemberLeft {
+            party_id,
+            player_id,
+        } => Event::PartyMemberLeft {
+            party_id: PartyId(*party_id),
+            player_id: CoreEntityId(*player_id),
+        },
+        WireServerEvent::PartyMemberRemoved {
+            party_id,
+            player_id,
+            removed_by,
+        } => Event::PartyMemberRemoved {
+            party_id: PartyId(*party_id),
+            player_id: CoreEntityId(*player_id),
+            removed_by: CoreEntityId(*removed_by),
+        },
+        WireServerEvent::PartyLeaderTransferred {
+            party_id,
+            previous_leader_id,
+            leader_id,
+        } => Event::PartyLeaderTransferred {
+            party_id: PartyId(*party_id),
+            previous_leader_id: CoreEntityId(*previous_leader_id),
+            leader_id: CoreEntityId(*leader_id),
+        },
+        WireServerEvent::PartyDisbanded {
+            party_id,
+            member_ids,
+        } => Event::PartyDisbanded {
+            party_id: PartyId(*party_id),
+            member_ids: member_ids.iter().copied().map(CoreEntityId).collect(),
         },
         WireServerEvent::TransactionRejected { player_id, reason } => Event::TransactionRejected {
             player_id: CoreEntityId(*player_id),

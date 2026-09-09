@@ -206,6 +206,23 @@ pub enum ClientCommand {
     LootEnemy {
         enemy_id: u64,
     },
+    InvitePartyMember {
+        target_id: u64,
+    },
+    AcceptPartyInvite {
+        party_id: u64,
+    },
+    DeclinePartyInvite {
+        party_id: u64,
+    },
+    LeaveParty,
+    RemovePartyMember {
+        target_id: u64,
+    },
+    TransferPartyLeader {
+        target_id: u64,
+    },
+    DisbandParty,
     ListQuestOffers {
         npc_id: u64,
     },
@@ -276,6 +293,23 @@ impl ClientCommand {
             Self::LootEnemy { enemy_id } => {
                 put_nonzero_u64(&mut payload, 7, *enemy_id, "enemy_id")?;
             }
+            Self::InvitePartyMember { target_id } => {
+                put_nonzero_u64(&mut payload, 21, *target_id, "target_id")?;
+            }
+            Self::AcceptPartyInvite { party_id } => {
+                put_nonzero_u64(&mut payload, 22, *party_id, "party_id")?;
+            }
+            Self::DeclinePartyInvite { party_id } => {
+                put_nonzero_u64(&mut payload, 23, *party_id, "party_id")?;
+            }
+            Self::LeaveParty => payload.push(24),
+            Self::RemovePartyMember { target_id } => {
+                put_nonzero_u64(&mut payload, 25, *target_id, "target_id")?;
+            }
+            Self::TransferPartyLeader { target_id } => {
+                put_nonzero_u64(&mut payload, 26, *target_id, "target_id")?;
+            }
+            Self::DisbandParty => payload.push(27),
             Self::ListQuestOffers { npc_id } => {
                 put_nonzero_u64(&mut payload, 8, *npc_id, "npc_id")?;
             }
@@ -342,6 +376,23 @@ impl ClientCommand {
             7 => Self::LootEnemy {
                 enemy_id: decoder.take_nonzero_u64("enemy_id")?,
             },
+            21 => Self::InvitePartyMember {
+                target_id: decoder.take_nonzero_u64("target_id")?,
+            },
+            22 => Self::AcceptPartyInvite {
+                party_id: decoder.take_nonzero_u64("party_id")?,
+            },
+            23 => Self::DeclinePartyInvite {
+                party_id: decoder.take_nonzero_u64("party_id")?,
+            },
+            24 => Self::LeaveParty,
+            25 => Self::RemovePartyMember {
+                target_id: decoder.take_nonzero_u64("target_id")?,
+            },
+            26 => Self::TransferPartyLeader {
+                target_id: decoder.take_nonzero_u64("target_id")?,
+            },
+            27 => Self::DisbandParty,
             8 => Self::ListQuestOffers {
                 npc_id: decoder.take_nonzero_u64("npc_id")?,
             },
@@ -604,6 +655,13 @@ pub struct PlayerState {
     pub quests: Vec<QuestState>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PartyState {
+    pub party_id: u64,
+    pub leader_id: u64,
+    pub member_ids: Vec<u64>,
+}
+
 /// NPC categories used by the server snapshot and movement events.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -800,6 +858,42 @@ pub enum ServerEvent {
         enemy_id: u64,
         item_id: u32,
         quantity: u32,
+    },
+    PartyInviteCreated {
+        party_id: u64,
+        inviter_id: u64,
+        invitee_id: u64,
+        expires_at_tick: u64,
+    },
+    PartyInviteAccepted {
+        party: PartyState,
+        player_id: u64,
+    },
+    PartyInviteDeclined {
+        party_id: u64,
+        player_id: u64,
+    },
+    PartyInviteExpired {
+        party_id: u64,
+        player_id: u64,
+    },
+    PartyMemberLeft {
+        party_id: u64,
+        player_id: u64,
+    },
+    PartyMemberRemoved {
+        party_id: u64,
+        player_id: u64,
+        removed_by: u64,
+    },
+    PartyLeaderTransferred {
+        party_id: u64,
+        previous_leader_id: u64,
+        leader_id: u64,
+    },
+    PartyDisbanded {
+        party_id: u64,
+        member_ids: Vec<u64>,
     },
     TransactionRejected {
         player_id: u64,
@@ -1526,6 +1620,39 @@ fn decode_offer(decoder: &mut ServerDecoder<'_>) -> Result<QuestOfferState, Serv
     })
 }
 
+fn encode_party(encoder: &mut ServerEncoder, party: &PartyState) -> Result<(), ServerCodecError> {
+    if party.party_id == 0 || party.leader_id == 0 {
+        return Err(ServerCodecError::InvalidZero { field: "party" });
+    }
+    encoder.put_u64(party.party_id, "party_id")?;
+    encoder.put_u64(party.leader_id, "leader_id")?;
+    encoder.put_count(party.member_ids.len(), "party_members")?;
+    for member_id in &party.member_ids {
+        if *member_id == 0 {
+            return Err(ServerCodecError::InvalidZero {
+                field: "party_member",
+            });
+        }
+        encoder.put_u64(*member_id, "party_member")?;
+    }
+    Ok(())
+}
+
+fn decode_party(decoder: &mut ServerDecoder<'_>) -> Result<PartyState, ServerCodecError> {
+    let party_id = decoder.take_nonzero_u64("party_id")?;
+    let leader_id = decoder.take_nonzero_u64("leader_id")?;
+    let count = decoder.take_count("party_members")?;
+    let mut member_ids = Vec::with_capacity(count);
+    for _ in 0..count {
+        member_ids.push(decoder.take_nonzero_u64("party_member")?);
+    }
+    Ok(PartyState {
+        party_id,
+        leader_id,
+        member_ids,
+    })
+}
+
 fn encode_server_event(
     encoder: &mut ServerEncoder,
     event: &ServerEvent,
@@ -1681,6 +1808,78 @@ fn encode_server_event(
             }
             encoder.put_u32(*item_id);
             encoder.put_u32(*quantity);
+        }
+        ServerEvent::PartyInviteCreated {
+            party_id,
+            inviter_id,
+            invitee_id,
+            expires_at_tick,
+        } => {
+            encoder.put_u8(25);
+            encoder.put_u64(*party_id, "party_id")?;
+            encoder.put_u64(*inviter_id, "inviter_id")?;
+            encoder.put_u64(*invitee_id, "invitee_id")?;
+            encoder.put_u64(*expires_at_tick, "expires_at_tick")?;
+        }
+        ServerEvent::PartyInviteAccepted { party, player_id } => {
+            encoder.put_u8(26);
+            encode_party(encoder, party)?;
+            encoder.put_u64(*player_id, "player_id")?;
+        }
+        ServerEvent::PartyInviteDeclined {
+            party_id,
+            player_id,
+        } => {
+            encoder.put_u8(27);
+            encoder.put_u64(*party_id, "party_id")?;
+            encoder.put_u64(*player_id, "player_id")?;
+        }
+        ServerEvent::PartyInviteExpired {
+            party_id,
+            player_id,
+        } => {
+            encoder.put_u8(28);
+            encoder.put_u64(*party_id, "party_id")?;
+            encoder.put_u64(*player_id, "player_id")?;
+        }
+        ServerEvent::PartyMemberLeft {
+            party_id,
+            player_id,
+        } => {
+            encoder.put_u8(29);
+            encoder.put_u64(*party_id, "party_id")?;
+            encoder.put_u64(*player_id, "player_id")?;
+        }
+        ServerEvent::PartyMemberRemoved {
+            party_id,
+            player_id,
+            removed_by,
+        } => {
+            encoder.put_u8(30);
+            encoder.put_u64(*party_id, "party_id")?;
+            encoder.put_u64(*player_id, "player_id")?;
+            encoder.put_u64(*removed_by, "removed_by")?;
+        }
+        ServerEvent::PartyLeaderTransferred {
+            party_id,
+            previous_leader_id,
+            leader_id,
+        } => {
+            encoder.put_u8(31);
+            encoder.put_u64(*party_id, "party_id")?;
+            encoder.put_u64(*previous_leader_id, "previous_leader_id")?;
+            encoder.put_u64(*leader_id, "leader_id")?;
+        }
+        ServerEvent::PartyDisbanded {
+            party_id,
+            member_ids,
+        } => {
+            encoder.put_u8(32);
+            encoder.put_u64(*party_id, "party_id")?;
+            encoder.put_count(member_ids.len(), "party_members")?;
+            for member_id in member_ids {
+                encoder.put_u64(*member_id, "party_member")?;
+            }
         }
         ServerEvent::TransactionRejected { player_id, reason } => {
             encoder.put_u8(10);
@@ -1857,6 +2056,50 @@ fn decode_server_event(decoder: &mut ServerDecoder<'_>) -> Result<ServerEvent, S
             item_id: decoder.take_nonzero_u32("item_id")?,
             quantity: decoder.take_nonzero_u32("quantity")?,
         }),
+        25 => Ok(ServerEvent::PartyInviteCreated {
+            party_id: decoder.take_nonzero_u64("party_id")?,
+            inviter_id: decoder.take_nonzero_u64("inviter_id")?,
+            invitee_id: decoder.take_nonzero_u64("invitee_id")?,
+            expires_at_tick: decoder.take_nonzero_u64("expires_at_tick")?,
+        }),
+        26 => Ok(ServerEvent::PartyInviteAccepted {
+            party: decode_party(decoder)?,
+            player_id: decoder.take_nonzero_u64("player_id")?,
+        }),
+        27 => Ok(ServerEvent::PartyInviteDeclined {
+            party_id: decoder.take_nonzero_u64("party_id")?,
+            player_id: decoder.take_nonzero_u64("player_id")?,
+        }),
+        28 => Ok(ServerEvent::PartyInviteExpired {
+            party_id: decoder.take_nonzero_u64("party_id")?,
+            player_id: decoder.take_nonzero_u64("player_id")?,
+        }),
+        29 => Ok(ServerEvent::PartyMemberLeft {
+            party_id: decoder.take_nonzero_u64("party_id")?,
+            player_id: decoder.take_nonzero_u64("player_id")?,
+        }),
+        30 => Ok(ServerEvent::PartyMemberRemoved {
+            party_id: decoder.take_nonzero_u64("party_id")?,
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            removed_by: decoder.take_nonzero_u64("removed_by")?,
+        }),
+        31 => Ok(ServerEvent::PartyLeaderTransferred {
+            party_id: decoder.take_nonzero_u64("party_id")?,
+            previous_leader_id: decoder.take_nonzero_u64("previous_leader_id")?,
+            leader_id: decoder.take_nonzero_u64("leader_id")?,
+        }),
+        32 => {
+            let party_id = decoder.take_nonzero_u64("party_id")?;
+            let count = decoder.take_count("party_members")?;
+            let mut member_ids = Vec::with_capacity(count);
+            for _ in 0..count {
+                member_ids.push(decoder.take_nonzero_u64("party_member")?);
+            }
+            Ok(ServerEvent::PartyDisbanded {
+                party_id,
+                member_ids,
+            })
+        }
         10 => Ok(ServerEvent::TransactionRejected {
             player_id: decoder.take_nonzero_u64("player_id")?,
             reason: decoder.take_string("reason")?,
@@ -1953,7 +2196,7 @@ pub fn decode_framed_server_event(input: &[u8]) -> Result<FramedServerEvent, Ser
             available: input.len() - 5,
         });
     }
-    let known = (1..=24).contains(&opcode);
+    let known = (1..=32).contains(&opcode);
     if !known {
         return Ok(FramedServerEvent::SkippedUnknown { opcode, length });
     }
@@ -2475,6 +2718,13 @@ mod tests {
                 quantity: 3,
             },
             ClientCommand::LootEnemy { enemy_id: 2 },
+            ClientCommand::InvitePartyMember { target_id: 6 },
+            ClientCommand::AcceptPartyInvite { party_id: 1 },
+            ClientCommand::DeclinePartyInvite { party_id: 1 },
+            ClientCommand::LeaveParty,
+            ClientCommand::RemovePartyMember { target_id: 6 },
+            ClientCommand::TransferPartyLeader { target_id: 6 },
+            ClientCommand::DisbandParty,
             ClientCommand::ListQuestOffers { npc_id: 1 },
             ClientCommand::AcceptQuest {
                 npc_id: 1,
@@ -2668,6 +2918,14 @@ mod tests {
                 item_id: None,
                 item_quantity: 0,
                 gold_remaining: 22,
+            }),
+            ServerMessage::Event(ServerEvent::PartyInviteAccepted {
+                party: PartyState {
+                    party_id: 1,
+                    leader_id: 7,
+                    member_ids: vec![7, 8],
+                },
+                player_id: 8,
             }),
         ];
 

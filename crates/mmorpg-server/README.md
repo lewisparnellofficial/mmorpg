@@ -28,6 +28,13 @@ attack
 vendor <vendor-id>
 buy <vendor-id> <item-id> <quantity>
 loot <enemy-id>
+party-invite <player-id>
+party-accept <party-id>
+party-decline <party-id>
+party-leave
+party-remove <player-id>
+party-leader <player-id>
+party-disband
 inventory
 quest-offers <npc-id>
 accept-quest <npc-id> <quest-id>
@@ -74,8 +81,10 @@ It emits typed server-message payloads for welcome/connect/error responses,
 gameplay events, and the bootstrap snapshot. The line parser remains only as
 inert compatibility data for equivalence tests.
 
-The typed gameplay vocabulary includes authoritative `BasicAttack` and
-`Heal { target_id }` intents. Healing is restricted by the core to healer
+The typed gameplay vocabulary includes authoritative BasicAttack, party
+membership, and Heal { target_id } intents. Party invites and membership are
+validated by the core and typed party events are filtered to current/former
+members. Healing is restricted by the core to healer
 players with a living, nearby player target and is capped at the target's
 maximum health; rejected intents emit the normal command-rejection event.
 

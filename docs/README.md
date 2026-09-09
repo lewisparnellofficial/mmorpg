@@ -35,6 +35,7 @@ The project is a Linux-first hobby MMORPG inspired by the design of classic tab-
 - [Durable character checkpoint experiment](experiments/EXP-005-durable-character-checkpoint.md) — required restore, validation, and crash-safety prototype for persistent characters.
 - [Luau UI scripting sandbox experiment](experiments/EXP-006-ui-scripting-sandbox.md) — bounded addon host API, protected-action boundary, and adversarial failure tests.
 - [AI/respawn experiment](../experiments/ai-respawn/README.md) — deterministic patrol, aggro, leash, death, and respawn behavior model.
+- [Party/loot experiment](experiments/EXP-009-party-loot.md) — authoritative party lifecycle, death-time eligibility, privacy filtering, and generation loot selection.
 - [Persistence and recovery research](research/persistence-and-recovery.md) — durable state, idempotency, snapshots, journals, and crash recovery.
 - [Content validation tool](../tools/README.md) — current starter-catalog validation command and future authoring-tool boundary.
 - [VibeThinker bounded task catalog](experiments/vibethinker-task-catalog.md) — handoff format and initial local-model coding experiments.

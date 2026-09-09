@@ -84,8 +84,12 @@ Players should not receive information about entities they cannot legitimately p
 The current development boundary has a first privacy floor: typed bootstrap
 snapshots contain only the bound player's player record, and player-private
 vendor, loot, quest, and transaction events are addressed to that session.
-Public world/combat events are still broadcast; spatial `Nearby` filtering and
-party audiences remain future work.
+The authoritative core now owns a bounded party registry and the development
+server filters invite and membership events to current/former party members;
+party summaries are not yet a separate delivery audience. Public
+world/combat events are still broadcast, and spatial Nearby filtering,
+remote-party-summary versus nearby-detail separation, and durable disconnect
+grace remain future work.
 
 ## Large encounter requirements
 

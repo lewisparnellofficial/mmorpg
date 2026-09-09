@@ -4,7 +4,7 @@
 //! rendering code. A region owner feeds commands into [`World::step`] and
 //! consumes the resulting authoritative events.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -29,6 +29,8 @@ const ENEMY_ATTACK_DAMAGE: u32 = 8;
 const ENEMY_ATTACK_COOLDOWN_TICKS: u64 = 20;
 const TAUNT_RANGE: f32 = 32.0;
 const TAUNT_THREAT: u32 = 100;
+const PARTY_MAX_MEMBERS: usize = 5;
+const PARTY_INVITE_TICKS: u64 = 200;
 
 /// Server-owned timing parameters for the explicit timed-combat path.
 ///
@@ -87,6 +89,16 @@ impl std::error::Error for InvalidCombatTiming {}
 pub struct EntityId(pub u64);
 
 impl fmt::Display for EntityId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
+/// Stable identifier for a server-owned party.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PartyId(pub u64);
+
+impl fmt::Display for PartyId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}", self.0)
     }
@@ -374,6 +386,14 @@ pub struct PlayerSnapshot {
     pub quests: Vec<QuestProgress>,
 }
 
+/// The privacy-safe party view exposed by an authoritative snapshot or event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PartySnapshot {
+    pub id: PartyId,
+    pub leader_id: EntityId,
+    pub member_ids: Vec<EntityId>,
+}
+
 /// Character state retained across a safe logout or server restart.
 ///
 /// Live entity IDs, health, targets, casts, and cooldowns deliberately remain
@@ -482,6 +502,32 @@ pub enum Command {
         player_id: EntityId,
         enemy_id: EntityId,
     },
+    InvitePartyMember {
+        player_id: EntityId,
+        target_id: EntityId,
+    },
+    AcceptPartyInvite {
+        player_id: EntityId,
+        party_id: PartyId,
+    },
+    DeclinePartyInvite {
+        player_id: EntityId,
+        party_id: PartyId,
+    },
+    LeaveParty {
+        player_id: EntityId,
+    },
+    RemovePartyMember {
+        player_id: EntityId,
+        target_id: EntityId,
+    },
+    TransferPartyLeader {
+        player_id: EntityId,
+        target_id: EntityId,
+    },
+    DisbandParty {
+        player_id: EntityId,
+    },
     ListQuestOffers {
         player_id: EntityId,
         npc_id: EntityId,
@@ -577,6 +623,42 @@ pub enum Event {
         item_id: ItemId,
         quantity: u32,
     },
+    PartyInviteCreated {
+        party_id: PartyId,
+        inviter_id: EntityId,
+        invitee_id: EntityId,
+        expires_at_tick: u64,
+    },
+    PartyInviteAccepted {
+        party: PartySnapshot,
+        player_id: EntityId,
+    },
+    PartyInviteDeclined {
+        party_id: PartyId,
+        player_id: EntityId,
+    },
+    PartyInviteExpired {
+        party_id: PartyId,
+        player_id: EntityId,
+    },
+    PartyMemberLeft {
+        party_id: PartyId,
+        player_id: EntityId,
+    },
+    PartyMemberRemoved {
+        party_id: PartyId,
+        player_id: EntityId,
+        removed_by: EntityId,
+    },
+    PartyLeaderTransferred {
+        party_id: PartyId,
+        previous_leader_id: EntityId,
+        leader_id: EntityId,
+    },
+    PartyDisbanded {
+        party_id: PartyId,
+        member_ids: Vec<EntityId>,
+    },
     TransactionRejected {
         player_id: EntityId,
         reason: String,
@@ -633,11 +715,38 @@ struct VendorStock {
     remaining_quantity: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct EnemyReward {
     owner: Option<EntityId>,
     claimed: bool,
     spawn_generation: u64,
+    eligible_players: Vec<EntityId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Party {
+    id: PartyId,
+    leader_id: EntityId,
+    member_ids: BTreeSet<EntityId>,
+    loot_cursor: u64,
+}
+
+impl Party {
+    fn snapshot(&self) -> PartySnapshot {
+        PartySnapshot {
+            id: self.id,
+            leader_id: self.leader_id,
+            member_ids: self.member_ids.iter().copied().collect(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PartyInvite {
+    party_id: PartyId,
+    inviter_id: EntityId,
+    invitee_id: EntityId,
+    expires_at_tick: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -651,6 +760,7 @@ struct PendingAttack {
 pub struct World {
     tick: u64,
     next_entity_id: u64,
+    next_party_id: u64,
     bounds: Bounds,
     players: BTreeMap<EntityId, Player>,
     npcs: BTreeMap<EntityId, Npc>,
@@ -664,6 +774,9 @@ pub struct World {
     enemy_patrol_phase: BTreeMap<EntityId, bool>,
     combat_cooldowns: BTreeMap<EntityId, u64>,
     pending_attacks: BTreeMap<EntityId, PendingAttack>,
+    parties: BTreeMap<PartyId, Party>,
+    player_parties: BTreeMap<EntityId, PartyId>,
+    party_invites: BTreeMap<(PartyId, EntityId), PartyInvite>,
 }
 
 impl World {
@@ -672,6 +785,7 @@ impl World {
         let mut world = Self {
             tick: 0,
             next_entity_id: 1,
+            next_party_id: 1,
             bounds: Bounds::starter_zone(),
             players: BTreeMap::new(),
             npcs: BTreeMap::new(),
@@ -685,6 +799,9 @@ impl World {
             enemy_patrol_phase: BTreeMap::new(),
             combat_cooldowns: BTreeMap::new(),
             pending_attacks: BTreeMap::new(),
+            parties: BTreeMap::new(),
+            player_parties: BTreeMap::new(),
+            party_invites: BTreeMap::new(),
         };
 
         let vendor_id = world.spawn_npc(
@@ -751,6 +868,18 @@ impl World {
         self.npcs.values()
     }
 
+    pub fn party(&self, party_id: PartyId) -> Option<PartySnapshot> {
+        self.parties.get(&party_id).map(Party::snapshot)
+    }
+
+    pub fn party_for_player(&self, player_id: EntityId) -> Option<PartyId> {
+        self.player_parties.get(&player_id).copied()
+    }
+
+    pub fn parties(&self) -> impl Iterator<Item = PartySnapshot> + '_ {
+        self.parties.values().map(Party::snapshot)
+    }
+
     pub fn summary(&self) -> WorldSummary {
         let enemy_count = self
             .npcs
@@ -805,6 +934,7 @@ impl World {
         }
         self.tick = self.tick.saturating_add(1);
         self.resolve_pending_attacks(&mut events);
+        self.advance_party_invites(&mut events);
         self.advance_enemy_ai(&mut events);
         self.advance_enemy_lifecycle(&mut events);
         events
@@ -921,11 +1051,6 @@ impl World {
                 enemy_id: target_id,
             });
         }
-        if let Some(reward) = self.enemy_rewards.get_mut(&target_id)
-            && reward.owner.is_none()
-        {
-            reward.owner = Some(player_id);
-        }
         self.add_enemy_threat(target_id, player_id, damage);
         if defeated {
             if let Some(target) = self.npcs.get_mut(&target_id) {
@@ -936,7 +1061,15 @@ impl World {
             self.enemy_corpse_expires
                 .insert(target_id, self.tick.saturating_add(ENEMY_CORPSE_TICKS));
             self.expired_enemy_rewards.remove(&target_id);
-            self.advance_kill_quests(player_id, target_template_id, events);
+            let eligible_players = self.snapshot_enemy_eligibility(target_id, player_id);
+            let loot_owner = self.select_enemy_loot_owner(&eligible_players);
+            if let Some(reward) = self.enemy_rewards.get_mut(&target_id) {
+                reward.owner = loot_owner;
+                reward.eligible_players = eligible_players.clone();
+            }
+            for eligible_player_id in eligible_players {
+                self.advance_kill_quests(eligible_player_id, target_template_id, events);
+            }
         }
     }
 
@@ -992,6 +1125,7 @@ impl World {
                 reward.owner = None;
                 reward.claimed = false;
                 reward.spawn_generation = enemy.spawn_generation;
+                reward.eligible_players.clear();
             }
             events.push(Event::EnemyRespawned {
                 enemy_id,
@@ -1006,6 +1140,52 @@ impl World {
         }
         let entry = self.enemy_threat.entry((enemy_id, player_id)).or_default();
         *entry = entry.saturating_add(amount);
+    }
+
+    fn snapshot_enemy_eligibility(
+        &self,
+        enemy_id: EntityId,
+        defeating_player_id: EntityId,
+    ) -> Vec<EntityId> {
+        let Some(enemy) = self.npcs.get(&enemy_id) else {
+            return vec![defeating_player_id];
+        };
+        let Some(party_id) = self.player_parties.get(&defeating_player_id).copied() else {
+            return vec![defeating_player_id];
+        };
+        let Some(party) = self.parties.get(&party_id) else {
+            return vec![defeating_player_id];
+        };
+        let mut eligible: Vec<_> = party
+            .member_ids
+            .iter()
+            .copied()
+            .filter(|player_id| {
+                self.players.get(player_id).is_some_and(|player| {
+                    player.health > 0
+                        && player.position.distance_squared(enemy.position)
+                            <= ENEMY_LEASH_RANGE * ENEMY_LEASH_RANGE
+                })
+            })
+            .collect();
+        if !eligible.contains(&defeating_player_id) {
+            eligible.push(defeating_player_id);
+            eligible.sort_unstable();
+        }
+        eligible
+    }
+
+    fn select_enemy_loot_owner(&mut self, eligible_players: &[EntityId]) -> Option<EntityId> {
+        let first_player_id = *eligible_players.first()?;
+        let Some(party_id) = self.player_parties.get(&first_player_id).copied() else {
+            return Some(first_player_id);
+        };
+        let Some(party) = self.parties.get_mut(&party_id) else {
+            return Some(first_player_id);
+        };
+        let index = (party.loot_cursor as usize) % eligible_players.len();
+        party.loot_cursor = party.loot_cursor.saturating_add(1);
+        Some(eligible_players[index])
     }
 
     fn advance_enemy_ai(&mut self, events: &mut Vec<Event>) {
@@ -1222,6 +1402,7 @@ impl World {
                     owner: None,
                     claimed: false,
                     spawn_generation: 1,
+                    eligible_players: Vec::new(),
                 },
             );
         }
@@ -1315,6 +1496,275 @@ impl World {
         self.players.insert(id, player);
     }
 
+    fn invite_party_member(
+        &mut self,
+        player_id: EntityId,
+        target_id: EntityId,
+        events: &mut Vec<Event>,
+    ) {
+        if player_id == target_id {
+            Self::reject(events, "players cannot invite themselves");
+            return;
+        }
+        if !self.players.contains_key(&player_id) || !self.players.contains_key(&target_id) {
+            Self::reject(events, "party inviter and target must both be present");
+            return;
+        }
+        if self.player_parties.contains_key(&target_id) {
+            Self::reject(events, "target is already in a party");
+            return;
+        }
+        let party_id = if let Some(&party_id) = self.player_parties.get(&player_id) {
+            let Some(party) = self.parties.get(&party_id) else {
+                Self::reject(events, "party registry is inconsistent");
+                return;
+            };
+            if party.leader_id != player_id {
+                Self::reject(events, "only the party leader can invite members");
+                return;
+            }
+            if party.member_ids.len() >= PARTY_MAX_MEMBERS {
+                Self::reject(events, "party is full");
+                return;
+            }
+            party_id
+        } else {
+            let party_id = PartyId(self.next_party_id);
+            self.next_party_id = self.next_party_id.saturating_add(1);
+            let mut member_ids = BTreeSet::new();
+            member_ids.insert(player_id);
+            self.parties.insert(
+                party_id,
+                Party {
+                    id: party_id,
+                    leader_id: player_id,
+                    member_ids,
+                    loot_cursor: 0,
+                },
+            );
+            self.player_parties.insert(player_id, party_id);
+            party_id
+        };
+        if self.party_invites.contains_key(&(party_id, target_id)) {
+            Self::reject(events, "party invite is already pending");
+            return;
+        }
+        let invite = PartyInvite {
+            party_id,
+            inviter_id: player_id,
+            invitee_id: target_id,
+            expires_at_tick: self.tick.saturating_add(PARTY_INVITE_TICKS),
+        };
+        self.party_invites.insert((party_id, target_id), invite);
+        events.push(Event::PartyInviteCreated {
+            party_id,
+            inviter_id: player_id,
+            invitee_id: target_id,
+            expires_at_tick: invite.expires_at_tick,
+        });
+    }
+
+    fn accept_party_invite(
+        &mut self,
+        player_id: EntityId,
+        party_id: PartyId,
+        events: &mut Vec<Event>,
+    ) {
+        if !self.players.contains_key(&player_id) {
+            Self::reject(events, format!("unknown player {player_id}"));
+            return;
+        }
+        let Some(invite) = self.party_invites.get(&(party_id, player_id)).copied() else {
+            Self::reject(events, "party invite was not found");
+            return;
+        };
+        if invite.expires_at_tick <= self.tick {
+            self.party_invites.remove(&(party_id, player_id));
+            events.push(Event::PartyInviteExpired {
+                party_id,
+                player_id,
+            });
+            return;
+        }
+        if self.player_parties.contains_key(&player_id) {
+            Self::reject(events, "player is already in a party");
+            return;
+        }
+        let Some(party) = self.parties.get_mut(&party_id) else {
+            self.party_invites.remove(&(party_id, player_id));
+            Self::reject(events, "party no longer exists");
+            return;
+        };
+        if !party.member_ids.contains(&invite.inviter_id) {
+            self.party_invites.remove(&(party_id, player_id));
+            Self::reject(events, "party inviter is no longer a member");
+            return;
+        }
+        if party.member_ids.len() >= PARTY_MAX_MEMBERS {
+            Self::reject(events, "party is full");
+            return;
+        }
+        party.member_ids.insert(player_id);
+        self.player_parties.insert(player_id, party_id);
+        self.party_invites.remove(&(party_id, player_id));
+        events.push(Event::PartyInviteAccepted {
+            party: party.snapshot(),
+            player_id,
+        });
+    }
+
+    fn remove_party_member(
+        &mut self,
+        player_id: EntityId,
+        target_id: EntityId,
+        events: &mut Vec<Event>,
+    ) {
+        let Some(&party_id) = self.player_parties.get(&player_id) else {
+            Self::reject(events, "player is not in a party");
+            return;
+        };
+        let Some(party) = self.parties.get(&party_id) else {
+            Self::reject(events, "party registry is inconsistent");
+            return;
+        };
+        if party.leader_id != player_id {
+            Self::reject(events, "only the party leader can remove members");
+            return;
+        }
+        if target_id == player_id {
+            Self::reject(events, "leader must leave or disband the party");
+            return;
+        }
+        if !party.member_ids.contains(&target_id) {
+            Self::reject(events, "target is not in the party");
+            return;
+        }
+        self.remove_player_from_party(target_id, Some(player_id), events);
+    }
+
+    fn transfer_party_leader(
+        &mut self,
+        player_id: EntityId,
+        target_id: EntityId,
+        events: &mut Vec<Event>,
+    ) {
+        let Some(&party_id) = self.player_parties.get(&player_id) else {
+            Self::reject(events, "player is not in a party");
+            return;
+        };
+        let Some(party) = self.parties.get_mut(&party_id) else {
+            Self::reject(events, "party registry is inconsistent");
+            return;
+        };
+        if party.leader_id != player_id {
+            Self::reject(events, "only the party leader can transfer leadership");
+            return;
+        }
+        if !party.member_ids.contains(&target_id) {
+            Self::reject(events, "new leader is not in the party");
+            return;
+        }
+        party.leader_id = target_id;
+        events.push(Event::PartyLeaderTransferred {
+            party_id,
+            previous_leader_id: player_id,
+            leader_id: target_id,
+        });
+    }
+
+    fn disband_party(&mut self, player_id: EntityId, events: &mut Vec<Event>) {
+        let Some(&party_id) = self.player_parties.get(&player_id) else {
+            Self::reject(events, "player is not in a party");
+            return;
+        };
+        let Some(party) = self.parties.get(&party_id) else {
+            Self::reject(events, "party registry is inconsistent");
+            return;
+        };
+        if party.leader_id != player_id {
+            Self::reject(events, "only the party leader can disband the party");
+            return;
+        }
+        let member_ids = party.member_ids.iter().copied().collect();
+        self.disband_party_by_id(party_id);
+        events.push(Event::PartyDisbanded {
+            party_id,
+            member_ids,
+        });
+    }
+
+    fn remove_player_from_party(
+        &mut self,
+        player_id: EntityId,
+        removed_by: Option<EntityId>,
+        events: &mut Vec<Event>,
+    ) {
+        let Some(party_id) = self.player_parties.remove(&player_id) else {
+            return;
+        };
+        let mut disband = false;
+        let mut transferred = None;
+        if let Some(party) = self.parties.get_mut(&party_id) {
+            party.member_ids.remove(&player_id);
+            if party.member_ids.is_empty() {
+                disband = true;
+            } else if party.leader_id == player_id {
+                let previous_leader_id = player_id;
+                let leader_id = *party.member_ids.iter().next().expect("party is non-empty");
+                party.leader_id = leader_id;
+                transferred = Some((previous_leader_id, leader_id));
+            }
+        }
+        if disband {
+            self.parties.remove(&party_id);
+            self.party_invites.retain(|(id, _), _| *id != party_id);
+        } else if let Some((previous_leader_id, leader_id)) = transferred {
+            events.push(Event::PartyLeaderTransferred {
+                party_id,
+                previous_leader_id,
+                leader_id,
+            });
+        }
+        if let Some(removed_by) = removed_by {
+            events.push(Event::PartyMemberRemoved {
+                party_id,
+                player_id,
+                removed_by,
+            });
+        } else {
+            events.push(Event::PartyMemberLeft {
+                party_id,
+                player_id,
+            });
+        }
+    }
+
+    fn disband_party_by_id(&mut self, party_id: PartyId) {
+        if let Some(party) = self.parties.remove(&party_id) {
+            for member_id in party.member_ids {
+                self.player_parties.remove(&member_id);
+            }
+        }
+        self.party_invites.retain(|(id, _), _| *id != party_id);
+    }
+
+    fn advance_party_invites(&mut self, events: &mut Vec<Event>) {
+        let expired: Vec<_> = self
+            .party_invites
+            .iter()
+            .filter_map(|(&(party_id, player_id), invite)| {
+                (invite.expires_at_tick <= self.tick).then_some((party_id, player_id))
+            })
+            .collect();
+        for (party_id, player_id) in expired {
+            self.party_invites.remove(&(party_id, player_id));
+            events.push(Event::PartyInviteExpired {
+                party_id,
+                player_id,
+            });
+        }
+    }
+
     fn apply(&mut self, command: Command, events: &mut Vec<Event>) {
         match command {
             Command::JoinPlayer { name, role } => {
@@ -1350,6 +1800,7 @@ impl World {
                 if self.players.remove(&player_id).is_some() {
                     self.combat_cooldowns.remove(&player_id);
                     self.pending_attacks.remove(&player_id);
+                    self.remove_player_from_party(player_id, None, events);
                     events.push(Event::PlayerLeft { player_id });
                 } else {
                     Self::reject(events, format!("unknown player {player_id}"));
@@ -1731,7 +2182,7 @@ impl World {
                     Self::reject_transaction(events, player_id, "enemy corpse has expired");
                     return;
                 }
-                let Some(reward) = self.enemy_rewards.get(&enemy_id).copied() else {
+                let Some(reward) = self.enemy_rewards.get(&enemy_id).cloned() else {
                     Self::reject_transaction(events, player_id, "enemy has no reward");
                     return;
                 };
@@ -1769,6 +2220,43 @@ impl World {
                     quantity: 1,
                 });
             }
+            Command::InvitePartyMember {
+                player_id,
+                target_id,
+            } => self.invite_party_member(player_id, target_id, events),
+            Command::AcceptPartyInvite {
+                player_id,
+                party_id,
+            } => self.accept_party_invite(player_id, party_id, events),
+            Command::DeclinePartyInvite {
+                player_id,
+                party_id,
+            } => {
+                if self.party_invites.remove(&(party_id, player_id)).is_some() {
+                    events.push(Event::PartyInviteDeclined {
+                        party_id,
+                        player_id,
+                    });
+                } else {
+                    Self::reject(events, "party invite was not found");
+                }
+            }
+            Command::LeaveParty { player_id } => {
+                if self.player_parties.contains_key(&player_id) {
+                    self.remove_player_from_party(player_id, None, events);
+                } else {
+                    Self::reject(events, "player is not in a party");
+                }
+            }
+            Command::RemovePartyMember {
+                player_id,
+                target_id,
+            } => self.remove_party_member(player_id, target_id, events),
+            Command::TransferPartyLeader {
+                player_id,
+                target_id,
+            } => self.transfer_party_leader(player_id, target_id, events),
+            Command::DisbandParty { player_id } => self.disband_party(player_id, events),
             Command::ListQuestOffers { player_id, npc_id } => {
                 let Some(npc_template_id) = self.quest_giver_template(player_id, npc_id, events)
                 else {
@@ -2204,6 +2692,237 @@ mod tests {
             first.npc(enemy_id).unwrap().position,
             first.npc(enemy_id).unwrap().spawn_position
         );
+    }
+
+    #[test]
+    fn party_invites_are_server_owned_bounded_and_expire() {
+        let mut world = World::new_starter_zone();
+        let leader = join(&mut world, "Leader", Role::Tank);
+        let member = join(&mut world, "Member", Role::Healer);
+
+        let events = world.step([Command::InvitePartyMember {
+            player_id: leader,
+            target_id: member,
+        }]);
+        let Event::PartyInviteCreated { party_id, .. } = events[0] else {
+            panic!("expected party invite: {events:?}");
+        };
+        assert_eq!(
+            world.step([Command::AcceptPartyInvite {
+                player_id: member,
+                party_id,
+            }]),
+            vec![Event::PartyInviteAccepted {
+                party: PartySnapshot {
+                    id: party_id,
+                    leader_id: leader,
+                    member_ids: vec![leader, member],
+                },
+                player_id: member,
+            }]
+        );
+        assert_eq!(world.party_for_player(leader), Some(party_id));
+        assert_eq!(world.party_for_player(member), Some(party_id));
+
+        let other = join(&mut world, "Other", Role::DamageDealer);
+        let second_invite = world.step([Command::InvitePartyMember {
+            player_id: leader,
+            target_id: other,
+        }]);
+        assert!(matches!(
+            second_invite.as_slice(),
+            [Event::PartyInviteCreated { party_id: id, .. }] if *id == party_id
+        ));
+        assert_eq!(
+            world.step([Command::DeclinePartyInvite {
+                player_id: other,
+                party_id,
+            }]),
+            vec![Event::PartyInviteDeclined {
+                party_id,
+                player_id: other,
+            }]
+        );
+
+        let late = join(&mut world, "Late", Role::DamageDealer);
+        world.step([Command::InvitePartyMember {
+            player_id: leader,
+            target_id: late,
+        }]);
+        for _ in 0..PARTY_INVITE_TICKS {
+            world.step([]);
+        }
+        assert_eq!(
+            world.step([Command::AcceptPartyInvite {
+                player_id: late,
+                party_id,
+            }]),
+            vec![Event::CommandRejected {
+                reason: "party invite was not found".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn party_loot_uses_death_snapshot_and_round_robin_per_generation() {
+        let mut world = World::new_starter_zone();
+        let first = join(&mut world, "First", Role::DamageDealer);
+        let second = join(&mut world, "Second", Role::Healer);
+        let enemy_id = first_enemy(&world);
+        let party_id = match &world.step([Command::InvitePartyMember {
+            player_id: first,
+            target_id: second,
+        }])[0]
+        {
+            Event::PartyInviteCreated { party_id, .. } => *party_id,
+            other => panic!("expected invite, got {other:?}"),
+        };
+        world.step([Command::AcceptPartyInvite {
+            player_id: second,
+            party_id,
+        }]);
+        world.step([
+            Command::Move {
+                player_id: first,
+                dx: 10.0,
+                dy: 0.0,
+            },
+            Command::Move {
+                player_id: first,
+                dx: 10.0,
+                dy: 0.0,
+            },
+            Command::Move {
+                player_id: second,
+                dx: 10.0,
+                dy: 0.0,
+            },
+            Command::Move {
+                player_id: second,
+                dx: 10.0,
+                dy: 0.0,
+            },
+            Command::SelectTarget {
+                player_id: first,
+                target_id: enemy_id,
+            },
+        ]);
+        for _ in 0..9 {
+            world.step([Command::BasicAttack { player_id: first }]);
+        }
+        assert_eq!(
+            world.step([Command::LootEnemy {
+                player_id: second,
+                enemy_id,
+            }]),
+            vec![Event::TransactionRejected {
+                player_id: second,
+                reason: "player does not own enemy reward".to_owned(),
+            }]
+        );
+        assert_eq!(
+            world.step([Command::LootEnemy {
+                player_id: first,
+                enemy_id,
+            }]),
+            vec![Event::LootRewarded {
+                player_id: first,
+                enemy_id,
+                item_id: ItemId::FIELD_WOLF_PELT,
+                quantity: 1,
+            }]
+        );
+
+        for _ in 0..99 {
+            world.step([]);
+        }
+        assert_eq!(world.npc(enemy_id).unwrap().spawn_generation, 2);
+        world.step([Command::SelectTarget {
+            player_id: first,
+            target_id: enemy_id,
+        }]);
+        for _ in 0..9 {
+            world.step([Command::BasicAttack { player_id: first }]);
+        }
+        assert_eq!(
+            world.step([Command::LootEnemy {
+                player_id: second,
+                enemy_id,
+            }]),
+            vec![Event::LootRewarded {
+                player_id: second,
+                enemy_id,
+                item_id: ItemId::FIELD_WOLF_PELT,
+                quantity: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn party_leadership_and_membership_transitions_are_authoritative() {
+        let mut world = World::new_starter_zone();
+        let leader = join(&mut world, "Leader", Role::Tank);
+        let member = join(&mut world, "Member", Role::Healer);
+        let target = join(&mut world, "Target", Role::DamageDealer);
+        let party_id = match &world.step([Command::InvitePartyMember {
+            player_id: leader,
+            target_id: member,
+        }])[0]
+        {
+            Event::PartyInviteCreated { party_id, .. } => *party_id,
+            event => panic!("expected invite, got {event:?}"),
+        };
+        world.step([Command::AcceptPartyInvite {
+            player_id: member,
+            party_id,
+        }]);
+        assert_eq!(
+            world.step([Command::TransferPartyLeader {
+                player_id: leader,
+                target_id: member,
+            }]),
+            vec![Event::PartyLeaderTransferred {
+                party_id,
+                previous_leader_id: leader,
+                leader_id: member,
+            }]
+        );
+        assert_eq!(
+            world.step([Command::InvitePartyMember {
+                player_id: leader,
+                target_id: target,
+            }]),
+            vec![Event::CommandRejected {
+                reason: "only the party leader can invite members".to_owned(),
+            }]
+        );
+        world.step([Command::InvitePartyMember {
+            player_id: member,
+            target_id: target,
+        }]);
+        world.step([Command::AcceptPartyInvite {
+            player_id: target,
+            party_id,
+        }]);
+        assert_eq!(
+            world.step([Command::RemovePartyMember {
+                player_id: member,
+                target_id: target,
+            }]),
+            vec![Event::PartyMemberRemoved {
+                party_id,
+                player_id: target,
+                removed_by: member,
+            }]
+        );
+        assert_eq!(
+            world.step([Command::DisbandParty { player_id: member }]),
+            vec![Event::PartyDisbanded {
+                party_id,
+                member_ids: vec![leader, member],
+            }]
+        );
+        assert!(world.parties().next().is_none());
     }
 
     #[test]

@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use mmorpg_content::NpcTemplateId;
 use mmorpg_core::{
-    EntityId, Event, Inventory, ItemId, Npc, NpcKind, PlayerSnapshot, Position, QuestId,
-    QuestOffer, QuestProgress, QuestStatus, Role, ZoneArea, item_definition,
+    EntityId, Event, Inventory, ItemId, Npc, NpcKind, PartyId, PartySnapshot, PlayerSnapshot,
+    Position, QuestId, QuestOffer, QuestProgress, QuestStatus, Role, ZoneArea, item_definition,
 };
 
 /// Result of projecting one server event.
@@ -49,6 +49,23 @@ pub struct ClientNpc {
     pub health: u32,
     pub max_health: u32,
     pub defeated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClientParty {
+    pub id: PartyId,
+    pub leader_id: EntityId,
+    pub member_ids: Vec<EntityId>,
+}
+
+impl From<&PartySnapshot> for ClientParty {
+    fn from(party: &PartySnapshot) -> Self {
+        Self {
+            id: party.id,
+            leader_id: party.leader_id,
+            member_ids: party.member_ids.clone(),
+        }
+    }
 }
 
 /// A presentation entity. Rendering code can match on this without depending
@@ -213,6 +230,8 @@ pub struct ClientWorld {
     defeated_enemies: BTreeSet<EntityId>,
     vendor_listings: BTreeMap<EntityId, Vec<ClientVendorListing>>,
     quest_offers: BTreeMap<EntityId, Vec<QuestOffer>>,
+    parties: BTreeMap<PartyId, ClientParty>,
+    party_invites: BTreeMap<(PartyId, EntityId), u64>,
     last_notification: Option<ClientNotification>,
     world_tick: Option<u64>,
 }
@@ -248,6 +267,18 @@ impl ClientWorld {
         self.quest_offers.get(&npc_id).map(Vec::as_slice)
     }
 
+    pub fn party(&self, party_id: PartyId) -> Option<&ClientParty> {
+        self.parties.get(&party_id)
+    }
+
+    pub fn parties(&self) -> impl Iterator<Item = &ClientParty> {
+        self.parties.values()
+    }
+
+    pub fn party_invite_expires_at(&self, party_id: PartyId, player_id: EntityId) -> Option<u64> {
+        self.party_invites.get(&(party_id, player_id)).copied()
+    }
+
     pub fn last_notification(&self) -> Option<&ClientNotification> {
         self.last_notification.as_ref()
     }
@@ -276,6 +307,8 @@ impl ClientWorld {
         self.defeated_enemies.clear();
         self.vendor_listings.clear();
         self.quest_offers.clear();
+        self.parties.clear();
+        self.party_invites.clear();
         self.last_notification = None;
         self.world_tick = Some(world_tick);
 
@@ -706,6 +739,66 @@ impl ClientWorld {
                 });
                 ApplyEventResult::Applied
             }
+            Event::PartyInviteCreated {
+                party_id,
+                invitee_id,
+                expires_at_tick,
+                ..
+            } => {
+                self.party_invites
+                    .insert((*party_id, *invitee_id), *expires_at_tick);
+                ApplyEventResult::Applied
+            }
+            Event::PartyInviteAccepted { party, player_id } => {
+                self.party_invites.remove(&(party.id, *player_id));
+                self.parties.insert(party.id, ClientParty::from(party));
+                ApplyEventResult::Applied
+            }
+            Event::PartyInviteDeclined {
+                party_id,
+                player_id,
+            }
+            | Event::PartyInviteExpired {
+                party_id,
+                player_id,
+            } => {
+                self.party_invites.remove(&(*party_id, *player_id));
+                ApplyEventResult::Applied
+            }
+            Event::PartyMemberLeft {
+                party_id,
+                player_id,
+            }
+            | Event::PartyMemberRemoved {
+                party_id,
+                player_id,
+                ..
+            } => {
+                let Some(party) = self.parties.get_mut(party_id) else {
+                    return ApplyEventResult::Ignored;
+                };
+                party.member_ids.retain(|member_id| member_id != player_id);
+                if party.member_ids.is_empty() {
+                    self.parties.remove(party_id);
+                }
+                ApplyEventResult::Applied
+            }
+            Event::PartyLeaderTransferred {
+                party_id,
+                leader_id,
+                ..
+            } => {
+                let Some(party) = self.parties.get_mut(party_id) else {
+                    return ApplyEventResult::Ignored;
+                };
+                party.leader_id = *leader_id;
+                ApplyEventResult::Applied
+            }
+            Event::PartyDisbanded { party_id, .. } => {
+                self.parties.remove(party_id);
+                self.party_invites.retain(|(id, _), _| id != party_id);
+                ApplyEventResult::Applied
+            }
         }
     }
 
@@ -947,6 +1040,47 @@ mod tests {
             model.last_notification(),
             Some(ClientNotification::TransactionRejected { player_id: id, .. }) if *id == player_id
         ));
+    }
+
+    #[test]
+    fn projects_party_membership_and_clears_it_on_disband() {
+        let mut model = ClientWorld::default();
+        let party_id = PartyId(1);
+        let leader = EntityId(5);
+        let member = EntityId(6);
+        apply_all(
+            &mut model,
+            &[
+                Event::PartyInviteCreated {
+                    party_id,
+                    inviter_id: leader,
+                    invitee_id: member,
+                    expires_at_tick: 200,
+                },
+                Event::PartyInviteAccepted {
+                    party: PartySnapshot {
+                        id: party_id,
+                        leader_id: leader,
+                        member_ids: vec![leader, member],
+                    },
+                    player_id: member,
+                },
+            ],
+        );
+        assert_eq!(model.party_invite_expires_at(party_id, member), None);
+        assert_eq!(
+            model.party(party_id).unwrap().member_ids,
+            vec![leader, member]
+        );
+
+        apply_all(
+            &mut model,
+            &[Event::PartyDisbanded {
+                party_id,
+                member_ids: vec![leader, member],
+            }],
+        );
+        assert!(model.party(party_id).is_none());
     }
 
     #[test]
