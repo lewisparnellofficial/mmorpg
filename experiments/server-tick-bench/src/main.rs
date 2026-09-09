@@ -6,6 +6,7 @@ use std::time::Instant;
 #[derive(Clone, Copy, Debug)]
 struct Config {
     players: usize,
+    npcs: usize,
     ticks: usize,
     warmup: usize,
 }
@@ -14,6 +15,7 @@ impl Config {
     fn parse() -> Self {
         let mut config = Self {
             players: 3,
+            npcs: 4,
             ticks: 10_000,
             warmup: 1_000,
         };
@@ -24,6 +26,7 @@ impl Config {
                 .unwrap_or_else(|| panic!("{argument} requires a value"));
             match argument.as_str() {
                 "--players" => config.players = parse_positive(&argument, &value),
+                "--npcs" => config.npcs = parse_positive(&argument, &value),
                 "--ticks" => config.ticks = parse_positive(&argument, &value),
                 "--warmup" => {
                     config.warmup = value
@@ -38,6 +41,9 @@ impl Config {
         }
         if config.players < 3 {
             panic!("--players requires at least three role players");
+        }
+        if config.npcs < 3 {
+            panic!("--npcs requires at least three enemies");
         }
         config
     }
@@ -54,7 +60,7 @@ fn parse_positive(argument: &str, value: &str) -> usize {
 fn main() {
     let config = Config::parse();
     let timing = CombatTiming::new(20, 2, 2).expect("benchmark timing is valid");
-    let mut world = World::new_starter_zone();
+    let mut world = World::new_benchmark_zone(config.npcs);
     let tank_id = join(&mut world, "Bench Tank", Role::Tank);
     let healer_id = join(&mut world, "Bench Healer", Role::Healer);
     let damage_id = join(&mut world, "Bench Damage", Role::DamageDealer);
@@ -99,7 +105,7 @@ fn main() {
     let total: u128 = durations.iter().sum();
     let average = total / durations.len() as u128;
     println!("configuration.players={}", config.players);
-    println!("configuration.npcs=4");
+    println!("configuration.npcs={}", config.npcs);
     println!("configuration.tick_hz={}", timing.tick_hz());
     println!("configuration.cast_time_ticks={}", timing.cast_time_ticks());
     println!("configuration.cooldown_ticks={}", timing.cooldown_ticks());

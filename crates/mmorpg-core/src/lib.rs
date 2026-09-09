@@ -31,6 +31,7 @@ const TAUNT_RANGE: f32 = 32.0;
 const TAUNT_THREAT: u32 = 100;
 const PARTY_MAX_MEMBERS: usize = 5;
 const PARTY_INVITE_TICKS: u64 = 200;
+const MAX_BENCHMARK_ENEMIES: usize = 10_000;
 
 /// Server-owned timing parameters for the explicit timed-combat path.
 ///
@@ -846,6 +847,33 @@ impl World {
             Position::new(30.0, -6.0),
             100,
         );
+        world
+    }
+
+    /// Creates a bounded stress fixture for local simulation benchmarks.
+    ///
+    /// The additional enemies use the starter field-wolf definition and are
+    /// intentionally not part of the gameplay content catalog. This helper
+    /// keeps benchmark setup outside the server owner while making the NPC
+    /// population explicit and reproducible.
+    pub fn new_benchmark_zone(enemy_count: usize) -> Self {
+        assert!(
+            enemy_count <= MAX_BENCHMARK_ENEMIES,
+            "benchmark enemy count exceeds its bound"
+        );
+        let mut world = Self::new_starter_zone();
+        let additional_enemies = enemy_count.saturating_sub(3);
+        for index in 0..additional_enemies {
+            let column = (index % 100) as f32;
+            let row = (index / 100) as f32;
+            world.spawn_npc(
+                NpcTemplateId::FIELD_WOLF,
+                "Benchmark Wolf",
+                NpcKind::Enemy,
+                Position::new(20.0 + column, -40.0 + row),
+                100,
+            );
+        }
         world
     }
 
@@ -2626,6 +2654,15 @@ mod tests {
             ZoneArea::from_position(Position::new(20.0, 0.0)),
             ZoneArea::Field
         );
+    }
+
+    #[test]
+    fn benchmark_zone_adds_a_bounded_enemy_population() {
+        let world = World::new_benchmark_zone(1_000);
+
+        assert_eq!(world.summary().enemy_count, 1_000);
+        assert_eq!(world.summary().npc_count, 1_001);
+        assert_eq!(world.npc(EntityId(5)).unwrap().name, "Benchmark Wolf");
     }
 
     #[test]
