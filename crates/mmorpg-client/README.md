@@ -36,6 +36,15 @@ cargo run --manifest-path crates/mmorpg-client/Cargo.toml -- \
   127.0.0.1:4000 --wire-address 127.0.0.1:4001
 ```
 
+The client normally loads its two minimal UI proof runners from built-in
+source. To exercise bounded filesystem package discovery and manifest/source
+integrity validation in the real client process, pass `--addon-root PATH`. The
+root must contain at least two numeric package directories, each with a
+validated `manifest.toml` and source entry; packages are loaded in deterministic
+dependency order and the first two become the default and ordinary UI proof
+panels. This is a local development path and does not provide a remote package
+repository or signature privilege.
+
 The background worker sends the loopback-only development token,
 waits for the typed `Authenticated` response, lists available characters,
 displays the account's available characters, waits for the user to press

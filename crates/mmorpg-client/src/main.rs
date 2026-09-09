@@ -31,6 +31,7 @@ use mmorpg_wire::{
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -205,7 +206,22 @@ struct ScriptedUiPresentation {
     addon_node_id: u64,
 }
 
-fn build_scripted_ui_presentation() -> ScriptedUiPresentation {
+fn build_scripted_ui_presentation(
+    addon_root: Option<&Path>,
+) -> Result<ScriptedUiPresentation, String> {
+    if let Some(addon_root) = addon_root {
+        let repository = ui_scripting_spike::PackageRepository::new(addon_root);
+        let known_capabilities = std::collections::BTreeSet::new();
+        let mut runners = repository
+            .load_all(AddonPolicy::default(), &known_capabilities)
+            .map_err(|error| format!("cannot load addon repository: {error}"))?;
+        if runners.len() < 2 {
+            return Err("addon repository must contain at least two packages".to_owned());
+        }
+        let mut default_ui = runners.remove(0);
+        let mut addon = runners.remove(0);
+        return scripted_ui_from_runners(&mut default_ui, &mut addon);
+    }
     let default_source = r#"
         local panel = ui.create_panel("Default UI secure attack")
         ui.set_position(panel, 12, 12)
@@ -218,34 +234,41 @@ fn build_scripted_ui_presentation() -> ScriptedUiPresentation {
         .expect("default UI addon must load during client startup");
     let mut addon = AddonRunner::load("starter-addon", addon_source, AddonPolicy::default())
         .expect("ordinary UI addon must load during client startup");
+    scripted_ui_from_runners(&mut default_ui, &mut addon)
+}
+
+fn scripted_ui_from_runners(
+    default_ui: &mut AddonRunner,
+    addon: &mut AddonRunner,
+) -> Result<ScriptedUiPresentation, String> {
     let default_node = default_ui
         .snapshot()
         .nodes
         .first()
-        .expect("default UI addon must describe one panel")
-        .clone();
+        .ok_or_else(|| "default UI addon must describe one panel".to_owned())
+        .cloned()?;
     let addon_node = addon
         .snapshot()
         .nodes
         .first()
-        .expect("ordinary UI addon must describe one panel")
-        .clone();
+        .ok_or_else(|| "ordinary UI addon must describe one panel".to_owned())
+        .cloned()?;
     default_ui
         .secure_input(default_node.id, "basic_attack")
-        .expect("host must accept the default secure action presentation");
+        .map_err(|error| format!("default UI secure action rejected: {error}"))?;
     addon
         .secure_input(addon_node.id, "basic_attack")
-        .expect("host must accept the addon secure action presentation");
+        .map_err(|error| format!("addon secure action rejected: {error}"))?;
     println!(
         "SCRIPTED_UI default_node={} addon_node={} action=basic_attack",
         default_node.id, addon_node.id
     );
-    ScriptedUiPresentation {
+    Ok(ScriptedUiPresentation {
         default_label: default_node.text,
         addon_label: addon_node.text,
         default_node_id: default_node.id,
         addon_node_id: addon_node.id,
-    }
+    })
 }
 
 #[derive(Resource)]
@@ -331,6 +354,7 @@ fn main() {
         .unwrap_or_else(|| DEFAULT_SERVER_ADDRESS.to_owned());
     let mut wire_address = None;
     let mut preferred_character_id = None;
+    let mut addon_root = None;
     let mut acceptance_smoke = false;
     let mut render_backend = RenderBackendChoice::Automatic;
     while let Some(argument) = arguments.next() {
@@ -364,6 +388,17 @@ fn main() {
                 }
             }
             "--acceptance-smoke" => acceptance_smoke = true,
+            "--addon-root" => {
+                if addon_root.is_some() {
+                    eprintln!("--addon-root may only be specified once");
+                    return;
+                }
+                addon_root = arguments.next();
+                if addon_root.is_none() {
+                    eprintln!("--addon-root requires a package repository path");
+                    return;
+                }
+            }
             "--render-backend" => {
                 let Some(value) = arguments.next() else {
                     eprintln!("--render-backend requires auto, vulkan, or gl");
@@ -383,7 +418,13 @@ fn main() {
     }
     let typed_address = wire_address.unwrap_or_else(|| server_address.clone());
     println!("render_backend_request={}", render_backend.label());
-    let scripted_ui = build_scripted_ui_presentation();
+    let scripted_ui = match build_scripted_ui_presentation(addon_root.as_deref().map(Path::new)) {
+        Ok(scripted_ui) => scripted_ui,
+        Err(error) => {
+            eprintln!("{error}");
+            return;
+        }
+    };
     let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel();
     spawn_wire_network_worker(
@@ -469,9 +510,9 @@ fn acceptance_smoke_input(
     let command = match role {
         Some(RoleCode::Tank) => match smoke.step {
             0 => ClientCommand::Move { dx: 10.0, dy: 0.0 },
-            8 => ClientCommand::InvitePartyMember(EntityId(7)),
-            9 => ClientCommand::Target(EntityId(2)),
-            10 => ClientCommand::Taunt,
+            8..=9 => ClientCommand::InvitePartyMember(EntityId(7)),
+            10 => ClientCommand::Target(EntityId(4)),
+            11..=15 => ClientCommand::Taunt,
             _ => {
                 smoke.step = smoke.step.saturating_add(1);
                 return;
@@ -479,7 +520,7 @@ fn acceptance_smoke_input(
         },
         Some(RoleCode::Healer) => match smoke.step {
             8 => ClientCommand::AcceptPartyInvite(1),
-            9 => ClientCommand::Heal(EntityId(6)),
+            15..=25 => ClientCommand::Heal(EntityId(6)),
             _ => {
                 smoke.step = smoke.step.saturating_add(1);
                 return;
@@ -1691,7 +1732,7 @@ mod tests {
 
     #[test]
     fn secure_attack_binding_rejects_replay_and_refreshes_after_focus_change() {
-        let scripted_ui = build_scripted_ui_presentation();
+        let scripted_ui = build_scripted_ui_presentation(None).expect("built-in UI must load");
         let mut secure = SecureInputState::new(&scripted_ui);
         let first = secure
             .registry

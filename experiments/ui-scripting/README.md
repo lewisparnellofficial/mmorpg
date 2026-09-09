@@ -56,6 +56,13 @@ store across runner instances to model character changes within one account.
 Storage mutations made during a failed callback are rolled back with the
 presentation transaction.
 
+`PackageRepository::discover_package_ids` and `load_all` provide the bounded
+client-facing discovery path: numeric package directories are capped before
+manifest loading, then the complete set is validated, integrity-checked, and
+loaded in dependency order before the first VM is constructed. The graphical
+client exercises this path with `--addon-root PATH`; built-in source remains
+the default when no repository is supplied.
+
 This is evidence for a Luau embedding direction, not a security certification.
 The remaining production questions include package/signature policy, exact
 runtime pinning and upgrade policy, OS/process isolation, and fuzzing the

@@ -134,6 +134,7 @@ impl std::fmt::Display for AddonError {
 impl std::error::Error for AddonError {}
 
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
+const MAX_DISCOVERED_PACKAGES: usize = 64;
 
 #[derive(Debug, Deserialize)]
 struct ManifestFile {
@@ -200,6 +201,45 @@ pub struct PackageRepository {
 impl PackageRepository {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
+    }
+
+    /// Discovers the bounded numeric package directories beneath the
+    /// repository root. Non-directory and non-numeric entries are ignored so
+    /// repositories can contain documentation or other local metadata.
+    pub fn discover_package_ids(&self) -> Result<BTreeSet<PackageId>, AddonError> {
+        let entries = fs::read_dir(&self.root)
+            .map_err(|error| AddonError::PackageIo(format!("cannot read package root: {error}")))?;
+        let mut package_ids = BTreeSet::new();
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                AddonError::PackageIo(format!("cannot read package entry: {error}"))
+            })?;
+            if !entry
+                .file_type()
+                .map_err(|error| {
+                    AddonError::PackageIo(format!("cannot inspect package entry: {error}"))
+                })?
+                .is_dir()
+            {
+                continue;
+            }
+            let Some(value) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            let package_id = PackageId::new(value)
+                .ok_or_else(|| AddonError::PackageParse("package IDs must be non-zero".into()))?;
+            if package_ids.len() == MAX_DISCOVERED_PACKAGES {
+                return Err(AddonError::PackageParse(
+                    "package repository contains too many packages".into(),
+                ));
+            }
+            package_ids.insert(package_id);
+        }
+        Ok(package_ids)
     }
 
     fn read_manifest(&self, package_id: PackageId) -> Result<Manifest, AddonError> {
@@ -291,6 +331,24 @@ impl PackageRepository {
         let entry = safe_entry_path(&package_dir, &manifest.entry)?;
         let source = read_bounded(&entry, policy.max_script_bytes)?;
         AddonRunner::load_from_manifest(&manifest, &source, policy, known_capabilities, package_ids)
+    }
+
+    /// Discovers and loads the complete repository in deterministic dependency
+    /// order. All manifests and source files are validated before the first
+    /// VM is constructed.
+    pub fn load_all(
+        &self,
+        policy: AddonPolicy,
+        known_capabilities: &BTreeSet<String>,
+    ) -> Result<Vec<AddonRunner>, AddonError> {
+        let package_ids = self.discover_package_ids()?;
+        let order = self.resolve_order(&package_ids, known_capabilities)?;
+        order
+            .into_iter()
+            .map(|package_id| {
+                self.load(package_id, policy.clone(), known_capabilities, &package_ids)
+            })
+            .collect()
     }
 }
 
@@ -1650,6 +1708,16 @@ mod tests {
 
         let known = ["ui.panel".to_owned()].into_iter().collect();
         let packages = [PackageId::new(9003).unwrap()].into_iter().collect();
+        assert_eq!(
+            PackageRepository::new(&root)
+                .discover_package_ids()
+                .unwrap(),
+            packages
+        );
+        let loaded = PackageRepository::new(&root)
+            .load_all(AddonPolicy::default(), &known)
+            .unwrap();
+        assert_eq!(loaded[0].snapshot().nodes[0].text, "from repository");
         let runner = PackageRepository::new(&root)
             .load(
                 PackageId::new(9003).unwrap(),
