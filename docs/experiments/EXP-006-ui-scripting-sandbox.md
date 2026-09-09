@@ -174,6 +174,13 @@ with `./scripts/smoke-ui-fuzz.sh`; set `MMORPG_RUN_FUZZ=1` to
 include it in aggregate validation on a host with `cargo-fuzz` and nightly
 Rust. The normal aggregate remains independent of that optional tool.
 
+An extended local `ui-boundaries` campaign then ran for 21 seconds with
+`-max_total_time=20 -max_len=4096`. It completed 746,189 executions without
+a crash or sanitizer finding, reached 827 coverage features, and left 952
+minimized corpus inputs. This is stronger bounded evidence for the contract
+and storage boundary, but it is still one host-local campaign rather than an
+exhaustive security guarantee.
+
 Because the Luau campaign found a native parser crash, the repository now also
 contains `experiments/ui-wasm-comparison`, a standalone Wasmi proof of the
 stronger isolation alternative. Its local run linked only one explicit UI
@@ -202,9 +209,9 @@ mode, because sandbox mode makes the global table read-only.
   native dispatch path, but does not yet cover every pointer hit-test,
   reload, overlay, or addon-unload scenario end to end.
 - There is no full scripted-HUD renderer integration, process-level isolation,
-  or minimum-hardware calibration. The fuzz smoke is a bounded campaign rather
-  than exhaustive fuzzing; longer campaigns remain required before a
-  production runtime decision.
+  or minimum-hardware calibration. The fuzz campaigns are bounded local
+  evidence rather than exhaustive fuzzing; more varied seeds, sanitizers, and
+  host configurations remain required before a production runtime decision.
 - The empty `game` namespace is a placeholder, not the final public API.
 - Callback rollback covers host state, staged panel operations, and
   registrations made during callbacks; initial script-load registration still
@@ -219,10 +226,10 @@ mode, because sandbox mode makes the global table read-only.
   source remains the fallback when no repository is supplied; package
   signatures, remote repositories, and hot reload remain out of scope.
 
-Next work should run longer coverage-guided campaigns, calibrate quotas on the
-minimum supported Linux client, and use the Wasmi comparison to decide whether
-the stronger isolation boundary justifies the added guest ABI/toolchain cost
-before accepting an architecture decision.
+Next work should vary coverage-guided seeds and sanitizer configurations,
+calibrate quotas on the minimum supported Linux client, and use the Wasmi
+comparison to decide whether the stronger isolation boundary justifies the
+added guest ABI/toolchain cost before accepting an architecture decision.
 
 ## Evidence classification
 
