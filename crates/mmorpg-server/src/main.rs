@@ -33,6 +33,7 @@ const MAX_WIRE_COMMANDS_PER_CLIENT_POLL: usize = 32;
 const MAX_WIRE_COMMANDS_PER_POLL: usize = 256;
 const MAX_WIRE_CLIENTS: usize = 256;
 const MAX_PENDING_COMMANDS: usize = 1024;
+const MAX_COMMANDS_PER_TICK: usize = 256;
 const MAX_COMPLETED_OPERATIONS: usize = 256;
 const CHECKPOINT_INTERVAL_TICKS: u64 = 20;
 const DISCONNECT_GRACE_TICKS: u64 = 100;
@@ -951,7 +952,7 @@ impl Server {
         }
         self.poll_operation_journal();
         self.expire_detached_characters();
-        let pending: Vec<_> = self.commands.drain(..).collect();
+        let pending = self.take_tick_commands();
         let operation_commands: Vec<_> = pending
             .iter()
             .filter_map(|pending| {
@@ -1022,6 +1023,31 @@ impl Server {
         }
 
         self.schedule_next_tick();
+    }
+
+    fn take_tick_commands(&mut self) -> Vec<PendingCommand> {
+        let mut pending = Vec::with_capacity(self.commands.len().min(MAX_COMMANDS_PER_TICK));
+        while let Some(command) = self.commands.pop_front() {
+            if pending.len() < MAX_COMMANDS_PER_TICK {
+                pending.push(command);
+                continue;
+            }
+
+            let client_id = origin_client_id(command.origin);
+            if let Some(key) = command.operation {
+                self.record_failed_operation(
+                    client_id,
+                    key,
+                    "simulation tick command budget exceeded".to_owned(),
+                );
+            } else {
+                self.queue_wire_error(
+                    client_id,
+                    "simulation tick command budget exceeded".to_owned(),
+                );
+            }
+        }
+        pending
     }
 
     fn stage_operation_batch(
@@ -3048,6 +3074,26 @@ mod tests {
             );
         }
         assert_eq!(server.commands.len(), MAX_PENDING_COMMANDS);
+    }
+
+    #[test]
+    fn simulation_tick_command_budget_rejects_overflow_without_debt() {
+        let mut server = Server::new(DEFAULT_TICK_HZ, false, None);
+        for _ in 0..=MAX_COMMANDS_PER_TICK {
+            server.commands.push_back(PendingCommand {
+                origin: ClientOrigin::Wire(1),
+                command: Command::Move {
+                    player_id: EntityId(5),
+                    dx: 1.0,
+                    dy: 0.0,
+                },
+                operation: None,
+            });
+        }
+
+        let accepted = server.take_tick_commands();
+        assert_eq!(accepted.len(), MAX_COMMANDS_PER_TICK);
+        assert!(server.commands.is_empty());
     }
 
     #[test]

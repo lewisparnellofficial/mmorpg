@@ -70,6 +70,9 @@ not proof that the server can safely absorb the workload.
 
 Typed intake is bounded per session and globally, and the server interleaves
 decoded per-session queues before handing commands to the single world owner.
+Each fixed-tick world step also admits at most 256 commands; overflow is
+rejected (including a durable failure result where applicable) rather than
+carried as hidden simulation debt.
 The development listener also has a 256-client admission bound and rejects an
 over-capacity connection before allocating a session. These are fairness and
 resource guards for the development path, not a production admission or

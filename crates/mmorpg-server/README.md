@@ -152,6 +152,9 @@ active sessions before authoritative application so one session's bounded
 burst cannot occupy the entire command order for the tick. The listener also
 admits at most 256 simultaneous wire clients; a connection over that bound is
 closed before a session is allocated.
+Each fixed-tick world step admits at most 256 pending commands. Overflow is
+rejected with a typed error (or a durable failed-operation result) instead of
+being carried into a later tick as hidden simulation debt.
 
 Wire clients must authenticate before sending gameplay commands:
 
