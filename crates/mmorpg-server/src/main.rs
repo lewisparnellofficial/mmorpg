@@ -22,6 +22,7 @@ const DEFAULT_TICK_HZ: u64 = 20;
 const MAX_WIRE_INPUT_BYTES: usize = mmorpg_wire::MAX_FRAME_SIZE * 2;
 const MAX_WIRE_OUTPUT_BYTES: usize = 256 * 1024;
 
+#[cfg(test)]
 #[derive(Debug)]
 struct Client {
     id: u64,
@@ -32,6 +33,7 @@ struct Client {
     closed: bool,
 }
 
+#[cfg(test)]
 impl Client {
     fn new(id: u64, stream: TcpStream) -> Self {
         Self {
@@ -133,6 +135,7 @@ struct AuthenticatedSession {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ClientOrigin {
+    #[cfg(test)]
     Line(u64),
     Wire(u64),
 }
@@ -144,6 +147,7 @@ struct PendingCommand {
 
 struct Server {
     world: World,
+    #[cfg(test)]
     clients: Vec<Client>,
     wire_clients: Vec<WireClient>,
     commands: VecDeque<PendingCommand>,
@@ -174,6 +178,7 @@ impl Server {
         let tick_interval = Duration::from_secs_f64(1.0 / tick_hz as f64);
         Self {
             world: World::new_starter_zone(),
+            #[cfg(test)]
             clients: Vec::new(),
             wire_clients: Vec::new(),
             commands: VecDeque::new(),
@@ -185,16 +190,6 @@ impl Server {
         }
     }
 
-    fn add_client(&mut self, stream: TcpStream) {
-        let id = self.next_client_id;
-        self.next_client_id = self.next_client_id.saturating_add(1);
-        let mut client = Client::new(id, stream);
-        client.queue_line("WELCOME mmorpg-server");
-        client.queue_line("TYPE help FOR COMMANDS");
-        self.clients.push(client);
-        println!("client_connected id={id}");
-    }
-
     fn add_wire_client(&mut self, stream: TcpStream) {
         let id = self.next_client_id;
         self.next_client_id = self.next_client_id.saturating_add(1);
@@ -204,44 +199,6 @@ impl Server {
         });
         self.wire_clients.push(client);
         println!("wire_client_connected id={id}");
-    }
-
-    fn read_clients(&mut self) {
-        let mut parsed = Vec::new();
-        for client in &mut self.clients {
-            if client.closed {
-                continue;
-            }
-            let mut buffer = [0_u8; 4096];
-            loop {
-                match client.stream.read(&mut buffer) {
-                    Ok(0) => {
-                        client.closed = true;
-                        break;
-                    }
-                    Ok(bytes_read) => {
-                        client
-                            .input
-                            .push_str(&String::from_utf8_lossy(&buffer[..bytes_read]));
-                        while let Some(newline) = client.input.find('\n') {
-                            let line = client.input[..newline].trim_end_matches('\r').to_owned();
-                            client.input.drain(..=newline);
-                            parsed.push((client.id, line));
-                        }
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(error) => {
-                        eprintln!("client_read_error id={} error={error}", client.id);
-                        client.closed = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        for (client_id, line) in parsed {
-            self.handle_line(client_id, &line);
-        }
     }
 
     fn read_wire_clients(&mut self) {
@@ -569,6 +526,7 @@ impl Server {
         }
     }
 
+    #[cfg(test)]
     fn handle_line(&mut self, client_id: u64, line: &str) {
         let Some(client_index) = self
             .clients
@@ -606,6 +564,7 @@ impl Server {
         }
     }
 
+    #[cfg(test)]
     fn send_help(&mut self, client_id: u64) {
         let Some(client) = self
             .clients
@@ -630,6 +589,7 @@ impl Server {
         client.queue_line("HELP quit");
     }
 
+    #[cfg(test)]
     fn send_state(&mut self, client_id: u64) {
         if !self.clients.iter().any(|client| client.id == client_id) {
             return;
@@ -695,6 +655,7 @@ impl Server {
         }
     }
 
+    #[cfg(test)]
     fn send_inventory(&mut self, client_id: u64) {
         let Some(player_id) = self
             .clients
@@ -744,6 +705,7 @@ impl Server {
     /// separate from `state` so existing terminal users retain the current
     /// human-readable output while the graphical client has a deterministic
     /// response to parse.
+    #[cfg(test)]
     fn send_machine_snapshot(&mut self, client_id: u64) {
         let lines = format_machine_snapshot(&self.world);
         if let Some(client) = self
@@ -784,18 +746,8 @@ impl Server {
                 && let Some(origin) = join_origins.pop_front()
             {
                 match origin {
-                    ClientOrigin::Line(origin) => {
-                        if let Some(client) =
-                            self.clients.iter_mut().find(|client| client.id == origin)
-                        {
-                            client.player_id = Some(player.id);
-                            client.queue_line(format!(
-                                "CONNECTED player_id={} role={}",
-                                player.id,
-                                player.role.as_str()
-                            ));
-                        }
-                    }
+                    #[cfg(test)]
+                    ClientOrigin::Line(_) => {}
                     ClientOrigin::Wire(origin) => {
                         if let Some(client) = self
                             .wire_clients
@@ -814,7 +766,6 @@ impl Server {
         }
 
         for event in events {
-            self.broadcast(format_event(&event));
             self.broadcast_wire_event(&event);
         }
 
@@ -849,16 +800,6 @@ impl Server {
     }
 
     fn queue_disconnects(&mut self) {
-        for client in &mut self.clients {
-            if client.closed
-                && let Some(player_id) = client.player_id.take()
-            {
-                self.commands.push_back(PendingCommand {
-                    origin: ClientOrigin::Line(client.id),
-                    command: Command::LeavePlayer { player_id },
-                });
-            }
-        }
         for client in &mut self.wire_clients {
             if client.closed
                 && let Some(player_id) = client.player_id.take()
@@ -872,26 +813,6 @@ impl Server {
     }
 
     fn flush_clients(&mut self) {
-        for client in &mut self.clients {
-            while !client.output.is_empty() {
-                let chunk: Vec<u8> = client.output.iter().copied().take(8192).collect();
-                match client.stream.write(&chunk) {
-                    Ok(0) => {
-                        client.closed = true;
-                        break;
-                    }
-                    Ok(bytes_written) => {
-                        client.output.drain(..bytes_written);
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(error) => {
-                        eprintln!("client_write_error id={} error={error}", client.id);
-                        client.closed = true;
-                        break;
-                    }
-                }
-            }
-        }
         for client in &mut self.wire_clients {
             while !client.output.is_empty() {
                 let chunk: Vec<u8> = client.output.iter().copied().take(8192).collect();
@@ -915,18 +836,8 @@ impl Server {
     }
 
     fn remove_closed(&mut self) {
-        self.clients
-            .retain(|client| !client.closed || !client.output.is_empty());
         self.wire_clients
             .retain(|client| !client.closed || !client.output.is_empty());
-    }
-
-    fn broadcast(&mut self, line: String) {
-        for client in &mut self.clients {
-            if !client.closed {
-                client.queue_line(&line);
-            }
-        }
     }
 
     fn broadcast_wire_event(&mut self, event: &Event) {
@@ -1223,6 +1134,7 @@ fn wire_snapshot(world: &World) -> WorldSnapshot {
     }
 }
 
+#[cfg(test)]
 fn format_event(event: &Event) -> String {
     match event {
         Event::PlayerJoined { player } => format!(
@@ -1380,6 +1292,7 @@ fn format_event(event: &Event) -> String {
 /// protocol. Records are whitespace-delimited key/value pairs, and text
 /// values use percent encoding so names containing spaces cannot change the
 /// record shape. Positions use Rust's shortest round-trippable float format.
+#[cfg(test)]
 fn format_machine_snapshot(world: &World) -> Vec<String> {
     let summary = world.summary();
     let mut lines = vec!["TEMP_SNAPSHOT_BEGIN version=2".to_owned()];
@@ -1437,6 +1350,7 @@ fn format_machine_snapshot(world: &World) -> Vec<String> {
     lines
 }
 
+#[cfg(test)]
 fn machine_npc_kind(kind: mmorpg_core::NpcKind) -> &'static str {
     match kind {
         mmorpg_core::NpcKind::Vendor => "vendor",
@@ -1444,6 +1358,7 @@ fn machine_npc_kind(kind: mmorpg_core::NpcKind) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn encode_snapshot_text(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut encoded = String::with_capacity(value.len());
@@ -1459,6 +1374,7 @@ fn encode_snapshot_text(value: &str) -> String {
     encoded
 }
 
+#[cfg(test)]
 enum ParsedLine {
     Command(Command),
     State,
@@ -1468,6 +1384,7 @@ enum ParsedLine {
     Quit,
 }
 
+#[cfg(test)]
 fn parse_line(line: &str, bound_player: Option<EntityId>) -> Result<ParsedLine, String> {
     let tokens: Vec<_> = line.split_whitespace().collect();
     let Some(command) = tokens.first().copied() else {
@@ -1597,6 +1514,7 @@ fn parse_line(line: &str, bound_player: Option<EntityId>) -> Result<ParsedLine, 
     }
 }
 
+#[cfg(test)]
 fn ensure_bound_id(value: &str, bound_player: Option<EntityId>) -> Result<(), String> {
     let requested = parse_entity_id(value)?;
     if Some(requested) != bound_player {
@@ -1605,6 +1523,7 @@ fn ensure_bound_id(value: &str, bound_player: Option<EntityId>) -> Result<(), St
     Ok(())
 }
 
+#[cfg(test)]
 fn parse_entity_id(value: &str) -> Result<EntityId, String> {
     value
         .parse::<u64>()
@@ -1612,6 +1531,7 @@ fn parse_entity_id(value: &str) -> Result<EntityId, String> {
         .map_err(|_| "entity-id must be an integer".to_owned())
 }
 
+#[cfg(test)]
 fn parse_item_id(value: &str) -> Result<ItemId, String> {
     value
         .parse::<u32>()
@@ -1619,6 +1539,7 @@ fn parse_item_id(value: &str) -> Result<ItemId, String> {
         .map_err(|_| "item-id must be an integer".to_owned())
 }
 
+#[cfg(test)]
 fn parse_quest_id(value: &str) -> Result<QuestId, String> {
     value
         .parse::<u32>()
@@ -1626,6 +1547,7 @@ fn parse_quest_id(value: &str) -> Result<QuestId, String> {
         .map_err(|_| "quest-id must be an integer".to_owned())
 }
 
+#[cfg(test)]
 fn parse_positive_quantity(value: &str) -> Result<u32, String> {
     let quantity = value
         .parse::<u32>()
