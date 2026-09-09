@@ -102,6 +102,7 @@ run_manifest_checks tools/mmorpg-wire-cli/Cargo.toml "typed diagnostic CLI"
 run_step "typed diagnostic smoke" "$repo_root/scripts/smoke-typed-diagnostic.sh"
 run_manifest_checks experiments/ui-scripting/Cargo.toml "UI scripting"
 run_step "UI scripting adversarial smoke" "$repo_root/scripts/smoke-ui-adversarial.sh"
+run_step "UI constrained smoke" "$repo_root/scripts/smoke-ui-constrained.sh"
 run_manifest_checks experiments/ui-wasm-comparison/Cargo.toml "Wasm UI comparison"
 run_step "Wasm UI comparison smoke" cargo run --quiet --manifest-path experiments/ui-wasm-comparison/Cargo.toml
 run_step "UI process isolation smoke" "$repo_root/scripts/smoke-ui-process-isolation.sh"

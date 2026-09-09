@@ -119,6 +119,15 @@ without limit.
 These are local test observations, not production capacity measurements or a
 security proof.
 
+A modeled constrained run also completed the 100-iteration adversarial gate
+with one CPU affinity (`taskset -c 0`) and a 1 GiB virtual-memory limit. It
+reported `load_p50_ns=577450`, `load_p95_ns=640237`, `load_max_ns=852989`,
+`callback_p50_ns=30884`, `callback_p95_ns=33914`, `callback_max_ns=35911`,
+`storage_p95_us=209`, and `storage_reload_us=692`. This is evidence that the
+current quotas and failure handling complete under a deliberately constrained
+process profile; it is a modeled constraint, not a physical minimum-hardware
+calibration or a substitute for the required supported-device run.
+
 ### Adversarial and runtime gate
 
 The aggregate gate now runs `scripts/smoke-ui-adversarial.sh`. It repeats a
