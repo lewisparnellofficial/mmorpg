@@ -466,6 +466,15 @@ impl ClientWorld {
                 npc.defeated = true;
                 ApplyEventResult::Applied
             }
+            Event::EnemyRespawned { enemy_id, .. } => {
+                let Some(ClientEntity::Npc(npc)) = self.entities.get_mut(enemy_id) else {
+                    return ApplyEventResult::Ignored;
+                };
+                self.defeated_enemies.remove(enemy_id);
+                npc.health = npc.max_health;
+                npc.defeated = false;
+                ApplyEventResult::Applied
+            }
             Event::VendorListed {
                 vendor_id,
                 listings,

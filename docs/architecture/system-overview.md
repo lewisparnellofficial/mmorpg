@@ -101,10 +101,11 @@ still a future spike.
 The authoritative core now also exposes an explicit fixed-tick combat path for
 cast-time and cooldown experiments. The original immediate development path
 remains available for compatibility, while timed combat state is owned by the
-world owner and resolves through the same authoritative events. Enemy patrol,
-aggro, leash, and respawn behavior remains a standalone experiment until its
-navigation, persistence, and ownership boundaries are integrated into the
-server.
+world owner and resolves through the same authoritative events. Enemy respawn
+is now integrated as a bounded fixed-tick, generation-reset transition and is
+carried over typed wire; enemy patrol, aggro, threat, enemy attacks, and leash
+behavior remain standalone experiment work until their navigation, persistence,
+and ownership boundaries are integrated into the server.
 
 The current server is intentionally a development process. It does not yet
 provide production authentication, durable persistence, interest-managed

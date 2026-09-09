@@ -12,6 +12,7 @@ Current experiment records:
 - [EXP-004: Typed wire gameplay smoke test](EXP-004-wire-gameplay-smoke.md)
 - [EXP-006: Luau UI scripting sandbox](EXP-006-ui-scripting-sandbox.md)
 - [EXP-007: Qt Wayland tablet shell](EXP-007-qt-tablet-shell.md)
+- [EXP-008: Authoritative enemy respawn generation](EXP-008-enemy-respawn.md)
 
 ## Required experiment categories
 

@@ -442,6 +442,13 @@ fn wire_event(event: &WireServerEvent) -> Result<Event, AdapterError> {
         WireServerEvent::EnemyDefeated { enemy_id } => Event::EnemyDefeated {
             enemy_id: CoreEntityId(*enemy_id),
         },
+        WireServerEvent::EnemyRespawned {
+            enemy_id,
+            spawn_generation,
+        } => Event::EnemyRespawned {
+            enemy_id: CoreEntityId(*enemy_id),
+            spawn_generation: *spawn_generation,
+        },
         WireServerEvent::VendorListed {
             player_id,
             vendor_id,
@@ -623,6 +630,9 @@ fn protocol_npc(npc: &NpcState) -> Result<Npc, AdapterError> {
         position: npc.position,
         health: npc.health,
         max_health: npc.max_health,
+        spawn_position: npc.position,
+        respawn_at_tick: None,
+        spawn_generation: 1,
     })
 }
 

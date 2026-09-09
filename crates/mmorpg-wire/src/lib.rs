@@ -750,6 +750,10 @@ pub enum ServerEvent {
     EnemyDefeated {
         enemy_id: u64,
     },
+    EnemyRespawned {
+        enemy_id: u64,
+        spawn_generation: u64,
+    },
     VendorListed {
         player_id: u64,
         vendor_id: u64,
@@ -1553,6 +1557,14 @@ fn encode_server_event(
             encoder.put_u8(6);
             encoder.put_u64(*enemy_id, "enemy_id")?;
         }
+        ServerEvent::EnemyRespawned {
+            enemy_id,
+            spawn_generation,
+        } => {
+            encoder.put_u8(19);
+            encoder.put_u64(*enemy_id, "enemy_id")?;
+            encoder.put_u64(*spawn_generation, "spawn_generation")?;
+        }
         ServerEvent::VendorListed {
             player_id,
             vendor_id,
@@ -1721,6 +1733,10 @@ fn decode_server_event(decoder: &mut ServerDecoder<'_>) -> Result<ServerEvent, S
         6 => Ok(ServerEvent::EnemyDefeated {
             enemy_id: decoder.take_nonzero_u64("enemy_id")?,
         }),
+        19 => Ok(ServerEvent::EnemyRespawned {
+            enemy_id: decoder.take_nonzero_u64("enemy_id")?,
+            spawn_generation: decoder.take_nonzero_u64("spawn_generation")?,
+        }),
         7 => {
             let player_id = decoder.take_nonzero_u64("player_id")?;
             let vendor_id = decoder.take_nonzero_u64("vendor_id")?;
@@ -1845,7 +1861,7 @@ pub fn decode_framed_server_event(input: &[u8]) -> Result<FramedServerEvent, Ser
             available: input.len() - 5,
         });
     }
-    let known = (1..=18).contains(&opcode);
+    let known = (1..=19).contains(&opcode);
     if !known {
         return Ok(FramedServerEvent::SkippedUnknown { opcode, length });
     }
@@ -2289,6 +2305,20 @@ mod tests {
                 opcode: 250,
                 length: 2,
             })
+        );
+    }
+
+    #[test]
+    fn enemy_respawn_event_round_trips_as_additive_opcode() {
+        let event = ServerEvent::EnemyRespawned {
+            enemy_id: 9,
+            spawn_generation: 2,
+        };
+        let framed = encode_framed_server_event(&event).unwrap();
+        assert_eq!(framed[0], 19);
+        assert_eq!(
+            decode_framed_server_event(&framed),
+            Ok(FramedServerEvent::Known(event))
         );
     }
 

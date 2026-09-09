@@ -20,6 +20,7 @@ const HEAL_AMOUNT: u32 = 30;
 const VENDOR_INTERACTION_RANGE: f32 = 12.0;
 const STARTER_GOLD: u32 = 20;
 const STARTER_INVENTORY_CAPACITY: usize = 16;
+const ENEMY_RESPAWN_TICKS: u64 = 100;
 
 /// Server-owned timing parameters for the explicit timed-combat path.
 ///
@@ -325,6 +326,9 @@ pub struct Npc {
     pub position: Position,
     pub health: u32,
     pub max_health: u32,
+    pub spawn_position: Position,
+    pub respawn_at_tick: Option<u64>,
+    pub spawn_generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -493,6 +497,10 @@ pub enum Event {
     EnemyDefeated {
         enemy_id: EntityId,
     },
+    EnemyRespawned {
+        enemy_id: EntityId,
+        spawn_generation: u64,
+    },
     VendorListed {
         player_id: EntityId,
         vendor_id: EntityId,
@@ -572,6 +580,7 @@ struct VendorStock {
 struct EnemyReward {
     owner: Option<EntityId>,
     claimed: bool,
+    spawn_generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -727,6 +736,7 @@ impl World {
         }
         self.tick = self.tick.saturating_add(1);
         self.resolve_pending_attacks(&mut events);
+        self.advance_enemy_lifecycle(&mut events);
         events
     }
 
@@ -847,7 +857,41 @@ impl World {
             reward.owner = Some(player_id);
         }
         if defeated {
+            if let Some(target) = self.npcs.get_mut(&target_id) {
+                target.respawn_at_tick = Some(self.tick.saturating_add(ENEMY_RESPAWN_TICKS));
+            }
             self.advance_kill_quests(player_id, target_template_id, events);
+        }
+    }
+
+    fn advance_enemy_lifecycle(&mut self, events: &mut Vec<Event>) {
+        let due: Vec<_> = self
+            .npcs
+            .values()
+            .filter(|npc| {
+                npc.kind == NpcKind::Enemy
+                    && npc.health == 0
+                    && npc.respawn_at_tick.is_some_and(|tick| tick <= self.tick)
+            })
+            .map(|npc| npc.id)
+            .collect();
+        for enemy_id in due {
+            let Some(enemy) = self.npcs.get_mut(&enemy_id) else {
+                continue;
+            };
+            enemy.health = enemy.max_health;
+            enemy.position = enemy.spawn_position;
+            enemy.respawn_at_tick = None;
+            enemy.spawn_generation = enemy.spawn_generation.saturating_add(1).max(1);
+            if let Some(reward) = self.enemy_rewards.get_mut(&enemy_id) {
+                reward.owner = None;
+                reward.claimed = false;
+                reward.spawn_generation = enemy.spawn_generation;
+            }
+            events.push(Event::EnemyRespawned {
+                enemy_id,
+                spawn_generation: enemy.spawn_generation,
+            });
         }
     }
 
@@ -870,6 +914,9 @@ impl World {
                 position,
                 health,
                 max_health: health,
+                spawn_position: position,
+                respawn_at_tick: None,
+                spawn_generation: 1,
             },
         );
         if kind == NpcKind::Enemy {
@@ -878,6 +925,7 @@ impl World {
                 EnemyReward {
                     owner: None,
                     claimed: false,
+                    spawn_generation: 1,
                 },
             );
         }
@@ -1701,6 +1749,30 @@ mod tests {
             ZoneArea::from_position(Position::new(20.0, 0.0)),
             ZoneArea::Field
         );
+    }
+
+    #[test]
+    fn defeated_enemy_respawns_on_a_fixed_tick_and_advances_generation() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Aria", Role::DamageDealer);
+        let enemy_id = first_enemy(&world);
+        defeat_enemy(&mut world, player_id, enemy_id);
+        assert_eq!(world.npc(enemy_id).unwrap().spawn_generation, 1);
+        assert!(world.npc(enemy_id).unwrap().respawn_at_tick.is_some());
+
+        let mut respawn_events = Vec::new();
+        for _ in 0..99 {
+            respawn_events.extend(world.step([]));
+        }
+        assert!(respawn_events.contains(&Event::EnemyRespawned {
+            enemy_id,
+            spawn_generation: 2,
+        }));
+        let enemy = world.npc(enemy_id).unwrap();
+        assert_eq!(enemy.health, enemy.max_health);
+        assert_eq!(enemy.position, enemy.spawn_position);
+        assert_eq!(enemy.spawn_generation, 2);
+        assert_eq!(enemy.respawn_at_tick, None);
     }
 
     #[test]
