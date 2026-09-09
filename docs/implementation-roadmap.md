@@ -95,6 +95,9 @@ roadmap, including post-gate editor and UI-scripting work.
 - Authoritative bounded party lifecycle with invite expiry, leader controls,
   privacy-filtered typed events, death-time eligibility, and deterministic
   per-generation round-robin loot selection.
+- Minimum addressed typed delivery with nearby public-event filtering and
+  bounded replaceable movement coalescing; production interest management
+  remains open.
 
 ## Completed batch: town/field gameplay loop
 

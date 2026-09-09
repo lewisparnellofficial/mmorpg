@@ -9,7 +9,7 @@ use mmorpg_wire::{
     SequencedServerMessage, ServerEvent, ServerMessage, VendorListingState, WorldSnapshot,
     ZoneAreaCode, decode_one,
 };
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -21,6 +21,8 @@ const DEFAULT_ADDRESS: &str = "127.0.0.1:4000";
 const DEFAULT_TICK_HZ: u64 = 20;
 const MAX_WIRE_INPUT_BYTES: usize = mmorpg_wire::MAX_FRAME_SIZE * 2;
 const MAX_WIRE_OUTPUT_BYTES: usize = 256 * 1024;
+const MAX_REPLACEABLE_EVENTS: usize = 256;
+const INTEREST_RANGE: f32 = 45.0;
 const MAX_WIRE_COMMANDS_PER_CLIENT_POLL: usize = 32;
 const MAX_WIRE_COMMANDS_PER_POLL: usize = 256;
 const MAX_PENDING_COMMANDS: usize = 1024;
@@ -62,6 +64,7 @@ struct WireClient {
     stream: TcpStream,
     input: Vec<u8>,
     output: VecDeque<u8>,
+    replaceable_events: BTreeMap<u64, ServerMessage>,
     authenticated: Option<AuthenticatedSession>,
     selected_character_id: Option<u64>,
     content_compatible: bool,
@@ -77,6 +80,7 @@ impl WireClient {
             stream,
             input: Vec::new(),
             output: VecDeque::new(),
+            replaceable_events: BTreeMap::new(),
             authenticated: None,
             selected_character_id: None,
             content_compatible: false,
@@ -113,6 +117,23 @@ impl WireClient {
                 eprintln!("wire_message_encode_error id={} error={error}", self.id);
                 self.closed = true;
             }
+        }
+    }
+
+    fn queue_replaceable_server_message(&mut self, key: u64, message: ServerMessage) {
+        if self.replaceable_events.len() >= MAX_REPLACEABLE_EVENTS
+            && !self.replaceable_events.contains_key(&key)
+        {
+            self.closed = true;
+            return;
+        }
+        self.replaceable_events.insert(key, message);
+    }
+
+    fn materialize_replaceable_events(&mut self) {
+        let pending = std::mem::take(&mut self.replaceable_events);
+        for message in pending.values() {
+            self.queue_server_message(message);
         }
     }
 
@@ -905,6 +926,7 @@ impl Server {
 
     fn flush_clients(&mut self) {
         for client in &mut self.wire_clients {
+            client.materialize_replaceable_events();
             while !client.output.is_empty() {
                 let chunk: Vec<u8> = client.output.iter().copied().take(8192).collect();
                 match client.stream.write(&chunk) {
@@ -940,7 +962,14 @@ impl Server {
             let visible = recipient.is_none_or(|player_id| client.player_id == Some(player_id))
                 && event_visible_to_player(event, client.player_id, &self.world);
             if !client.closed && visible {
-                client.queue_server_message(&ServerMessage::Event(wire_event.clone()));
+                if let Event::PlayerMoved { player_id, .. } = event {
+                    client.queue_replaceable_server_message(
+                        player_id.0,
+                        ServerMessage::Event(wire_event.clone()),
+                    );
+                } else {
+                    client.queue_server_message(&ServerMessage::Event(wire_event.clone()));
+                }
             }
         }
     }
@@ -1399,13 +1428,13 @@ fn event_visible_to_player(event: &Event, player_id: Option<EntityId>, world: &W
             .map(|party| party.member_ids)
             .unwrap_or_default()
     };
-    match event {
+    let party_visibility = match event {
         Event::PartyInviteCreated {
             inviter_id,
             invitee_id,
             ..
-        } => player_id == *inviter_id || player_id == *invitee_id,
-        Event::PartyInviteAccepted { party, .. } => party.member_ids.contains(&player_id),
+        } => Some(player_id == *inviter_id || player_id == *invitee_id),
+        Event::PartyInviteAccepted { party, .. } => Some(party.member_ids.contains(&player_id)),
         Event::PartyInviteDeclined {
             party_id,
             player_id: invitee_id,
@@ -1413,7 +1442,7 @@ fn event_visible_to_player(event: &Event, player_id: Option<EntityId>, world: &W
         | Event::PartyInviteExpired {
             party_id,
             player_id: invitee_id,
-        } => player_id == *invitee_id || party_members(*party_id).contains(&player_id),
+        } => Some(player_id == *invitee_id || party_members(*party_id).contains(&player_id)),
         Event::PartyMemberLeft {
             party_id,
             player_id: member_id,
@@ -1422,13 +1451,48 @@ fn event_visible_to_player(event: &Event, player_id: Option<EntityId>, world: &W
             party_id,
             player_id: member_id,
             ..
-        } => player_id == *member_id || party_members(*party_id).contains(&player_id),
+        } => Some(player_id == *member_id || party_members(*party_id).contains(&player_id)),
         Event::PartyLeaderTransferred { party_id, .. } => {
-            party_members(*party_id).contains(&player_id)
+            Some(party_members(*party_id).contains(&player_id))
         }
-        Event::PartyDisbanded { member_ids, .. } => member_ids.contains(&player_id),
-        _ => true,
+        Event::PartyDisbanded { member_ids, .. } => Some(member_ids.contains(&player_id)),
+        _ => None,
+    };
+    if let Some(visible) = party_visibility {
+        return visible;
     }
+
+    let interest_entity = match event {
+        Event::PlayerJoined { player } => Some(player.id),
+        Event::PlayerMoved { player_id, .. }
+        | Event::PlayerReleasedToTown { player_id, .. }
+        | Event::PlayerDefeated { player_id } => Some(*player_id),
+        Event::TargetSelected { target_id, .. }
+        | Event::AttackResolved { target_id, .. }
+        | Event::HealResolved { target_id, .. }
+        | Event::TauntResolved { target_id, .. } => Some(*target_id),
+        Event::EnemyCorpseExpired { enemy_id, .. }
+        | Event::EnemyDefeated { enemy_id }
+        | Event::EnemyRespawned { enemy_id, .. } => Some(*enemy_id),
+        Event::EnemyAttackResolved { target_id, .. } => Some(*target_id),
+        _ => None,
+    };
+    let Some(interest_entity) = interest_entity else {
+        return true;
+    };
+    if interest_entity == player_id {
+        return true;
+    }
+    let Some(viewer) = world.player(player_id) else {
+        return false;
+    };
+    let target_position = world
+        .player(interest_entity)
+        .map(|player| player.position)
+        .or_else(|| world.npc(interest_entity).map(|npc| npc.position));
+    target_position.is_some_and(|position| {
+        viewer.position.distance_squared(position) <= INTEREST_RANGE * INTEREST_RANGE
+    })
 }
 
 #[cfg(test)]
@@ -2458,6 +2522,74 @@ mod tests {
             &accepted[0],
             Some(EntityId(7)),
             &world
+        ));
+    }
+
+    #[test]
+    fn public_events_are_filtered_by_nearby_interest() {
+        let mut world = World::new_starter_zone();
+        world.step([
+            Command::JoinPlayer {
+                name: "Near".to_owned(),
+                role: Role::Tank,
+            },
+            Command::JoinPlayer {
+                name: "Far".to_owned(),
+                role: Role::DamageDealer,
+            },
+        ]);
+        for _ in 0..6 {
+            world.step([Command::Move {
+                player_id: EntityId(6),
+                dx: 10.0,
+                dy: 0.0,
+            }]);
+        }
+        let movement = Event::PlayerMoved {
+            player_id: EntityId(6),
+            position: world.player(EntityId(6)).unwrap().position,
+            area: mmorpg_core::ZoneArea::Field,
+        };
+        assert!(!event_visible_to_player(
+            &movement,
+            Some(EntityId(5)),
+            &world
+        ));
+        assert!(event_visible_to_player(
+            &movement,
+            Some(EntityId(6)),
+            &world
+        ));
+    }
+
+    #[test]
+    fn replaceable_position_events_coalesce_before_flush() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let _peer = TcpStream::connect(address).expect("connect test peer");
+        let (stream, _) = listener.accept().expect("accept test peer");
+        let mut client = WireClient::new(1, stream);
+        client.queue_replaceable_server_message(
+            5,
+            ServerMessage::Event(ServerEvent::PlayerMoved {
+                player_id: 5,
+                position: mmorpg_wire::PositionState { x: 1.0, y: 0.0 },
+                area: ZoneAreaCode::Town,
+            }),
+        );
+        client.queue_replaceable_server_message(
+            5,
+            ServerMessage::Event(ServerEvent::PlayerMoved {
+                player_id: 5,
+                position: mmorpg_wire::PositionState { x: 2.0, y: 0.0 },
+                area: ZoneAreaCode::Town,
+            }),
+        );
+        assert_eq!(client.replaceable_events.len(), 1);
+        assert!(matches!(
+            client.replaceable_events.get(&5),
+            Some(ServerMessage::Event(ServerEvent::PlayerMoved { position, .. }))
+                if position.x == 2.0
         ));
     }
 

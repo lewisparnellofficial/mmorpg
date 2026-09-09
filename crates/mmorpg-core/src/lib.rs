@@ -251,7 +251,7 @@ impl Position {
         Self { x, y }
     }
 
-    fn distance_squared(self, other: Self) -> f32 {
+    pub fn distance_squared(self, other: Self) -> f32 {
         let dx = self.x - other.x;
         let dy = self.y - other.y;
         dx * dx + dy * dy

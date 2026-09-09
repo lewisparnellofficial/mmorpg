@@ -73,13 +73,19 @@ commands already read during that loop iteration, then queues the player's
 authoritative leave. This prevents a same-tick reward from being discarded
 before the local checkpoint prototype can record it.
 
-The typed listener accepts versioned `MMOW` command envelopes containing the
-typed `mmorpg-wire::ClientCommand` payload. It routes those commands through
+The typed listener accepts versioned MMOW command envelopes containing the
+typed mmorpg-wire::ClientCommand payload. It routes those commands through
 the same bound-player checks and authoritative `World` as the former line
 listener.
 It emits typed server-message payloads for welcome/connect/error responses,
 gameplay events, and the bootstrap snapshot. The line parser remains only as
 inert compatibility data for equivalence tests.
+
+Public combat and movement events are filtered to a 45-unit nearby audience
+before enqueueing. Player movement uses a bounded replaceable queue and
+coalesces pending updates by entity; transactional, party, and private events
+use the reliable ordered queue. This is a minimum-interest development
+boundary, not production spatial replication or backpressure.
 
 The typed gameplay vocabulary includes authoritative BasicAttack, party
 membership, and Heal { target_id } intents. Party invites and membership are
