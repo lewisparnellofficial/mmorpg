@@ -4,23 +4,51 @@ These questions remain unresolved. They should be answered through research, pro
 
 ## Highest priority
 
-- Which client engine best fits Linux support, asset streaming, UI integration, and editor reuse?
-- Which network transport and protocol model should the Rust server use?
+- Which client engine best fits long-term Linux support, asset streaming, UI
+  integration, and editor reuse beyond the current Bevy/Qt technology proof?
+- How should the typed TCP protocol evolve into a production transport and
+  gateway model?
 - Can one region worker sustain 200 active players in a world-boss scenario within the desired tick and bandwidth budgets?
 - What exact layer handoff behavior is acceptable at safe points?
 - What should happen when more than 200 players want to participate in the same world-boss event?
 - Should a world boss have one canonical encounter or configurable event replicas?
 - What movement and combat state rollback is acceptable after worker failure?
-- Which UI scripting runtime can enforce protected-action and resource limits reliably?
-- Which Linux editor technology provides responsive pen-tablet terrain sculpting?
+- How should addon isolation and package trust evolve beyond the current
+  Luau host boundary?
+- Does the current Qt/Wayland editor proof remain responsive on the minimum
+  supported tablet hardware?
 
-Research has started on the Rust runtime, network/replication model, and overworld layering. Preliminary findings are recorded in `docs/research/`; none of the related implementation choices are accepted yet.
+Research continues on the Rust runtime, production networking/replication,
+overworld layering, and durable persistence. Prototype boundaries that have
+passed their named local gates are recorded in accepted ADRs; production
+choices remain open unless explicitly stated otherwise.
 
-The first local-validation pass is now complete. The results are recorded in `docs/experiments/`. The fixed-tick ownership model and layer-assignment invariants passed their synthetic tests; replication still needs a real Rust serializer, spatial index, fair scheduler, and 5,000-connection gateway test.
+## Resolved for the first vertical slice (prototype scope)
+
+These questions have a bounded implementation answer for the current local
+vertical slice, but are not claims about production scale:
+
+- The server uses one 20 Hz fixed-tick authoritative owner with bounded
+  command intake and timed combat.
+- The gameplay/session path uses typed TCP wire envelopes with loopback-only
+  development authentication, explicit character selection, compatibility
+  rejection, and retained line data only as test/equivalence fixtures.
+- The first addon runtime direction is embedded Luau behind the language-
+  neutral `ui.v1` contract, with native secure-input provenance and bounded
+  storage/package policies.
+- The editor proof uses Qt 6 Quick/Quick3D with a narrow CXX-Qt bridge; the
+  physical pressure-sensitive tablet gate remains pending on this host.
+
+The current local-validation results are recorded in `docs/experiments/`.
+The fixed-tick ownership model, typed serializer, bounded fair intake,
+addressed delivery, and layer-assignment invariants have passing prototype
+tests; production interest management and a 5,000-connection gateway test
+remain open.
 
 ## Capacity and performance
 
-- What is the desired server tick rate?
+- What tick and frame-time budgets should replace the current 20 Hz prototype
+  target for production workloads?
 - What are the latency targets for movement, ability activation, and durable operations?
 - How many NPCs and effects should be included in the 200-player benchmark?
 - What client frame-time budget is acceptable during the world-boss event?
