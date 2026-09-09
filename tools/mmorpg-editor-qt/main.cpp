@@ -4,10 +4,76 @@
 #include <QMouseEvent>
 #include <QPointingDevice>
 #include <QProcess>
+#include <QQuick3DGeometry>
 #include <QQmlContext>
 #include <QQuickView>
 #include <QTabletEvent>
 #include <QUrl>
+#include <QVector3D>
+#include <cstring>
+
+class HeightmapGeometry final : public QQuick3DGeometry {
+    Q_OBJECT
+
+public:
+    explicit HeightmapGeometry(QQuick3DObject* parent = nullptr)
+        : QQuick3DGeometry(parent)
+    {
+        setStride(static_cast<int>(sizeof(float) * 3));
+        addAttribute(Attribute::PositionSemantic, 0, Attribute::F32Type);
+        setPrimitiveType(PrimitiveType::Triangles);
+    }
+
+    void updateHeightmap(int width, int height, const QVector<float>& samples)
+    {
+        if (width < 2 || height < 2 || samples.size() != width * height) {
+            return;
+        }
+
+        QByteArray vertices;
+        vertices.resize(samples.size() * static_cast<int>(sizeof(float) * 3));
+        auto* positions = reinterpret_cast<float*>(vertices.data());
+        constexpr float horizontalExtent = 160.0f;
+        constexpr float verticalExtent = 40.0f;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                const auto index = y * width + x;
+                positions[index * 3] =
+                    (static_cast<float>(x) / static_cast<float>(width - 1) - 0.5f)
+                    * horizontalExtent;
+                positions[index * 3 + 1] = samples[index] * verticalExtent;
+                positions[index * 3 + 2] =
+                    (static_cast<float>(y) / static_cast<float>(height - 1) - 0.5f)
+                    * horizontalExtent;
+            }
+        }
+
+        QByteArray indices;
+        indices.resize((width - 1) * (height - 1) * 6 * static_cast<int>(sizeof(quint32)));
+        auto* triangles = reinterpret_cast<quint32*>(indices.data());
+        int cursor = 0;
+        for (int y = 0; y < height - 1; ++y) {
+            for (int x = 0; x < width - 1; ++x) {
+                const auto topLeft = static_cast<quint32>(y * width + x);
+                const auto topRight = topLeft + 1;
+                const auto bottomLeft = static_cast<quint32>((y + 1) * width + x);
+                const auto bottomRight = bottomLeft + 1;
+                triangles[cursor++] = topLeft;
+                triangles[cursor++] = bottomLeft;
+                triangles[cursor++] = topRight;
+                triangles[cursor++] = topRight;
+                triangles[cursor++] = bottomLeft;
+                triangles[cursor++] = bottomRight;
+            }
+        }
+
+        setVertexData(vertices);
+        setIndexData(indices);
+        setBounds(QVector3D(-horizontalExtent / 2.0f, 0.0f, -horizontalExtent / 2.0f),
+                  QVector3D(horizontalExtent / 2.0f, verticalExtent,
+                             horizontalExtent / 2.0f));
+    }
+};
 
 class TabletBridgeWindow final : public QQuickView {
     Q_OBJECT
@@ -20,7 +86,9 @@ public:
     {
         clock_.start();
         setResizeMode(QQuickView::SizeRootObjectToView);
+        terrainGeometry_ = new HeightmapGeometry;
         rootContext()->setContextProperty(QStringLiteral("tabletBridge"), this);
+        rootContext()->setContextProperty(QStringLiteral("terrainGeometry"), terrainGeometry_);
         startCoreBridge();
     }
 
@@ -30,6 +98,7 @@ public:
             sendCommand(QStringLiteral("quit"));
             core_.waitForFinished(500);
         }
+        delete terrainGeometry_;
     }
 
     QString lastInput() const { return lastInput_; }
@@ -189,10 +258,15 @@ private:
         const auto program = qEnvironmentVariable("MMORPG_EDITOR_CORE_BRIDGE",
                                                    QStringLiteral("target/debug/mmorpg-editor-core"));
         connect(&core_, &QProcess::readyReadStandardOutput, this, [this]() {
-            const auto output = QString::fromUtf8(core_.readAllStandardOutput()).trimmed();
-            if (!output.isEmpty()) {
-                coreStatus_ = output.split('\n').constLast();
-                emit coreStatusChanged();
+            coreOutputBuffer_.append(core_.readAllStandardOutput());
+            while (true) {
+                const auto newline = coreOutputBuffer_.indexOf('\n');
+                if (newline < 0) {
+                    break;
+                }
+                const auto line = QString::fromUtf8(coreOutputBuffer_.left(newline)).trimmed();
+                coreOutputBuffer_.remove(0, newline + 1);
+                handleCoreLine(line);
             }
         });
         connect(&core_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
@@ -200,6 +274,39 @@ private:
             emit coreStatusChanged();
         });
         core_.start(program, {QStringLiteral("--bridge")});
+    }
+
+    void handleCoreLine(const QString& line)
+    {
+        if (line.startsWith(QStringLiteral("preview "))) {
+            const auto fields = line.split(' ', Qt::SkipEmptyParts);
+            if (fields.size() >= 3) {
+                bool widthOk = false;
+                bool heightOk = false;
+                const auto width = fields[1].toInt(&widthOk);
+                const auto height = fields[2].toInt(&heightOk);
+                QVector<float> samples;
+                if (widthOk && heightOk && width > 1 && height > 1) {
+                    samples.reserve(width * height);
+                    for (int index = 3; index < fields.size(); ++index) {
+                        bool ok = false;
+                        const auto value = fields[index].toFloat(&ok);
+                        if (!ok) {
+                            samples.clear();
+                            break;
+                        }
+                        samples.push_back(value);
+                    }
+                    if (samples.size() == width * height) {
+                        terrainGeometry_->updateHeightmap(width, height, samples);
+                    }
+                }
+            }
+        }
+        if (!line.isEmpty()) {
+            coreStatus_ = line;
+            emit coreStatusChanged();
+        }
     }
 
     void sendEvent(const QString& phase, double x, double y, double pressure,
@@ -249,6 +356,8 @@ private:
     bool suppressMouseUntilRelease_ = false;
     QElapsedTimer clock_;
     QProcess core_;
+    HeightmapGeometry* terrainGeometry_ = nullptr;
+    QByteArray coreOutputBuffer_;
     QString coreStatus_ = QStringLiteral("starting Rust editor core bridge");
 };
 

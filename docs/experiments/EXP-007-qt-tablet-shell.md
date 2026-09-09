@@ -26,25 +26,27 @@ against Qt 6.11.2 with Qt Quick, Qt Quick3D, and Qt Quick Controls. Its native
 loss, and focus-loss lifecycle events, exposes input diagnostics to QML,
 accepts mouse input as pressure `1.0`, adds monotonic nanosecond diagnostics,
 and suppresses compatibility mouse handling after a tablet press. The QML
-shell includes a Quick3D preview placeholder and editing controls. The shell
-now starts the Rust `mmorpg-editor-core --bridge` process and sends native
+shell includes a Quick3D heightmap mesh and editing controls. The shell now
+starts the Rust `mmorpg-editor-core --bridge` process and sends native
 samples through a bounded line protocol; the Rust process owns
 `NativeTabletEvent`, `TabletEventBridge`, `TerrainEditor`, `CapturedStroke`,
-atomic save/reload, and undo/redo. The device-neutral Rust bridge preserves
-`Pen`, `Eraser`, and `Mouse` source and rejects backward timestamps.
+atomic save/reload, replay, and undo/redo. Preview samples are returned from
+the Rust document and converted into a bounded indexed Quick3D mesh. The
+device-neutral Rust bridge preserves `Pen`, `Eraser`, and `Mouse` source and
+rejects backward timestamps.
 
 The editor core also provides a bounded `CapturedStroke` text format with
 round-trip validation and bridge-mediated replay tests. The headless editor
 bridge smoke now proves native-lifecycle input, terrain mutation, capture
-export, save/reload, and undo/redo through that process boundary. This is
-still not physical tablet evidence.
+export, save/reload, replay through the same bridge, and undo/redo through
+that process boundary. The Qt target builds and starts offscreen without
+runtime diagnostics. These are still not physical tablet measurements.
 
 This is a directly measured local build result, not hardware evidence. The
 current host has a Wayland session and `/dev/input` devices, but no physical
-tablet run, event capture, latency distribution, or replay equivalence has
-been recorded yet. The Quick3D surface remains a visual placeholder rather
-than a heightmap mesh, and the process bridge is a local proof rather than a
-production editor IPC protocol.
+tablet run, event capture, latency distribution, or physical replay
+equivalence has been recorded yet. The process bridge is a local proof rather
+than a production editor IPC protocol.
 
 ## Reproduction
 

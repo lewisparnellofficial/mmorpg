@@ -8,21 +8,22 @@ GUI-independent.
 
 The shell currently provides:
 
-- a Qt Quick window with a Qt Quick3D terrain-preview placeholder;
+- a Qt Quick window with a Qt Quick3D heightmap mesh driven by Rust preview
+  samples;
 - native `QTabletEvent` press/move/release handling;
 - mouse fallback with pressure `1.0`;
 - suppression of compatibility mouse input after a handled tablet press;
 - a visible input-diagnostics panel;
 - a `QProcess` bridge to the Rust `mmorpg-editor-core` command protocol for
   native stroke application, brush selection, undo/redo, validated atomic
-  save/reload, and captured-stroke export.
+  save/reload, captured-stroke export, and captured-stroke replay.
 
 The C++ shell remains free of terrain rules: it formats native samples into a
 small process boundary, while `TabletEventBridge`, `TerrainEditor`,
 `CapturedStroke`, and the source parser remain Rust-owned. This is still not
-the completed editor milestone because the Quick3D surface is a visual proof,
-not a heightmap mesh, and physical pen measurements remain to be recorded in
-`EXP-007`.
+the completed editor milestone because physical pen measurements remain to be
+recorded in `EXP-007`; the mesh and replay path are automated development
+proof, not hardware evidence.
 
 ## Headless configure and build
 

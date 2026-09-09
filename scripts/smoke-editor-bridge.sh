@@ -23,6 +23,7 @@ output=$(
         'undo' \
         'redo' \
         "open $terrain" \
+        "replay $capture" \
         'state' \
         'quit' | "$bridge" --bridge
 )
@@ -42,12 +43,17 @@ if ! rg -q '^undo true$' <<<"$output" || ! rg -q '^redo true$' <<<"$output"; the
     echo "$output" >&2
     exit 1
 fi
-if ! rg -q "^opened $terrain$" <<<"$output" || ! rg -q '^state undo=false redo=false ' <<<"$output"; then
+if ! rg -q "^opened $terrain$" <<<"$output" || ! rg -q "^replayed $capture changed_samples=[1-9][0-9]*$" <<<"$output"; then
     echo "editor bridge did not reload an atomic terrain source" >&2
+    echo "$output" >&2
+    exit 1
+fi
+if ! rg -q '^state undo=true redo=false ' <<<"$output"; then
+    echo "editor bridge did not route captured replay through the editor history" >&2
     echo "$output" >&2
     exit 1
 fi
 test -s "$terrain"
 test -s "$capture"
 
-echo "editor bridge smoke: native lifecycle, terrain mutation, save, capture, reload, undo, and redo passed"
+echo "editor bridge smoke: native lifecycle, terrain mutation, save, capture, replay, reload, undo, and redo passed"

@@ -110,7 +110,9 @@ printf '%s\n' \
 ```
 
 Bridge commands include native lifecycle events, `brush`, `undo`, `redo`,
-`save`, `open`, `capture`, `state`, and `quit`. The process owns the same
+`save`, `open`, `capture`, `replay`, `state`, and `quit`. `replay` parses a
+captured stroke, reconstructs native-shaped lifecycle events, and routes them
+through the same `TabletEventBridge` before applying terrain. The process owns the same
 `TabletEventBridge`, `TerrainEditor`, and `CapturedStroke` boundaries used by
 the library tests; the Qt shell only serializes native samples and displays
 the returned status.

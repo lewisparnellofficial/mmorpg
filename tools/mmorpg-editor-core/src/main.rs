@@ -68,6 +68,7 @@ fn run_bridge() -> Result<(), String> {
         .map_err(|error| format!("cannot create bridge brush: {error}"))?;
     let mut last_capture: Option<CapturedStroke> = None;
     println!("ready");
+    print_preview(&editor);
     io::stdout().flush().map_err(|error| error.to_string())?;
 
     for line in io::stdin().lock().lines() {
@@ -88,6 +89,7 @@ fn run_bridge() -> Result<(), String> {
                             .apply_stroke(&points, brush)
                             .map_err(|error| format!("terrain rejected stroke: {error}"))?;
                         last_capture = Some(capture);
+                        print_preview(&editor);
                         format!(
                             "stroke-finished changed_samples={} undo={}",
                             outcome.changed_samples,
@@ -109,8 +111,16 @@ fn run_bridge() -> Result<(), String> {
                     .map_err(|error| format!("invalid brush: {error}"))?;
                 format!("brush {:?}", operation)
             }
-            "undo" => format!("undo {}", editor.undo()),
-            "redo" => format!("redo {}", editor.redo()),
+            "undo" => {
+                let result = format!("undo {}", editor.undo());
+                print_preview(&editor);
+                result
+            }
+            "redo" => {
+                let result = format!("redo {}", editor.redo());
+                print_preview(&editor);
+                result
+            }
             "save" => {
                 let path = remaining_path(&mut fields, "save")?;
                 atomic_write(Path::new(&path), editor.document().to_source().as_bytes())?;
@@ -125,6 +135,7 @@ fn run_bridge() -> Result<(), String> {
                 editor = TerrainEditor::new(document);
                 bridge = TabletEventBridge::new();
                 last_capture = None;
+                print_preview(&editor);
                 format!("opened {path}")
             }
             "capture" => {
@@ -134,6 +145,55 @@ fn run_bridge() -> Result<(), String> {
                     .ok_or_else(|| "no completed stroke is available".to_owned())?;
                 atomic_write(Path::new(&path), capture.to_source().as_bytes())?;
                 format!("captured {path}")
+            }
+            "replay" => {
+                let path = remaining_path(&mut fields, "replay")?;
+                let source = fs::read_to_string(&path)
+                    .map_err(|error| format!("could not read {path}: {error}"))?;
+                let capture = CapturedStroke::from_source(&source)
+                    .map_err(|error| format!("could not parse {path}: {error}"))?;
+                let first_timestamp = capture
+                    .points()
+                    .first()
+                    .map_or(0, |point| point.timestamp_ns);
+                bridge
+                    .push(
+                        NativeTabletEvent::from_qt(
+                            NativeTabletPhase::ProximityEnter,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            false,
+                        )
+                        .map_err(|error| format!("replay proximity failed: {error}"))?
+                        .with_timestamp(first_timestamp.saturating_sub(1)),
+                    )
+                    .map_err(|error| format!("replay proximity failed: {error}"))?;
+                let mut changed_samples = 0;
+                for (index, point) in capture.points().iter().enumerate() {
+                    let phase = if index == 0 {
+                        NativeTabletPhase::Press
+                    } else if index + 1 == capture.points().len() {
+                        NativeTabletPhase::Release
+                    } else {
+                        NativeTabletPhase::Move
+                    };
+                    if let mmorpg_editor_core::TabletBridgeOutput::StrokeFinished(points) = bridge
+                        .push(native_event_from_point(*point, phase)?)
+                        .map_err(|error| format!("replay event failed: {error}"))?
+                    {
+                        changed_samples = editor
+                            .apply_stroke(&points, brush)
+                            .map_err(|error| format!("replay terrain failed: {error}"))?
+                            .changed_samples;
+                    }
+                }
+                last_capture = Some(capture);
+                print_preview(&editor);
+                format!("replayed {path} changed_samples={changed_samples}")
             }
             "state" => format!(
                 "state undo={} redo={} source_bytes={}",
@@ -149,6 +209,39 @@ fn run_bridge() -> Result<(), String> {
         io::stdout().flush().map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn print_preview(editor: &TerrainEditor) {
+    let map = editor.document().heightmap();
+    print!("preview {} {}", map.width(), map.height());
+    for sample in map.samples() {
+        print!(" {:.6}", sample);
+    }
+    println!();
+}
+
+fn native_event_from_point(
+    point: TabletPoint,
+    phase: NativeTabletPhase,
+) -> Result<NativeTabletEvent, String> {
+    let sample: NormalizedTabletSample = point.sample;
+    let event = match point.source {
+        InputSource::Mouse => {
+            NativeTabletEvent::from_mouse(phase, point.x, point.y, point.timestamp_ns)
+        }
+        InputSource::Pen | InputSource::Eraser => NativeTabletEvent::from_qt(
+            phase,
+            point.x,
+            point.y,
+            sample.pressure,
+            sample.tilt_x * 60.0,
+            sample.tilt_y * 60.0,
+            sample.rotation * 360.0,
+            point.source == InputSource::Eraser,
+        ),
+    }
+    .map_err(|error| error.to_string())?;
+    Ok(event.with_timestamp(point.timestamp_ns))
 }
 
 fn parse_native_event<'a>(

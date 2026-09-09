@@ -59,8 +59,7 @@ ApplicationWindow {
                         brightness: 1.4
                     }
                     Model {
-                        source: "#Cube"
-                        scale: Qt.vector3d(4.2, 0.08, 3.0)
+                        geometry: terrainGeometry
                         materials: PrincipledMaterial {
                             baseColor: "#4e7a52"
                             roughness: 0.9
