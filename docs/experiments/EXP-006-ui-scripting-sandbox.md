@@ -32,14 +32,16 @@ contract's `UiOperation` values and validated with package/generation ownership
 before atomic host commit. Within the adapter prototype, each callback is a
 host-state transaction: if the callback fails, host-owned panel mutations from
 that dispatch are rolled back before the addon is disabled and the failure is
-recorded. Manifest and storage lifecycle integration remain separate work.
+recorded. Manifest validation and bounded storage are now adapter entry points;
+repository loading and durable off-thread storage remain separate work.
 
 The implementation is in
 [`experiments/ui-scripting`](../../experiments/ui-scripting/README.md). It uses
 `mlua` 0.12.1 with the vendored Luau runtime. Each `AddonRunner` owns one
 Luau state. The exposed functions are limited to `ui.create_panel`,
-`ui.set_text`, `ui.set_position`, and `ui.on`; `game` and `storage` are empty
-namespaces in this spike. Secure input is a native host method and is not
+`ui.set_text`, `ui.set_position`, and `ui.on`; `game` is an empty namespace and
+`storage` exposes bounded `get`, `set`, and `delete` operations. Secure input is
+a native host method and is not
 available to script callbacks.
 
 Default limits are 64 UI nodes, 16 event registrations, 64 KiB of source,
@@ -60,24 +62,26 @@ cargo run --quiet --manifest-path experiments/ui-scripting/Cargo.toml
 
 ## Measured local results
 
-The standalone test suite completed with **13 passed, 0 failed**. The tests
+The standalone test suite completed with **15 passed, 0 failed**. The tests
 covered:
 
 - the default UI and an addon using the same public functions;
 - immutable/sanitized view-model delivery and absence of gameplay methods;
 - cross-addon forged-handle rejection;
 - UI-node and event-registration quotas;
-- removal of `io`, `os`, `debug`, `package`, loader functions, and empty
-  gameplay/storage namespaces;
+- removal of `io`, `os`, `debug`, `package`, loader functions, and gameplay
+  methods;
 - interruption of an infinite loop while a separate default-UI runner stays
   usable;
-- source-size and memory limits; and
-- callback failure disabling only the failing addon; and
-- rollback of all host-owned panel mutations from a failed callback; and
-- contract-queue coalescing before Luau dispatch; and
-- contract validation rejecting an invalid operation batch atomically; and
-- rollback of callback registrations made by a failed callback; and
-- pre-VM manifest and source-integrity rejection.
+- source-size and memory limits;
+- callback failure disabling only the failing addon;
+- rollback of all host-owned panel mutations from a failed callback;
+- contract-queue coalescing before Luau dispatch;
+- contract validation rejecting an invalid operation batch atomically;
+- rollback of callback registrations made by a failed callback;
+- pre-VM manifest and source-integrity rejection;
+- account/package-scoped storage sharing and account isolation; and
+- rollback of storage writes made by a failed callback.
 
 The demo process also completed and reported one created panel, one registered
 event, zero secure intents, and zero errors after a normal event dispatch.
@@ -103,14 +107,14 @@ mode, because sandbox mode makes the global table read-only.
   check; it is not connected to a real window/input system.
 - There is no renderer integration, event-queue backpressure measurement,
   wall-clock benchmark, fuzzing campaign, or minimum-hardware calibration.
-- The empty `game` and `storage` namespaces are placeholders, not the final
-  public API.
+- The empty `game` namespace is a placeholder, not the final public API.
 - Callback rollback covers host state, staged panel operations, and
   registrations made during callbacks; initial script-load registration still
   uses the adapter's direct setup path.
-- The adapter now consumes the contract event queue and operation validator, but
-  validates source-only manifests before VM creation, but does not yet expose
-  the storage API to Luau or load packages from a repository.
+- The adapter now consumes the contract event queue and operation validator,
+  validates source-only manifests before VM creation, and exposes bounded
+  account/package/schema storage. It does not yet load packages from a
+  repository or provide an off-thread durable storage worker.
 
 Next work should add manifest/value-boundary fuzzing, calibrate quotas on the
 minimum supported Linux client, and compare the same language-neutral contract

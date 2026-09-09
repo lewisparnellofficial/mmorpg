@@ -13,8 +13,9 @@ Each `AddonRunner` owns one sandboxed Luau state and exposes only:
 
 The host supplies an immutable, sanitized `mmorpg-ui-contract::ViewRecord`
 when dispatching an event (exported locally as the compatibility name
-`VisibleState`). `game` and `storage` are empty API namespaces in this spike, and
-there is no script function for movement, targeting, casting, packets, file
+`VisibleState`). `game` remains an empty API namespace, and `storage` exposes
+only bounded `get`, `set`, and `delete` operations. There is no script function
+for movement, targeting, casting, packets, file
 access, process execution, sockets, native modules, or secure input. A native
 caller may use `AddonRunner::secure_input` after validating ownership; that
 operation is deliberately outside the Lua environment.
@@ -31,11 +32,16 @@ use each other's node handles.
 Panel mutations are staged as the contract crate's `UiOperation` values and
 validated with the addon package/generation before atomic host commit.
 Subscription registration made during a callback is committed with the same
-transaction. The standalone contract crate's package manifest and storage
-lifecycle are not yet the implementation behind this Luau adapter. The
+transaction. The standalone contract crate's package manifest is now used by
+the adapter's pre-VM load entry point; repository loading and durable storage
+lifecycle remain separate work. The
 `load_from_manifest` entry point validates the manifest, capability set,
 dependency IDs, source entry path, and SHA-256 source integrity before VM
-construction.
+construction. `storage.get`, `storage.set`, and `storage.delete` use the
+contract's bounded account/package/schema namespace; callers can share the
+store across runner instances to model character changes within one account.
+Storage mutations made during a failed callback are rolled back with the
+presentation transaction.
 
 This is evidence for a Luau embedding direction, not a security certification.
 The remaining production questions include package/signature policy, exact

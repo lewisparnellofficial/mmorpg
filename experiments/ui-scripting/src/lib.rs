@@ -18,8 +18,9 @@ use std::sync::{
 use mlua::{Function, Lua, Result as LuaResult, VmState};
 pub use mmorpg_ui_contract::ViewRecord;
 use mmorpg_ui_contract::{
-    EventQueue, Generation, Handle, Manifest, NodeId, PackageId, Property, QueueOutcome, UiEvent,
-    UiLimits, UiOperation, validate_manifest, validate_operations,
+    AccountId, EventQueue, Generation, Handle, Manifest, NodeId, PackageId, Property, QueueOutcome,
+    Storage, StorageNamespace, StoredValue, UiEvent, UiLimits, UiOperation, validate_manifest,
+    validate_operations,
 };
 use sha2::{Digest, Sha256};
 
@@ -125,6 +126,7 @@ pub enum DispatchResult {
 #[derive(Clone, Debug)]
 struct HostState {
     addon_id: String,
+    account_id: AccountId,
     package_id: PackageId,
     generation: Generation,
     policy: AddonPolicy,
@@ -132,6 +134,7 @@ struct HostState {
     registered_events: Vec<String>,
     secure_intents: Vec<SecureIntent>,
     errors: Vec<String>,
+    storage: Rc<RefCell<Storage>>,
 }
 
 impl HostState {
@@ -229,6 +232,14 @@ impl HostState {
         self.nodes = nodes;
         Ok(())
     }
+
+    fn storage_namespace(&self) -> StorageNamespace {
+        StorageNamespace {
+            account_id: self.account_id,
+            package_id: self.package_id,
+            schema_version: 1,
+        }
+    }
 }
 
 /// One isolated Luau addon instance.
@@ -251,7 +262,46 @@ impl AddonRunner {
     ) -> Result<Self, AddonError> {
         let package_id = PackageId::new(NEXT_PACKAGE_ID.fetch_add(1, Ordering::Relaxed))
             .expect("package IDs cannot be zero");
-        Self::load_internal(addon_id.into(), package_id, source, policy)
+        Self::load_internal(
+            addon_id.into(),
+            AccountId::new(1).expect("default account cannot be zero"),
+            package_id,
+            Rc::new(RefCell::new(Storage::default())),
+            source,
+            policy,
+        )
+    }
+
+    pub fn load_for_account(
+        addon_id: impl Into<String>,
+        account_id: AccountId,
+        storage: Rc<RefCell<Storage>>,
+        source: &str,
+        policy: AddonPolicy,
+    ) -> Result<Self, AddonError> {
+        let package_id = PackageId::new(NEXT_PACKAGE_ID.fetch_add(1, Ordering::Relaxed))
+            .expect("package IDs cannot be zero");
+        Self::load_for_account_with_package(
+            addon_id, account_id, package_id, storage, source, policy,
+        )
+    }
+
+    pub fn load_for_account_with_package(
+        addon_id: impl Into<String>,
+        account_id: AccountId,
+        package_id: PackageId,
+        storage: Rc<RefCell<Storage>>,
+        source: &str,
+        policy: AddonPolicy,
+    ) -> Result<Self, AddonError> {
+        Self::load_internal(
+            addon_id.into(),
+            account_id,
+            package_id,
+            storage,
+            source,
+            policy,
+        )
     }
 
     /// Validates a source-only package completely before constructing its VM.
@@ -274,12 +324,21 @@ impl AddonRunner {
                 actual,
             });
         }
-        Self::load_internal(manifest.name.clone(), manifest.package_id, source, policy)
+        Self::load_internal(
+            manifest.name.clone(),
+            AccountId::new(1).expect("default account cannot be zero"),
+            manifest.package_id,
+            Rc::new(RefCell::new(Storage::default())),
+            source,
+            policy,
+        )
     }
 
     fn load_internal(
         addon_id: String,
+        account_id: AccountId,
         package_id: PackageId,
+        storage: Rc<RefCell<Storage>>,
         source: &str,
         policy: AddonPolicy,
     ) -> Result<Self, AddonError> {
@@ -322,6 +381,7 @@ impl AddonRunner {
 
         let host = Rc::new(RefCell::new(HostState {
             addon_id,
+            account_id,
             package_id,
             generation: Generation::new(1).expect("initial generation cannot be zero"),
             policy,
@@ -329,6 +389,7 @@ impl AddonRunner {
             registered_events: Vec::new(),
             secure_intents: Vec::new(),
             errors: Vec::new(),
+            storage,
         }));
         let callbacks = Rc::new(RefCell::new(Vec::new()));
         let operation_buffer = Rc::new(RefCell::new(None));
@@ -437,6 +498,7 @@ impl AddonRunner {
                 .collect::<Vec<_>>();
             for index in callback_indices {
                 let checkpoint = self.host.borrow().clone();
+                let storage_checkpoint = self.host.borrow().storage.borrow().clone();
                 *self.operation_buffer.borrow_mut() = Some(Vec::new());
                 *self.registration_buffer.borrow_mut() = Some(Vec::new());
                 let callbacks = self.callbacks.borrow();
@@ -458,6 +520,7 @@ impl AddonRunner {
                         let apply_result = self.host.borrow_mut().apply_operations(&operations);
                         if let Err(error) = apply_result {
                             *self.host.borrow_mut() = checkpoint;
+                            *self.host.borrow().storage.borrow_mut() = storage_checkpoint;
                             return Err(error);
                         }
                         let mut host = self.host.borrow_mut();
@@ -468,6 +531,7 @@ impl AddonRunner {
                     }
                     Err(error) => {
                         *self.host.borrow_mut() = checkpoint;
+                        *self.host.borrow().storage.borrow_mut() = storage_checkpoint;
                         return Err(error);
                     }
                 }
@@ -532,6 +596,90 @@ fn submit_operation(
 fn source_sha256(source: &str) -> String {
     let digest = Sha256::digest(source.as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn lua_to_stored(value: mlua::Value, depth: usize) -> LuaResult<StoredValue> {
+    if depth > mmorpg_ui_contract::MAX_STORAGE_DEPTH {
+        return Err(mlua::Error::RuntimeError(
+            "storage value is too deeply nested".to_owned(),
+        ));
+    }
+    let stored = match value {
+        mlua::Value::Nil => StoredValue::Null,
+        mlua::Value::Boolean(value) => StoredValue::Bool(value),
+        mlua::Value::Integer(value) => StoredValue::Integer(value),
+        mlua::Value::Number(value) => StoredValue::Number(value),
+        mlua::Value::String(value) => StoredValue::String(
+            value
+                .to_str()
+                .map_err(|_| mlua::Error::RuntimeError("storage string is not UTF-8".to_owned()))?
+                .to_owned(),
+        ),
+        mlua::Value::Table(table) => {
+            let mut entries = Vec::new();
+            for entry in table.pairs::<mlua::Value, mlua::Value>() {
+                let (key, value) = entry?;
+                entries.push((key, lua_to_stored(value, depth + 1)?));
+            }
+            let is_list = entries.iter().enumerate().all(|(index, (key, _))| {
+                matches!(key, mlua::Value::Integer(value) if *value == index as i64 + 1)
+            });
+            if is_list {
+                StoredValue::List(entries.into_iter().map(|(_, value)| value).collect())
+            } else {
+                let mut record = std::collections::BTreeMap::new();
+                for (key, value) in entries {
+                    let mlua::Value::String(key) = key else {
+                        return Err(mlua::Error::RuntimeError(
+                            "storage records require string keys".to_owned(),
+                        ));
+                    };
+                    record.insert(
+                        key.to_str()
+                            .map_err(|_| {
+                                mlua::Error::RuntimeError("storage key is not UTF-8".to_owned())
+                            })?
+                            .to_owned(),
+                        value,
+                    );
+                }
+                StoredValue::Record(record)
+            }
+        }
+        _ => {
+            return Err(mlua::Error::RuntimeError(
+                "storage value type is unsupported".to_owned(),
+            ));
+        }
+    };
+    stored
+        .validate(0)
+        .map_err(|error| mlua::Error::RuntimeError(error.to_string()))?;
+    Ok(stored)
+}
+
+fn stored_to_lua(lua: &Lua, value: &StoredValue) -> LuaResult<mlua::Value> {
+    Ok(match value {
+        StoredValue::Null => mlua::Value::Nil,
+        StoredValue::Bool(value) => mlua::Value::Boolean(*value),
+        StoredValue::Integer(value) => mlua::Value::Integer(*value),
+        StoredValue::Number(value) => mlua::Value::Number(*value),
+        StoredValue::String(value) => mlua::Value::String(lua.create_string(value)?),
+        StoredValue::List(values) => {
+            let table = lua.create_table()?;
+            for (index, value) in values.iter().enumerate() {
+                table.set(index + 1, stored_to_lua(lua, value)?)?;
+            }
+            mlua::Value::Table(table)
+        }
+        StoredValue::Record(values) => {
+            let table = lua.create_table()?;
+            for (key, value) in values {
+                table.set(key.as_str(), stored_to_lua(lua, value)?)?;
+            }
+            mlua::Value::Table(table)
+        }
+    })
 }
 
 fn validate_policy(policy: &AddonPolicy) -> Result<(), AddonError> {
@@ -659,7 +807,43 @@ fn install_api(
     let globals = lua.globals();
     globals.set("ui", ui)?;
     globals.set("game", lua.create_table()?)?;
-    globals.set("storage", lua.create_table()?)?;
+    let storage = lua.create_table()?;
+    let storage_host = Rc::clone(&host);
+    storage.set(
+        "get",
+        lua.create_function(move |lua, key: String| {
+            let host = storage_host.borrow();
+            let namespace = host.storage_namespace();
+            let value = host.storage.borrow().get(&namespace, &key).cloned();
+            value.map(|value| stored_to_lua(lua, &value)).transpose()
+        })?,
+    )?;
+
+    let storage_host = Rc::clone(&host);
+    storage.set(
+        "set",
+        lua.create_function(move |_, (key, value): (String, mlua::Value)| {
+            let value = lua_to_stored(value, 0)?;
+            let host = storage_host.borrow();
+            let namespace = host.storage_namespace();
+            host.storage
+                .borrow_mut()
+                .set(namespace, key, value)
+                .map_err(|error| mlua::Error::RuntimeError(error.to_string()))
+        })?,
+    )?;
+
+    let storage_host = Rc::clone(&host);
+    storage.set(
+        "delete",
+        lua.create_function(move |_, key: String| {
+            let host = storage_host.borrow();
+            let namespace = host.storage_namespace();
+            host.storage.borrow_mut().delete(&namespace, &key);
+            Ok(())
+        })?,
+    )?;
+    globals.set("storage", storage)?;
     Ok(())
 }
 
@@ -986,5 +1170,85 @@ mod tests {
             ),
             Err(AddonError::IntegrityMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn storage_is_shared_by_account_and_package_but_isolated_from_other_accounts() {
+        let shared = Rc::new(RefCell::new(Storage::default()));
+        let account = AccountId::new(41).unwrap();
+        let other_account = AccountId::new(42).unwrap();
+        let package = PackageId::new(9_001).unwrap();
+        AddonRunner::load_for_account_with_package(
+            "preferences",
+            account,
+            package,
+            Rc::clone(&shared),
+            r#"storage.set("settings", {name = "Aria", enabled = true, slots = {1, 2}})"#,
+            AddonPolicy::default(),
+        )
+        .unwrap();
+
+        AddonRunner::load_for_account_with_package(
+            "preferences",
+            account,
+            package,
+            Rc::clone(&shared),
+            r#"
+                local settings = storage.get("settings")
+                assert(settings.name == "Aria")
+                assert(settings.enabled == true)
+                assert(settings.slots[2] == 2)
+            "#,
+            AddonPolicy::default(),
+        )
+        .unwrap();
+
+        AddonRunner::load_for_account_with_package(
+            "preferences",
+            other_account,
+            package,
+            shared,
+            r#"assert(storage.get("settings") == nil)"#,
+            AddonPolicy::default(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn failed_callback_rolls_back_storage_writes() {
+        let shared = Rc::new(RefCell::new(Storage::default()));
+        let account = AccountId::new(51).unwrap();
+        let package = PackageId::new(9_002).unwrap();
+        let mut runner = AddonRunner::load_for_account_with_package(
+            "transactional-storage",
+            account,
+            package,
+            Rc::clone(&shared),
+            r#"
+                storage.set("stable", "yes")
+                ui.on("frame", function()
+                    storage.set("temporary", "must roll back")
+                    error("storage transaction aborted")
+                end)
+            "#,
+            AddonPolicy::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            runner.deliver_event("frame", &state()),
+            DispatchResult::Disabled(message) if message.contains("storage transaction aborted")
+        ));
+        AddonRunner::load_for_account_with_package(
+            "transactional-storage",
+            account,
+            package,
+            shared,
+            r#"
+                assert(storage.get("stable") == "yes")
+                assert(storage.get("temporary") == nil)
+            "#,
+            AddonPolicy::default(),
+        )
+        .unwrap();
     }
 }
