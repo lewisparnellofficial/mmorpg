@@ -106,6 +106,18 @@ or renderer-quality acceptance gate.
   tank/healer party, received no private party event. The run passed on the
   same host, but it retains the Vulkan validation limitation and uses fixed
   local smoke IDs.
+- **Controlled Wayland backend result (2026-09-09):** Running the graphical
+  gameplay smoke with `WINIT_UNIX_BACKEND=wayland` reached the same typed
+  gameplay result and created a real Wayland-backed window. A direct seven-
+  second capture isolated six validation reports: the host's broken
+  Lossless Scaling implicit layer produced two loader-chain errors, while the
+  remaining reports were application-visible Vulkan swapchain issues
+  (`VK_IMAGE_LAYOUT_UNDEFINED` at present and already-signaled acquire
+  semaphores). Repeating with
+  `VK_LOADER_LAYERS_DISABLE=VK_LAYER_LSFGVK_frame_generation` removed the
+  loader-chain errors but retained the swapchain reports. This identifies a
+  host-layer contributor without proving that the remaining wgpu/driver
+  behavior is safe; the renderer-quality gate therefore remains open.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,
