@@ -71,6 +71,8 @@ cargo fmt --manifest-path experiments/ui-scripting/Cargo.toml -- --check
 cargo test --manifest-path experiments/ui-scripting/Cargo.toml
 cargo run --quiet --manifest-path experiments/ui-scripting/Cargo.toml
 ./scripts/smoke-ui-adversarial.sh
+./scripts/smoke-ui-constrained.sh
+./scripts/smoke-ui-process-isolation.sh
 ```
 
 ## Measured local results
