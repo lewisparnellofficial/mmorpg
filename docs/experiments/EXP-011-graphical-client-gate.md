@@ -150,6 +150,15 @@ or renderer-quality acceptance gate.
   bounds with substantial margin. These are release-path observations, not
   universal performance guarantees; debug-path Vulkan validation warnings and
   the physical-input gate remain unresolved.
+- **Present-mode retest (2026-09-09):** The client now requests Bevy's
+  `PresentMode::AutoNoVsync`, which prefers a low-latency supported mode while
+  retaining platform fallback behavior. A controlled eight-second Wayland
+  debug capture with the Lossless Scaling layer disabled still reported the
+  same application-visible `VK_IMAGE_LAYOUT_UNDEFINED` present reports and
+  already-signaled acquire-semaphore reports. A second capture using explicit
+  `PresentMode::Fifo` reproduced those reports. The warnings therefore are not
+  resolved by present-mode selection; this change improves fallback behavior but
+  does not close the debug renderer gate.
 - **Bound enforcement:** `smoke-graphical-release.sh` now parses the measured
   p95 and maximum values and fails aggregate validation if p95 exceeds 16.7 ms
   or maximum reaches 50 ms. A report is no longer treated as passing merely

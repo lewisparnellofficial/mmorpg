@@ -494,10 +494,9 @@ fn main() {
                     primary_window: Some(Window {
                         title: "MMORPG Client — interactive slice".to_owned(),
                         resolution: (1280, 720).into(),
-                        // The measured Vulkan host supports mailbox without
-                        // FIFO frame-time quantization. Graphical smokes
-                        // continue to capture validation diagnostics.
-                        present_mode: PresentMode::Mailbox,
+                        // Prefer low-latency presentation while allowing the
+                        // platform to select a supported swapchain mode.
+                        present_mode: PresentMode::AutoNoVsync,
                         ..default()
                     }),
                     ..default()
