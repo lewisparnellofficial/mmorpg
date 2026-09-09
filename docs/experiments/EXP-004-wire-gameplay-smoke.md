@@ -29,6 +29,13 @@ vertical slice.
    snapshot, buys one vendor item, accepts the starter quest, defeats and
    loots all three field wolves, and turns in the quest.
 
+The companion `three-client-gate` binary runs the same boundary with three
+simultaneous typed sessions. It verifies distinct tank, healer, and damage
+characters in one shared zone, private snapshots and party summaries, a town
+purchase and quest acceptance, tank taunt, authoritative healer recovery,
+three quest kills with retryable loot, quest turn-in, and a second loot
+generation after respawn.
+
 ## Evidence produced
 
 The tool passes only when it decodes and validates:
@@ -41,6 +48,10 @@ The tool passes only when it decodes and validates:
 - target selection, repeated authoritative attacks until defeat for each enemy;
 - one server-derived loot reward for each enemy; and
 - the final quest reward.
+
+The three-client gate additionally passes only when it observes the shared
+party/privacy, role authority, recovery, and repeated-generation checks across
+all three sessions.
 
 ## Classification
 

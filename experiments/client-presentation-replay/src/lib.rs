@@ -260,7 +260,7 @@ mod tests {
         let report = run_replay();
 
         assert_eq!(report.enemy_ids.len(), 3);
-        assert_eq!(report.applied_events, 56);
+        assert_eq!(report.applied_events, 83);
         assert_eq!(report.projected_position, (0.0, 0.0));
         assert_eq!(report.projected_area, mmorpg_core::ZoneArea::Town);
         assert_eq!(report.projected_health, 76);

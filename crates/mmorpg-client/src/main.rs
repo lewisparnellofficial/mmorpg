@@ -1207,12 +1207,10 @@ fn format_hud_text(state: &ClientState) -> String {
     let combat_status = state.player_id.map_or_else(
         || "combat: unavailable".to_owned(),
         |player_id| {
-            state
-                .presentation
-                .combat_ready_tick(player_id)
-                .map_or_else(|| "combat: ready".to_owned(), |ready_tick| {
-                    format!("combat: cooldown through tick {ready_tick}")
-                })
+            state.presentation.combat_ready_tick(player_id).map_or_else(
+                || "combat: ready".to_owned(),
+                |ready_tick| format!("combat: cooldown through tick {ready_tick}"),
+            )
         },
     );
     let logs = state.logs.iter().cloned().collect::<Vec<_>>().join("\n");

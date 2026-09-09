@@ -35,11 +35,12 @@ cargo run --quiet --manifest-path experiments/wire-gameplay-smoke/Cargo.toml \
 ```
 
 The three-client gate is a headless protocol/authority check, not the graphical
-Milestone 13 acceptance run. It now exercises tank target/taunt authority,
-damage-role defeat and retryable loot, and two respawn generations. It still
-does not replace the graphical run or cover process restart, slow-client
-network behavior, or repeated healer recovery across multiple encounter
-generations.
+Milestone 13 acceptance run. It now exercises the town purchase and quest
+acceptance path, tank target/taunt authority, healer recovery, damage-role
+defeat and retryable loot, quest completion/turn-in, and two respawn
+generations. It still does not replace the graphical run or cover process
+restart, slow-client network behavior, or repeated healer recovery across
+multiple encounter generations.
 
 ## Run
 

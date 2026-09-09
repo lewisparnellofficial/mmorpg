@@ -76,6 +76,8 @@ fn main() {
     assert_private_snapshot(&healer_snapshot, healer.player_id, Some(party_id));
     assert_private_snapshot(&damage_snapshot, damage.player_id, None);
 
+    run_town_loop(&mut damage);
+
     tank.connection
         .send_typed_command(&ClientCommand::SelectTarget { target_id: 2 })
         .expect("tank target command should send");
@@ -139,15 +141,112 @@ fn main() {
     });
 
     defeat_and_loot(&mut damage, 2, 902);
+    defeat_and_loot(&mut damage, 3, 903);
+    defeat_and_loot(&mut damage, 4, 904);
+    turn_in_quest(&mut damage, 905);
     expect_event(&mut tank.connection, "first enemy respawn", |event| {
         matches!(event, ServerEvent::EnemyRespawned { enemy_id: 2, .. })
     });
-    defeat_and_loot(&mut damage, 2, 903);
+    defeat_and_loot(&mut damage, 2, 906);
 
     println!(
-        "three-client gate: success (tank={}, healer={}, damage={}, party={}, enemy_generations=2)",
+        "three-client gate: success (tank={}, healer={}, damage={}, party={}, vendor_purchase=1, quest=1, enemy_generations=2)",
         tank.player_id, healer.player_id, damage.player_id, party_id
     );
+}
+
+fn run_town_loop(client: &mut GateClient) {
+    client
+        .connection
+        .send_typed_command(&ClientCommand::ListVendor { vendor_id: 1 })
+        .expect("damage vendor listing should send");
+    let listings = match expect_event(&mut client.connection, "damage vendor listing", |event| {
+        matches!(event, ServerEvent::VendorListed { vendor_id: 1, .. })
+    }) {
+        ServerEvent::VendorListed { listings, .. } => listings,
+        _ => unreachable!(),
+    };
+    assert!(listings.iter().any(|listing| listing.item_id == 2));
+
+    client
+        .connection
+        .send_typed_command(&ClientCommand::Retryable {
+            operation_id: 901,
+            command: Box::new(ClientCommand::BuyItem {
+                vendor_id: 1,
+                item_id: 2,
+                quantity: 1,
+            }),
+        })
+        .expect("damage purchase should send");
+    expect_event(&mut client.connection, "damage purchase", |event| {
+        matches!(
+            event,
+            ServerEvent::ItemPurchased {
+                player_id,
+                vendor_id: 1,
+                item_id: 2,
+                quantity: 1,
+                ..
+            } if *player_id == client.player_id
+        )
+    });
+
+    client
+        .connection
+        .send_typed_command(&ClientCommand::ListQuestOffers { npc_id: 1 })
+        .expect("damage quest offers should send");
+    expect_event(&mut client.connection, "damage quest offers", |event| {
+        matches!(
+            event,
+            ServerEvent::QuestOffersListed {
+                player_id,
+                npc_id: 1,
+                quests,
+            } if *player_id == client.player_id
+                && quests.iter().any(|quest| quest.quest_id == 1)
+        )
+    });
+    client
+        .connection
+        .send_typed_command(&ClientCommand::AcceptQuest {
+            npc_id: 1,
+            quest_id: 1,
+        })
+        .expect("damage quest acceptance should send");
+    expect_event(&mut client.connection, "damage quest acceptance", |event| {
+        matches!(
+            event,
+            ServerEvent::QuestAccepted {
+                player_id,
+                npc_id: 1,
+                quest_id: 1,
+            } if *player_id == client.player_id
+        )
+    });
+}
+
+fn turn_in_quest(client: &mut GateClient, operation_id: u64) {
+    client
+        .connection
+        .send_typed_command(&ClientCommand::Retryable {
+            operation_id,
+            command: Box::new(ClientCommand::TurnInQuest {
+                npc_id: 1,
+                quest_id: 1,
+            }),
+        })
+        .expect("damage quest turn-in should send");
+    expect_event(&mut client.connection, "damage quest reward", |event| {
+        matches!(
+            event,
+            ServerEvent::QuestRewarded {
+                player_id,
+                quest_id: 1,
+                ..
+            } if *player_id == client.player_id
+        )
+    });
 }
 
 fn defeat_and_loot(client: &mut GateClient, enemy_id: u64, operation_id: u64) {
