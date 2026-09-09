@@ -60,6 +60,10 @@ cache without reapplying the core command.
 - The prepared intent is journaled before live apply, but completion insertion
   follows successful world-step application; the pair is not yet one atomic
   commit-before-live-apply transaction.
+- The restart smoke repeats the same wrapped operation IDs after process
+  restart and passes; the loaded result cache prevents the second run from
+  reapplying those operations. Completion-store failure fallback remains an
+  explicitly unproven failure-atomicity path.
 - The prototype does not provide pending/failed journal states, cross-process
   fencing, or recovery of in-flight operations.
 - Rejected operations do not yet carry a durable typed result record suitable

@@ -99,7 +99,9 @@ journal records the typed intent before the command enters the authoritative
 queue, but completion is still appended after the live world step. It is a
 development boundary, not a complete transaction: it does not yet provide
 crash reconciliation for an operation that fails between live mutation and
-result publication.
+result publication. Successful journal acknowledgements gate the operation's
+success event; a completion-store failure currently falls back to the bounded
+in-process result and is logged for later failure-atomicity work.
 
 The typed gameplay vocabulary includes authoritative BasicAttack, party
 membership, and Heal { target_id } intents. Party invites and membership are

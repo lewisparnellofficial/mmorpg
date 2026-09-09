@@ -91,7 +91,9 @@ the next process start; the typed intent is journaled before it enters the
 authoritative queue. Without it, the cache is process-local. The journal,
 bounded writer, and revision fence demonstrate ownership and retry boundaries,
 but completion still follows live mutation and does not reconcile a crash
-between live mutation and result publication. The
+between live mutation and result publication. A successful completion
+acknowledgement gates success-event publication; store failure currently falls
+back to the in-process result and remains a failure-atomicity gap. The
 repeatable evidence is recorded in
 [`EXP-005`](../experiments/EXP-005-durable-character-checkpoint.md).
 

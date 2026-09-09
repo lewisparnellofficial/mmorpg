@@ -191,6 +191,7 @@ struct Server {
     detached_characters: BTreeMap<(u64, u64), DetachedCharacter>,
     commands: VecDeque<PendingCommand>,
     prepared_operations: BTreeMap<OperationKey, (u64, Command)>,
+    pending_operation_completions: BTreeMap<OperationKey, Vec<Event>>,
     completed_operations: BTreeMap<OperationKey, Vec<ServerMessage>>,
     operation_journal_worker: OperationJournalWorker,
     account_repository: Arc<dyn AccountCharacterRepository>,
@@ -241,6 +242,7 @@ impl Server {
             detached_characters: BTreeMap::new(),
             commands: VecDeque::new(),
             prepared_operations: BTreeMap::new(),
+            pending_operation_completions: BTreeMap::new(),
             completed_operations: completed_operations
                 .into_iter()
                 .map(|(key, payloads)| {
@@ -989,49 +991,48 @@ impl Server {
             self.combat_timing,
         );
 
-        // Record the result before publishing the corresponding event. This
-        // is a server-process idempotency fence; the durable journal and
-        // commit-before-live-apply transaction remain a later persistence
-        // milestone.
+        // A journal-backed operation remains pending until its completed
+        // result is durably acknowledged. The no-journal development path
+        // retains the bounded in-process fence.
         for (key, player_id) in operation_commands {
             let result = events
                 .iter()
                 .filter(|event| event_recipient(event) == Some(player_id))
-                .filter_map(|event| wire_event(event).map(ServerMessage::Event))
+                .cloned()
                 .collect::<Vec<_>>();
-            if self.completed_operations.len() >= MAX_COMPLETED_OPERATIONS
-                && !self.completed_operations.contains_key(&key)
-            {
-                if let Some(oldest) = self.completed_operations.keys().next().copied() {
-                    self.completed_operations.remove(&oldest);
-                }
-            }
             let journal_payloads = result
                 .iter()
+                .filter_map(|event| wire_event(event).map(ServerMessage::Event))
                 .filter_map(|message| message.encode_payload().ok())
                 .collect();
-            self.completed_operations.insert(key, result);
-            if self
-                .operation_journal_worker
-                .try_enqueue(OperationJournalJob::Complete {
-                    key,
-                    result_payloads: journal_payloads,
-                })
-                .is_err()
-            {
-                eprintln!(
-                    "operation_journal_queue_full account={} character={} operation={}",
-                    key.account_id, key.character_id, key.operation_id
-                );
-            }
-        }
-
-        for result in self.operation_journal_worker.drain_results() {
-            if let Err(error) = result.result {
-                eprintln!(
-                    "operation_journal_error account={} character={} operation={} error={error}",
-                    result.key.account_id, result.key.character_id, result.key.operation_id
-                );
+            if self.operation_journal_worker.enabled() {
+                self.pending_operation_completions.insert(key, result);
+                if self
+                    .operation_journal_worker
+                    .try_enqueue(OperationJournalJob::Complete {
+                        key,
+                        result_payloads: journal_payloads,
+                    })
+                    .is_err()
+                {
+                    eprintln!(
+                        "operation_journal_queue_full account={} character={} operation={}",
+                        key.account_id, key.character_id, key.operation_id
+                    );
+                    if let Some(events) = self.pending_operation_completions.remove(&key) {
+                        let messages = events
+                            .iter()
+                            .filter_map(|event| wire_event(event).map(ServerMessage::Event))
+                            .collect();
+                        self.insert_completed_operation(key, messages);
+                    }
+                }
+            } else {
+                let messages = result
+                    .iter()
+                    .filter_map(|event| wire_event(event).map(ServerMessage::Event))
+                    .collect();
+                self.insert_completed_operation(key, messages);
             }
         }
 
@@ -1062,6 +1063,13 @@ impl Server {
         }
 
         for event in events {
+            if self
+                .pending_operation_completions
+                .values()
+                .any(|pending| pending.iter().any(|deferred| deferred == &event))
+            {
+                continue;
+            }
             self.broadcast_wire_event(&event);
         }
 
@@ -1080,6 +1088,20 @@ impl Server {
         for result in results {
             if let Err(error) = result.result {
                 self.prepared_operations.remove(&result.key);
+                if !result.prepared
+                    && let Some(events) = self.pending_operation_completions.remove(&result.key)
+                {
+                    let messages = events
+                        .iter()
+                        .filter_map(|event| wire_event(event).map(ServerMessage::Event))
+                        .collect();
+                    self.insert_completed_operation(result.key, messages);
+                    for event in events {
+                        self.broadcast_wire_event(&event);
+                    }
+                } else {
+                    self.pending_operation_completions.remove(&result.key);
+                }
                 eprintln!(
                     "operation_journal_error account={} character={} operation={} error={error}",
                     result.key.account_id, result.key.character_id, result.key.operation_id
@@ -1094,8 +1116,30 @@ impl Server {
                     command,
                     Some(result.key),
                 );
+            } else if !result.prepared
+                && let Some(events) = self.pending_operation_completions.remove(&result.key)
+            {
+                let messages = events
+                    .iter()
+                    .filter_map(|event| wire_event(event).map(ServerMessage::Event))
+                    .collect::<Vec<_>>();
+                self.insert_completed_operation(result.key, messages);
+                for event in events {
+                    self.broadcast_wire_event(&event);
+                }
             }
         }
+    }
+
+    fn insert_completed_operation(&mut self, key: OperationKey, result: Vec<ServerMessage>) {
+        if self.completed_operations.len() >= MAX_COMPLETED_OPERATIONS
+            && !self.completed_operations.contains_key(&key)
+        {
+            if let Some(oldest) = self.completed_operations.keys().next().copied() {
+                self.completed_operations.remove(&oldest);
+            }
+        }
+        self.completed_operations.insert(key, result);
     }
 
     fn checkpoint_wire_players(&self) {
