@@ -193,10 +193,11 @@ exhaustive security guarantee.
 Because the Luau campaign found a native parser crash, the repository now also
 contains `experiments/ui-wasm-comparison`, a standalone Wasmi proof of the
 stronger isolation alternative. Its local run linked only one explicit UI
-import, rejected WASI by having no WASI imports, interrupted an infinite loop
-with fuel in 25,217 microseconds, and verified a four-page maximum linear
-memory declaration. This is an ABI and control-boundary comparison, not a
-production runtime selection or a complete scripted-UI implementation.
+import, rejects every other import before instantiation, rejected WASI by
+having no WASI imports, interrupted an infinite loop with fuel in 27,269
+microseconds, and enforced a four-page host-side linear-memory limit. This is
+an ABI and control-boundary comparison, not a production runtime selection or
+a complete scripted-UI implementation.
 
 ## Result
 

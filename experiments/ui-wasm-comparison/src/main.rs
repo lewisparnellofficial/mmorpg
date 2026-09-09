@@ -1,9 +1,10 @@
 use std::time::Instant;
 
-use wasmi::{Config, Engine, Linker, Module, Store, TrapCode};
+use wasmi::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, TrapCode};
 
 const FUEL_BUDGET: u64 = 100_000;
 const MAX_LINEAR_MEMORY_PAGES: u32 = 4;
+const WASM_PAGE_BYTES: usize = 65_536;
 
 fn engine() -> Engine {
     let mut config = Config::default();
@@ -13,7 +14,28 @@ fn engine() -> Engine {
 
 fn compile(engine: &Engine, source: &str) -> Module {
     let bytes = wat::parse_str(source).expect("comparison WAT must parse");
-    Module::new(engine, &bytes).expect("comparison module must validate")
+    let module = Module::new(engine, &bytes).expect("comparison module must validate");
+    for import in module.imports() {
+        assert_eq!(
+            (import.module(), import.name()),
+            ("ui", "create_panel"),
+            "comparison module imported a non-allowlisted host symbol"
+        );
+    }
+    module
+}
+
+fn bounded_store(engine: &Engine) -> Store<StoreLimits> {
+    let limits = StoreLimitsBuilder::new()
+        .memory_size(MAX_LINEAR_MEMORY_PAGES as usize * WASM_PAGE_BYTES)
+        .memories(1)
+        .instances(1)
+        .tables(1)
+        .trap_on_grow_failure(true)
+        .build();
+    let mut store = Store::new(engine, limits);
+    store.limiter(|limits| limits);
+    store
 }
 
 fn main() {
@@ -31,10 +53,10 @@ fn main() {
         .func_wrap(
             "ui",
             "create_panel",
-            |_caller: wasmi::Caller<'_, ()>, _text: i32| {},
+            |_caller: wasmi::Caller<'_, StoreLimits>, _text: i32| {},
         )
         .expect("allowlisted UI import must link");
-    let mut store = Store::new(&engine, ());
+    let mut store = bounded_store(&engine);
     store
         .set_fuel(FUEL_BUDGET)
         .expect("fuel must be configured");
@@ -48,7 +70,7 @@ fn main() {
         .expect("bounded UI call must succeed");
 
     let loop_module = compile(&engine, r#"(module (func (export "loop") (loop br 0)))"#);
-    let mut loop_store = Store::new(&engine, ());
+    let mut loop_store = bounded_store(&engine);
     loop_store
         .set_fuel(FUEL_BUDGET)
         .expect("fuel must be configured");
@@ -69,7 +91,7 @@ fn main() {
         &engine,
         &format!("(module (memory (export \"memory\") 1 {MAX_LINEAR_MEMORY_PAGES}))"),
     );
-    let mut memory_store = Store::new(&engine, ());
+    let mut memory_store = bounded_store(&engine);
     let memory_instance = linker
         .instantiate_and_start(&mut memory_store, &bounded_memory)
         .expect("bounded memory module must instantiate and start");
@@ -80,9 +102,26 @@ fn main() {
         memory.ty(&memory_store).maximum(),
         Some(u64::from(MAX_LINEAR_MEMORY_PAGES))
     );
+    let grow_module = compile(
+        &engine,
+        &format!(
+            "(module (memory (export \"memory\") 1 {MAX_LINEAR_MEMORY_PAGES}) (func (export \"grow\") i32.const 4 memory.grow drop))"
+        ),
+    );
+    let mut grow_store = bounded_store(&engine);
+    let grow_instance = linker
+        .instantiate_and_start(&mut grow_store, &grow_module)
+        .expect("bounded memory module must instantiate");
+    let grow = grow_instance
+        .get_typed_func::<(), ()>(&grow_store, "grow")
+        .expect("grow export must have the fixed ABI");
+    assert!(
+        grow.call(&mut grow_store, ()).is_err(),
+        "host memory limiter must reject growth beyond the configured bytes"
+    );
 
     println!(
-        "wasm comparison: allowlisted_import=pass fuel=out_of_fuel fuel_trap_us={elapsed_us} max_memory_pages={MAX_LINEAR_MEMORY_PAGES} wasi_imports=none"
+        "wasm comparison: allowlisted_import=pass host_memory_limit=pass fuel=out_of_fuel fuel_trap_us={elapsed_us} max_memory_pages={MAX_LINEAR_MEMORY_PAGES} wasi_imports=none"
     );
 }
 
@@ -93,5 +132,15 @@ mod tests {
     #[test]
     fn comparison_proof_runs() {
         main();
+    }
+
+    #[test]
+    #[should_panic(expected = "comparison module imported a non-allowlisted host symbol")]
+    fn rejects_non_allowlisted_imports_before_instantiation() {
+        let engine = engine();
+        compile(
+            &engine,
+            r#"(module (import "wasi_snapshot_preview1" "fd_write" (func)))"#,
+        );
     }
 }
