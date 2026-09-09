@@ -569,6 +569,10 @@ pub enum Event {
         damage: u32,
         target_health: u32,
     },
+    CombatCooldownStarted {
+        player_id: EntityId,
+        ready_tick: u64,
+    },
     HealResolved {
         player_id: EntityId,
         target_id: EntityId,
@@ -990,6 +994,10 @@ impl World {
         let resolve_tick = self.tick.saturating_add(timing.cast_time_ticks);
         let ready_tick = resolve_tick.saturating_add(timing.cooldown_ticks);
         self.combat_cooldowns.insert(player_id, ready_tick);
+        events.push(Event::CombatCooldownStarted {
+            player_id,
+            ready_tick,
+        });
         if timing.cast_time_ticks == 0 {
             self.resolve_attack(player_id, target_id, damage, events);
         } else {
@@ -3699,7 +3707,13 @@ mod tests {
 
         let events = world.step_with_combat_timing([Command::BasicAttack { player_id }], timing);
         assert_eq!(world.tick(), 3);
-        assert!(events.is_empty());
+        assert!(matches!(
+            events.as_slice(),
+            [Event::CombatCooldownStarted {
+                player_id: cooldown_player,
+                ready_tick: 4,
+            }] if *cooldown_player == player_id
+        ));
         assert_eq!(world.npc(enemy_id).unwrap().health, 100);
 
         let events = world.step_with_combat_timing([], timing);

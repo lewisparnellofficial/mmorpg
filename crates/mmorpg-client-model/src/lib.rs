@@ -227,6 +227,7 @@ pub enum ClientNotification {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClientWorld {
     entities: BTreeMap<EntityId, ClientEntity>,
+    combat_ready_ticks: BTreeMap<EntityId, u64>,
     defeated_enemies: BTreeSet<EntityId>,
     vendor_listings: BTreeMap<EntityId, Vec<ClientVendorListing>>,
     quest_offers: BTreeMap<EntityId, Vec<QuestOffer>>,
@@ -300,6 +301,12 @@ impl ClientWorld {
         self.last_notification.as_ref()
     }
 
+    /// Returns the authoritative tick at which the player's current combat
+    /// action becomes ready, when the server has published one.
+    pub fn combat_ready_tick(&self, player_id: EntityId) -> Option<u64> {
+        self.combat_ready_ticks.get(&player_id).copied()
+    }
+
     /// Returns the tick associated with the most recently applied complete
     /// world snapshot, when the transport supplies one.
     pub fn world_tick(&self) -> Option<u64> {
@@ -321,6 +328,7 @@ impl ClientWorld {
         npcs: impl IntoIterator<Item = Npc>,
     ) {
         self.entities.clear();
+        self.combat_ready_ticks.clear();
         self.defeated_enemies.clear();
         self.vendor_listings.clear();
         self.quest_offers.clear();
@@ -429,6 +437,7 @@ impl ClientWorld {
                 ApplyEventResult::Applied
             }
             Event::PlayerLeft { player_id } => {
+                self.combat_ready_ticks.remove(player_id);
                 let removed = matches!(
                     self.entities.remove(player_id),
                     Some(ClientEntity::Player(_))
@@ -466,6 +475,16 @@ impl ClientWorld {
                     return ApplyEventResult::Ignored;
                 };
                 player.target = Some(*target_id);
+                ApplyEventResult::Applied
+            }
+            Event::CombatCooldownStarted {
+                player_id,
+                ready_tick,
+            } => {
+                if !self.entities.contains_key(player_id) {
+                    return ApplyEventResult::Ignored;
+                }
+                self.combat_ready_ticks.insert(*player_id, *ready_tick);
                 ApplyEventResult::Applied
             }
             Event::AttackResolved {
@@ -972,6 +991,7 @@ mod tests {
         );
         assert_eq!(model.player(player_id).unwrap().target, Some(wolf_id));
         assert_eq!(model.npc(wolf_id).unwrap().health, 88);
+        assert_eq!(model.combat_ready_tick(player_id), Some(1));
 
         let defeated = authoritative.step((0..8).map(|_| Command::BasicAttack { player_id }));
         apply_all(&mut model, &defeated);
@@ -979,6 +999,7 @@ mod tests {
 
         apply_all(&mut model, &[Event::PlayerLeft { player_id }]);
         assert!(model.player(player_id).is_none());
+        assert_eq!(model.combat_ready_tick(player_id), None);
         assert!(model.npc(wolf_id).is_some());
     }
 

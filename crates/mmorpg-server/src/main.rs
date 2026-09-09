@@ -1567,6 +1567,13 @@ fn wire_event(event: &Event) -> Option<ServerEvent> {
             damage: *damage,
             target_health: *target_health,
         },
+        Event::CombatCooldownStarted {
+            player_id,
+            ready_tick,
+        } => ServerEvent::CombatCooldownStarted {
+            player_id: player_id.0,
+            ready_tick: *ready_tick,
+        },
         Event::HealResolved {
             player_id,
             target_id,
@@ -1968,6 +1975,13 @@ fn format_event(event: &Event) -> String {
         } => format!(
             "EVENT attack player={} target={} damage={} target_hp={}",
             player_id, target_id, damage, target_health
+        ),
+        Event::CombatCooldownStarted {
+            player_id,
+            ready_tick,
+        } => format!(
+            "EVENT cooldown player={} ready_tick={ready_tick}",
+            player_id
         ),
         Event::HealResolved {
             player_id,

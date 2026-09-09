@@ -1195,6 +1195,17 @@ fn format_hud_text(state: &ClientState) -> String {
         .presentation
         .world_tick()
         .map_or_else(|| "-".to_owned(), |tick| tick.to_string());
+    let combat_status = state.player_id.map_or_else(
+        || "combat: unavailable".to_owned(),
+        |player_id| {
+            state
+                .presentation
+                .combat_ready_tick(player_id)
+                .map_or_else(|| "combat: ready".to_owned(), |ready_tick| {
+                    format!("combat: cooldown through tick {ready_tick}")
+                })
+        },
+    );
     let logs = state.logs.iter().cloned().collect::<Vec<_>>().join("\n");
     let inventory = player.map_or_else(
         || "inventory: waiting for snapshot".to_owned(),
@@ -1291,13 +1302,14 @@ fn format_hud_text(state: &ClientState) -> String {
         |notification| format!("\nnotice: {notification:?}"),
     );
     format!(
-        "server: {} ({})\n{}\n{}\n{}  tick {}\n{}\n{}\n{}\n{}\n\ncontrols: Enter select character | WASD move | Tab target | Space attack | L loot | V vendor | B buy | O offers | E accept | R turn in{}\n\n{}",
+        "server: {} ({})\n{}\n{}\n{}  tick {}\n{}\n{}\n{}\n{}\n{}\n\ncontrols: Enter select character | WASD move | Tab target | Space attack | L loot | V vendor | B buy | O offers | E accept | R turn in{}\n\n{}",
         state.connection_status,
         state.server_address,
         character_selection,
         party,
         player_summary,
         tick,
+        combat_status,
         inventory,
         quests,
         vendor,
@@ -1903,6 +1915,7 @@ mod tests {
         let hud = format_hud_text(&state);
         assert!(hud.contains("player 5 (DamageDealer)  hp 88/100  target 2"));
         assert!(hud.contains("party: none"));
+        assert!(hud.contains("combat: ready"));
         assert!(hud.contains("inventory (1/16): Town Ration x2"));
         assert!(hud.contains("Clear the Field 1/3 (Accepted)"));
         assert!(hud.contains("vendor: Town Ration 2g (98 left)"));

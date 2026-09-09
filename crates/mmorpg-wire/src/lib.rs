@@ -839,6 +839,10 @@ pub enum ServerEvent {
         damage: u32,
         target_health: u32,
     },
+    CombatCooldownStarted {
+        player_id: u64,
+        ready_tick: u64,
+    },
     HealResolved {
         player_id: u64,
         target_id: u64,
@@ -1756,6 +1760,14 @@ fn encode_server_event(
             encoder.put_u32(*damage);
             encoder.put_u32(*target_health);
         }
+        ServerEvent::CombatCooldownStarted {
+            player_id,
+            ready_tick,
+        } => {
+            encoder.put_u8(33);
+            encoder.put_u64(*player_id, "player_id")?;
+            encoder.put_u64(*ready_tick, "ready_tick")?;
+        }
         ServerEvent::HealResolved {
             player_id,
             target_id,
@@ -2053,6 +2065,10 @@ fn decode_server_event(decoder: &mut ServerDecoder<'_>) -> Result<ServerEvent, S
             damage: decoder.take_u32("damage")?,
             target_health: decoder.take_u32("target_health")?,
         }),
+        33 => Ok(ServerEvent::CombatCooldownStarted {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            ready_tick: decoder.take_u64("ready_tick")?,
+        }),
         18 => Ok(ServerEvent::HealResolved {
             player_id: decoder.take_nonzero_u64("player_id")?,
             target_id: decoder.take_nonzero_u64("target_id")?,
@@ -2256,7 +2272,7 @@ pub fn decode_framed_server_event(input: &[u8]) -> Result<FramedServerEvent, Ser
             available: input.len() - 5,
         });
     }
-    let known = (1..=32).contains(&opcode);
+    let known = (1..=33).contains(&opcode);
     if !known {
         return Ok(FramedServerEvent::SkippedUnknown { opcode, length });
     }
@@ -3024,6 +3040,10 @@ mod tests {
                 item_id: None,
                 item_quantity: 0,
                 gold_remaining: 22,
+            }),
+            ServerMessage::Event(ServerEvent::CombatCooldownStarted {
+                player_id: 7,
+                ready_tick: 42,
             }),
             ServerMessage::Event(ServerEvent::PartyInviteAccepted {
                 party: PartyState {

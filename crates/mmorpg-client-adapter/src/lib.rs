@@ -440,6 +440,13 @@ fn wire_event(event: &WireServerEvent) -> Result<Event, AdapterError> {
             damage: *damage,
             target_health: *target_health,
         },
+        WireServerEvent::CombatCooldownStarted {
+            player_id,
+            ready_tick,
+        } => Event::CombatCooldownStarted {
+            player_id: CoreEntityId(*player_id),
+            ready_tick: *ready_tick,
+        },
         WireServerEvent::HealResolved {
             player_id,
             target_id,
