@@ -45,7 +45,7 @@ cargo run --quiet --release --manifest-path experiments/server-tick-bench/Cargo.
 - CPU: AMD Ryzen 7 2700X Eight-Core Processor, 16 logical CPUs
 - Rust release profile: one benchmark binary, thin LTO, one codegen unit,
   stripped symbols
-- Commit: `pending follow-up commit`
+- Commit: `02bcbb2`
 
 ## Measured result
 
