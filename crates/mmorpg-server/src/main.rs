@@ -29,6 +29,7 @@ const MAX_REPLACEABLE_EVENTS: usize = 256;
 const INTEREST_RANGE: f32 = 45.0;
 const MAX_WIRE_COMMANDS_PER_CLIENT_POLL: usize = 32;
 const MAX_WIRE_COMMANDS_PER_POLL: usize = 256;
+const MAX_WIRE_CLIENTS: usize = 256;
 const MAX_PENDING_COMMANDS: usize = 1024;
 const MAX_COMPLETED_OPERATIONS: usize = 256;
 const CHECKPOINT_INTERVAL_TICKS: u64 = 20;
@@ -292,7 +293,14 @@ impl Server {
         }
     }
 
-    fn add_wire_client(&mut self, stream: TcpStream) {
+    fn add_wire_client(&mut self, stream: TcpStream) -> bool {
+        if self.wire_clients.len() >= MAX_WIRE_CLIENTS {
+            eprintln!(
+                "wire_client_capacity_reached active={} limit={MAX_WIRE_CLIENTS}",
+                self.wire_clients.len()
+            );
+            return false;
+        }
         let id = self.next_client_id;
         self.next_client_id = self.next_client_id.saturating_add(1);
         let mut client = WireClient::new(id, stream);
@@ -301,6 +309,7 @@ impl Server {
         });
         self.wire_clients.push(client);
         println!("wire_client_connected id={id}");
+        true
     }
 
     fn read_wire_clients(&mut self) {
@@ -2852,7 +2861,7 @@ fn main() -> io::Result<()> {
                     Ok((stream, peer)) => {
                         stream.set_nonblocking(true)?;
                         println!("accepted_typed_peer={peer}");
-                        server.add_wire_client(stream);
+                        let _ = server.add_wire_client(stream);
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                     Err(error) => return Err(error),
@@ -2865,7 +2874,7 @@ fn main() -> io::Result<()> {
                         Ok((stream, peer)) => {
                             stream.set_nonblocking(true)?;
                             println!("accepted_typed_additional_peer={peer}");
-                            server.add_wire_client(stream);
+                            let _ = server.add_wire_client(stream);
                         }
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                         Err(error) => return Err(error),
@@ -3018,6 +3027,26 @@ mod tests {
             );
         }
         assert_eq!(server.commands.len(), MAX_PENDING_COMMANDS);
+    }
+
+    #[test]
+    fn wire_accepts_are_bounded_before_session_creation() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let mut server = Server::new(DEFAULT_TICK_HZ, false, None);
+        let mut peers = Vec::new();
+        for _ in 0..MAX_WIRE_CLIENTS {
+            let peer = TcpStream::connect(address).expect("connect test peer");
+            let (stream, _) = listener.accept().expect("accept test peer");
+            assert!(server.add_wire_client(stream));
+            peers.push(peer);
+        }
+        let rejected_peer = TcpStream::connect(address).expect("connect rejected peer");
+        let (rejected_stream, _) = listener.accept().expect("accept rejected peer");
+        assert!(!server.add_wire_client(rejected_stream));
+        assert_eq!(server.wire_clients.len(), MAX_WIRE_CLIENTS);
+        drop(rejected_peer);
+        drop(peers);
     }
 
     #[test]

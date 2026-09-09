@@ -64,8 +64,10 @@ budget must still be established through profiling, especially for the
 
 Typed intake is bounded per session and globally, and the server interleaves
 decoded per-session queues before handing commands to the single world owner.
-This is a fairness guard for the development path, not a production admission
-or backpressure policy.
+The development listener also has a 256-client admission bound and rejects an
+over-capacity connection before allocating a session. These are fairness and
+resource guards for the development path, not a production admission or
+backpressure policy.
 
 ## Interest management
 

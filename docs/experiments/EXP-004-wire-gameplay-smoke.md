@@ -53,6 +53,11 @@ The three-client gate additionally passes only when it observes the shared
 party/privacy, role authority, recovery, and repeated-generation checks across
 all three sessions.
 
+The server's listener admission is independently bounded at 256 simultaneous
+wire clients; the focused server test fills that bound and confirms the next
+accepted socket is rejected before a `WireClient` session is allocated. This
+is a local resource-bound test, not evidence for the 5,000-client target.
+
 ## Classification
 
 - Directly measured: the local command completed over TCP without a protocol,

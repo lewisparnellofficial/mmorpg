@@ -131,7 +131,9 @@ most 256 decoded frames per poll, and the pending authoritative command queue
 is capped at 1024 entries. Excess input is discarded with a typed error rather
 than becoming hidden simulation debt. Decoded commands are interleaved across
 active sessions before authoritative application so one session's bounded
-burst cannot occupy the entire command order for the tick.
+burst cannot occupy the entire command order for the tick. The listener also
+admits at most 256 simultaneous wire clients; a connection over that bound is
+closed before a session is allocated.
 
 Wire clients must authenticate before sending gameplay commands:
 
