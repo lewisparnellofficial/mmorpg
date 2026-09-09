@@ -3148,6 +3148,59 @@ mod tests {
     }
 
     #[test]
+    fn request_wrapper_correlates_an_asynchronous_join_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let _peer = TcpStream::connect(address).expect("connect test peer");
+        let (stream, _) = listener.accept().expect("accept test peer");
+        let mut server = Server::new(DEFAULT_TICK_HZ, true, None);
+        let mut client = WireClient::new(1, stream);
+        client.authenticated = Some(AuthenticatedSession {
+            account_id: 1,
+            session_id: 1,
+        });
+        client.selected_character_id = Some(1);
+        client.content_compatible = true;
+        server.wire_clients.push(client);
+
+        server.handle_wire_command(
+            1,
+            WireCommand::Request {
+                request_id: 27,
+                command: Box::new(WireCommand::EnterWorld),
+            },
+        );
+        server.next_tick = Instant::now() - Duration::from_millis(1);
+        server.advance_if_due();
+
+        let frame: Vec<_> = server.wire_clients[0].output.drain(..).collect();
+        let mut correlated_join = false;
+        let mut remaining = frame.as_slice();
+        while !remaining.is_empty() {
+            let decoded = decode_one(remaining).expect("join response should decode");
+            let sequenced = SequencedServerMessage::decode_payload(&decoded.envelope.payload)
+                .expect("join response should carry a sequence");
+            if sequenced.message
+                == (ServerMessage::Response {
+                    request_id: 27,
+                    message: Box::new(ServerMessage::Connected {
+                        player_id: 5,
+                        role: mmorpg_wire::RoleCode::DamageDealer,
+                    }),
+                })
+            {
+                correlated_join = true;
+                break;
+            }
+            remaining = &remaining[decoded.consumed..];
+        }
+        assert!(
+            correlated_join,
+            "asynchronous join response lost its request ID"
+        );
+    }
+
+    #[test]
     fn simulation_timing_stats_count_deadline_misses_and_track_maximum() {
         let mut stats = SimulationTimingStats::default();
         stats.record(Duration::from_millis(2), Duration::from_millis(5));

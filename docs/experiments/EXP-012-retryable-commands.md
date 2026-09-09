@@ -47,6 +47,8 @@ durable operation journal.
 - Completed-operation revision test: passed; a version-2 journal record
   preserved the staged world revision, while legacy version-1 records remain
   readable with revision zero.
+- Asynchronous join-correlation test: passed; a request-wrapped `EnterWorld`
+  retains its request ID until the later fixed-tick `Connected` response.
 - Interrupted-prepare restart test: passed; a journal ending in `prepared` is
   converted to a durable rejection before the operation key can be retried.
 - Completed-record recovery test: passed; a completed durable command with an
