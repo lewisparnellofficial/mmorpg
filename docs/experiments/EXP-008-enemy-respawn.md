@@ -25,7 +25,8 @@ large validated threat increment. A threatened enemy enters an engaged state,
 moves at a fixed rate, attacks on a fixed cooldown, and returns to its spawn
 when its target is defeated or exceeds the leash. Enemy damage and player
 defeat are carried as typed opcodes 20 and 21; taunt confirmation uses opcode
-22.
+22. Defeated players can issue `ReleaseToTown`, which restores health, clears
+target/cast state, and publishes the town-return transition as opcode 23.
 
 This is intentionally narrower than the standalone AI experiment: patrol
 waypoints, corpse expiry, and

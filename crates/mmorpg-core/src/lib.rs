@@ -464,6 +464,9 @@ pub enum Command {
     Taunt {
         player_id: EntityId,
     },
+    ReleaseToTown {
+        player_id: EntityId,
+    },
     ListVendor {
         player_id: EntityId,
         vendor_id: EntityId,
@@ -528,6 +531,11 @@ pub enum Event {
     TauntResolved {
         player_id: EntityId,
         target_id: EntityId,
+    },
+    PlayerReleasedToTown {
+        player_id: EntityId,
+        position: Position,
+        health: u32,
     },
     EnemyDefeated {
         enemy_id: EntityId,
@@ -1486,6 +1494,26 @@ impl World {
                     target_id,
                 });
             }
+            Command::ReleaseToTown { player_id } => {
+                let Some(player) = self.players.get_mut(&player_id) else {
+                    Self::reject(events, format!("unknown player {player_id}"));
+                    return;
+                };
+                if player.health > 0 {
+                    Self::reject(events, "living players cannot release to town");
+                    return;
+                }
+                player.position = Position::new(0.0, 0.0);
+                player.health = player.max_health;
+                player.target = None;
+                self.combat_cooldowns.remove(&player_id);
+                self.pending_attacks.remove(&player_id);
+                events.push(Event::PlayerReleasedToTown {
+                    player_id,
+                    position: player.position,
+                    health: player.health,
+                });
+            }
             Command::ListVendor {
                 player_id,
                 vendor_id,
@@ -2140,6 +2168,35 @@ mod tests {
             target_id: enemy_id,
         }));
         assert_eq!(world.player(tank_id).unwrap().health, 92);
+    }
+
+    #[test]
+    fn defeated_player_can_release_to_town_and_clears_transient_combat() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Aria", Role::DamageDealer);
+        world.players.get_mut(&player_id).unwrap().health = 0;
+        world.players.get_mut(&player_id).unwrap().target = Some(EntityId(2));
+
+        let events = world.step([Command::ReleaseToTown { player_id }]);
+        assert_eq!(
+            events,
+            vec![Event::PlayerReleasedToTown {
+                player_id,
+                position: Position::new(0.0, 0.0),
+                health: 100,
+            }]
+        );
+        let player = world.player(player_id).unwrap();
+        assert_eq!(player.position, Position::new(0.0, 0.0));
+        assert_eq!(player.health, 100);
+        assert_eq!(player.target, None);
+
+        assert_eq!(
+            world.step([Command::ReleaseToTown { player_id }]),
+            vec![Event::CommandRejected {
+                reason: "living players cannot release to town".to_owned(),
+            }]
+        );
     }
 
     #[test]

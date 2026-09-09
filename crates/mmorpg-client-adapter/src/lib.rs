@@ -449,6 +449,15 @@ fn wire_event(event: &WireServerEvent) -> Result<Event, AdapterError> {
             player_id: CoreEntityId(*player_id),
             target_id: CoreEntityId(*target_id),
         },
+        WireServerEvent::PlayerReleasedToTown {
+            player_id,
+            position,
+            health,
+        } => Event::PlayerReleasedToTown {
+            player_id: CoreEntityId(*player_id),
+            position: mmorpg_core::Position::new(position.x, position.y),
+            health: *health,
+        },
         WireServerEvent::EnemyAttackResolved {
             enemy_id,
             target_id,

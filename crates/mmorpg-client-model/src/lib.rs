@@ -488,6 +488,20 @@ impl ClientWorld {
                 player.target = Some(*target_id);
                 ApplyEventResult::Applied
             }
+            Event::PlayerReleasedToTown {
+                player_id,
+                position,
+                health,
+            } => {
+                let Some(ClientEntity::Player(player)) = self.entities.get_mut(player_id) else {
+                    return ApplyEventResult::Ignored;
+                };
+                player.position = *position;
+                player.area = ZoneArea::Town;
+                player.health = *health;
+                player.target = None;
+                ApplyEventResult::Applied
+            }
             Event::EnemyDefeated { enemy_id } => {
                 let Some(ClientEntity::Npc(npc)) = self.entities.get_mut(enemy_id) else {
                     return ApplyEventResult::Ignored;

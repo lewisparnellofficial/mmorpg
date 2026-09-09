@@ -1119,6 +1119,18 @@ fn wire_event(event: &Event) -> Option<ServerEvent> {
             player_id: player_id.0,
             target_id: target_id.0,
         },
+        Event::PlayerReleasedToTown {
+            player_id,
+            position,
+            health,
+        } => ServerEvent::PlayerReleasedToTown {
+            player_id: player_id.0,
+            position: mmorpg_wire::PositionState {
+                x: position.x,
+                y: position.y,
+            },
+            health: *health,
+        },
         Event::EnemyDefeated { enemy_id } => ServerEvent::EnemyDefeated {
             enemy_id: enemy_id.0,
         },
@@ -1346,6 +1358,14 @@ fn format_event(event: &Event) -> String {
             player_id,
             target_id,
         } => format!("EVENT taunt player={} target={}", player_id, target_id),
+        Event::PlayerReleasedToTown {
+            player_id,
+            position,
+            health,
+        } => format!(
+            "EVENT released_to_town player={} pos={:.2},{:.2} health={}",
+            player_id, position.x, position.y, health
+        ),
         Event::EnemyDefeated { enemy_id } => format!("EVENT enemy_defeated id={enemy_id}"),
         Event::EnemyAttackResolved {
             enemy_id,
@@ -1767,6 +1787,7 @@ fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Com
             target_id: EntityId(target_id),
         },
         WireCommand::Taunt => Command::Taunt { player_id },
+        WireCommand::ReleaseToTown => Command::ReleaseToTown { player_id },
         WireCommand::ListVendor { vendor_id } => Command::ListVendor {
             player_id,
             vendor_id: EntityId(vendor_id),

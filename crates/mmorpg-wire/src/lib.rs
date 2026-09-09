@@ -194,6 +194,7 @@ pub enum ClientCommand {
         target_id: u64,
     },
     Taunt,
+    ReleaseToTown,
     ListVendor {
         vendor_id: u64,
     },
@@ -259,6 +260,7 @@ impl ClientCommand {
                 put_nonzero_u64(&mut payload, 18, *target_id, "target_id")?;
             }
             Self::Taunt => payload.push(19),
+            Self::ReleaseToTown => payload.push(20),
             Self::ListVendor { vendor_id } => {
                 put_nonzero_u64(&mut payload, 5, *vendor_id, "vendor_id")?;
             }
@@ -328,6 +330,7 @@ impl ClientCommand {
                 target_id: decoder.take_nonzero_u64("target_id")?,
             },
             19 => Self::Taunt,
+            20 => Self::ReleaseToTown,
             5 => Self::ListVendor {
                 vendor_id: decoder.take_nonzero_u64("vendor_id")?,
             },
@@ -753,6 +756,11 @@ pub enum ServerEvent {
     TauntResolved {
         player_id: u64,
         target_id: u64,
+    },
+    PlayerReleasedToTown {
+        player_id: u64,
+        position: PositionState,
+        health: u32,
     },
     EnemyAttackResolved {
         enemy_id: u64,
@@ -1593,6 +1601,16 @@ fn encode_server_event(
             encoder.put_u64(*player_id, "player_id")?;
             encoder.put_u64(*target_id, "target_id")?;
         }
+        ServerEvent::PlayerReleasedToTown {
+            player_id,
+            position,
+            health,
+        } => {
+            encoder.put_u8(23);
+            encoder.put_u64(*player_id, "player_id")?;
+            encode_position(encoder, *position)?;
+            encoder.put_u32(*health);
+        }
         ServerEvent::PlayerDefeated { player_id } => {
             encoder.put_u8(21);
             encoder.put_u64(*player_id, "player_id")?;
@@ -1783,6 +1801,11 @@ fn decode_server_event(decoder: &mut ServerDecoder<'_>) -> Result<ServerEvent, S
             player_id: decoder.take_nonzero_u64("player_id")?,
             target_id: decoder.take_nonzero_u64("target_id")?,
         }),
+        23 => Ok(ServerEvent::PlayerReleasedToTown {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            position: decode_position(decoder)?,
+            health: decoder.take_nonzero_u32("health")?,
+        }),
         21 => Ok(ServerEvent::PlayerDefeated {
             player_id: decoder.take_nonzero_u64("player_id")?,
         }),
@@ -1914,7 +1937,7 @@ pub fn decode_framed_server_event(input: &[u8]) -> Result<FramedServerEvent, Ser
             available: input.len() - 5,
         });
     }
-    let known = (1..=22).contains(&opcode);
+    let known = (1..=23).contains(&opcode);
     if !known {
         return Ok(FramedServerEvent::SkippedUnknown { opcode, length });
     }
@@ -2385,6 +2408,11 @@ mod tests {
                 target_health: 0,
             },
             ServerEvent::PlayerDefeated { player_id: 5 },
+            ServerEvent::PlayerReleasedToTown {
+                player_id: 5,
+                position: PositionState { x: 0.0, y: 0.0 },
+                health: 100,
+            },
         ] {
             let framed = encode_framed_server_event(&event).expect("event encodes");
             assert_eq!(
@@ -2423,6 +2451,7 @@ mod tests {
             ClientCommand::BasicAttack,
             ClientCommand::Heal { target_id: 1 },
             ClientCommand::Taunt,
+            ClientCommand::ReleaseToTown,
             ClientCommand::ListVendor { vendor_id: 1 },
             ClientCommand::BuyItem {
                 vendor_id: 1,
