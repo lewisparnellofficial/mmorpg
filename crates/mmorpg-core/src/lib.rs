@@ -13,6 +13,7 @@ pub use mmorpg_content::{
 };
 use mmorpg_content::{NpcTemplateId, ObjectiveDefinition, starter_catalog};
 
+const PLAYER_SPEED_PER_SECOND: f32 = 7.0;
 const MAX_MOVE_PER_COMMAND: f32 = 10.0;
 const ATTACK_RANGE: f32 = 32.0;
 const HEAL_RANGE: f32 = 32.0;
@@ -778,6 +779,7 @@ pub struct World {
     enemy_corpse_expires: BTreeMap<EntityId, u64>,
     expired_enemy_rewards: BTreeMap<EntityId, u64>,
     enemy_patrol_phase: BTreeMap<EntityId, bool>,
+    last_movement_tick: BTreeMap<EntityId, u64>,
     combat_cooldowns: BTreeMap<EntityId, u64>,
     pending_attacks: BTreeMap<EntityId, PendingAttack>,
     parties: BTreeMap<PartyId, Party>,
@@ -803,6 +805,7 @@ impl World {
             enemy_corpse_expires: BTreeMap::new(),
             expired_enemy_rewards: BTreeMap::new(),
             enemy_patrol_phase: BTreeMap::new(),
+            last_movement_tick: BTreeMap::new(),
             combat_cooldowns: BTreeMap::new(),
             pending_attacks: BTreeMap::new(),
             parties: BTreeMap::new(),
@@ -957,12 +960,13 @@ impl World {
         I: IntoIterator<Item = Command>,
     {
         let mut events = Vec::new();
+        let movement_per_tick = PLAYER_SPEED_PER_SECOND / timing.tick_hz() as f32;
         for command in commands {
             match command {
                 Command::BasicAttack { player_id } => {
                     self.apply_timed_basic_attack(player_id, timing, &mut events);
                 }
-                command => self.apply(command, &mut events),
+                command => self.apply(command, &mut events, movement_per_tick),
             }
         }
         self.tick = self.tick.saturating_add(1);
@@ -1802,7 +1806,7 @@ impl World {
         }
     }
 
-    fn apply(&mut self, command: Command, events: &mut Vec<Event>) {
+    fn apply(&mut self, command: Command, events: &mut Vec<Event>, movement_per_tick: f32) {
         match command {
             Command::JoinPlayer { name, role } => {
                 let name = name.trim();
@@ -1835,6 +1839,7 @@ impl World {
             Command::RestorePlayer { state } => self.restore_player(state, events),
             Command::LeavePlayer { player_id } => {
                 if self.players.remove(&player_id).is_some() {
+                    self.last_movement_tick.remove(&player_id);
                     self.combat_cooldowns.remove(&player_id);
                     self.pending_attacks.remove(&player_id);
                     self.remove_player_from_party(player_id, None, events);
@@ -1848,11 +1853,23 @@ impl World {
                     Self::reject(events, "movement must be finite");
                     return;
                 }
-                if dx.hypot(dy) > MAX_MOVE_PER_COMMAND {
+                let distance = dx.hypot(dy);
+                if distance > MAX_MOVE_PER_COMMAND {
                     Self::reject(
                         events,
                         format!("movement exceeds {} units", MAX_MOVE_PER_COMMAND),
                     );
+                    return;
+                }
+                if distance > movement_per_tick {
+                    Self::reject(
+                        events,
+                        format!("movement exceeds {movement_per_tick:.3} units per tick"),
+                    );
+                    return;
+                }
+                if self.last_movement_tick.get(&player_id) == Some(&self.tick) {
+                    Self::reject(events, "movement already processed this tick");
                     return;
                 }
                 let Some(player) = self.players.get_mut(&player_id) else {
@@ -1860,6 +1877,7 @@ impl World {
                     return;
                 };
                 player.position = player.position.translated(dx, dy, self.bounds);
+                self.last_movement_tick.insert(player_id, self.tick);
                 events.push(Event::PlayerMoved {
                     player_id,
                     position: player.position,
@@ -2616,23 +2634,31 @@ mod tests {
             .id
     }
 
+    fn move_player(world: &mut World, player_id: EntityId, dx: f32, dy: f32) {
+        let distance = dx.hypot(dy);
+        if distance == 0.0 {
+            return;
+        }
+        let per_tick = PLAYER_SPEED_PER_SECOND / 20.0;
+        let steps = (distance / per_tick).ceil() as usize;
+        for step in 0..steps {
+            let completed = per_tick * step as f32;
+            let remaining = (distance - completed).min(per_tick);
+            world.step([Command::Move {
+                player_id,
+                dx: dx / distance * remaining,
+                dy: dy / distance * remaining,
+            }]);
+        }
+    }
+
     fn defeat_enemy(world: &mut World, player_id: EntityId, enemy_id: EntityId) {
-        world.step([
-            Command::Move {
-                player_id,
-                dx: 10.0,
-                dy: 0.0,
-            },
-            Command::Move {
-                player_id,
-                dx: 10.0,
-                dy: 0.0,
-            },
-            Command::SelectTarget {
-                player_id,
-                target_id: enemy_id,
-            },
-        ]);
+        let position = world.player(player_id).expect("player exists").position;
+        move_player(world, player_id, 24.0 - position.x, -position.y);
+        world.step([Command::SelectTarget {
+            player_id,
+            target_id: enemy_id,
+        }]);
         for _ in 0..9 {
             world.step([Command::BasicAttack { player_id }]);
         }
@@ -2827,32 +2853,10 @@ mod tests {
             player_id: second,
             party_id,
         }]);
-        world.step([
-            Command::Move {
-                player_id: first,
-                dx: 10.0,
-                dy: 0.0,
-            },
-            Command::Move {
-                player_id: first,
-                dx: 10.0,
-                dy: 0.0,
-            },
-            Command::Move {
-                player_id: second,
-                dx: 10.0,
-                dy: 0.0,
-            },
-            Command::Move {
-                player_id: second,
-                dx: 10.0,
-                dy: 0.0,
-            },
-            Command::SelectTarget {
-                player_id: first,
-                target_id: enemy_id,
-            },
-        ]);
+        world.step([Command::SelectTarget {
+            player_id: first,
+            target_id: enemy_id,
+        }]);
         for _ in 0..9 {
             world.step([Command::BasicAttack { player_id: first }]);
         }
@@ -2976,17 +2980,8 @@ mod tests {
         let mut world = World::new_starter_zone();
         let player_id = join(&mut world, "Aria", Role::DamageDealer);
         let enemy_id = first_enemy(&world);
+        world.players.get_mut(&player_id).unwrap().position = Position::new(20.0, 0.0);
         world.step([
-            Command::Move {
-                player_id,
-                dx: 10.0,
-                dy: 0.0,
-            },
-            Command::Move {
-                player_id,
-                dx: 10.0,
-                dy: 0.0,
-            },
             Command::SelectTarget {
                 player_id,
                 target_id: enemy_id,
@@ -3006,13 +3001,7 @@ mod tests {
         }));
         assert_eq!(world.player(player_id).unwrap().health, 92);
 
-        for _ in 0..8 {
-            world.step([Command::Move {
-                player_id,
-                dx: 10.0,
-                dy: 0.0,
-            }]);
-        }
+        world.players.get_mut(&player_id).unwrap().position = Position::new(80.0, 0.0);
         for _ in 0..60 {
             world.step([]);
         }
@@ -3030,22 +3019,10 @@ mod tests {
         let damage_id = join(&mut world, "Damage", Role::DamageDealer);
         let enemy_id = first_enemy(&world);
         for player_id in [tank_id, damage_id] {
-            world.step([
-                Command::Move {
-                    player_id,
-                    dx: 10.0,
-                    dy: 0.0,
-                },
-                Command::Move {
-                    player_id,
-                    dx: 10.0,
-                    dy: 0.0,
-                },
-                Command::SelectTarget {
-                    player_id,
-                    target_id: enemy_id,
-                },
-            ]);
+            world.step([Command::SelectTarget {
+                player_id,
+                target_id: enemy_id,
+            }]);
         }
 
         assert_eq!(
@@ -3101,11 +3078,7 @@ mod tests {
             role: Role::DamageDealer,
         }]);
         let player_id = source.players().next().expect("player joined").id;
-        source.step([Command::Move {
-            player_id,
-            dx: 8.0,
-            dy: 0.0,
-        }]);
+        move_player(&mut source, player_id, 8.0, 0.0);
         let state = source
             .player(player_id)
             .expect("player exists")
@@ -3118,7 +3091,7 @@ mod tests {
             other => panic!("expected restored join event, got {other:?}"),
         };
         assert_eq!(player.name, "Aria");
-        assert_eq!(player.position, Position::new(8.0, 0.0));
+        assert!((player.position.x - 8.0).abs() < 0.0001);
         assert_eq!(player.health, 100);
         assert_eq!(player.target, None);
     }
@@ -3170,8 +3143,8 @@ mod tests {
 
         let events = world.step([Command::Move {
             player_id,
-            dx: 3.0,
-            dy: 4.0,
+            dx: 0.21,
+            dy: 0.28,
         }]);
         assert!(matches!(
             events[0],
@@ -3182,18 +3155,38 @@ mod tests {
         ));
         assert_eq!(
             world.player(player_id).unwrap().position,
-            Position::new(3.0, 4.0)
+            Position::new(0.21, 0.28)
+        );
+
+        let events = world.step([
+            Command::Move {
+                player_id,
+                dx: 0.2,
+                dy: 0.0,
+            },
+            Command::Move {
+                player_id,
+                dx: 0.2,
+                dy: 0.0,
+            },
+        ]);
+        assert!(matches!(events[0], Event::PlayerMoved { .. }));
+        assert_eq!(
+            events[1],
+            Event::CommandRejected {
+                reason: "movement already processed this tick".to_owned(),
+            }
         );
 
         let events = world.step([Command::Move {
             player_id,
-            dx: 11.0,
+            dx: 0.36,
             dy: 0.0,
         }]);
         assert!(matches!(events[0], Event::CommandRejected { .. }));
         assert_eq!(
             world.player(player_id).unwrap().position,
-            Position::new(3.0, 4.0)
+            Position::new(0.41, 0.28)
         );
     }
 
@@ -3215,19 +3208,7 @@ mod tests {
             }]
         );
 
-        let events = world.step([
-            Command::Move {
-                player_id,
-                dx: 10.0,
-                dy: 0.0,
-            },
-            Command::Move {
-                player_id,
-                dx: 10.0,
-                dy: 0.0,
-            },
-            Command::BasicAttack { player_id },
-        ]);
+        let events = world.step([Command::BasicAttack { player_id }]);
         assert!(
             events
                 .iter()
@@ -3317,13 +3298,8 @@ mod tests {
             }]
         );
 
-        for _ in 0..5 {
-            world.step([Command::Move {
-                player_id,
-                dx: -10.0,
-                dy: 0.0,
-            }]);
-        }
+        let position = world.player(player_id).expect("player exists").position;
+        move_player(&mut world, player_id, -position.x, -position.y);
         let events = world.step([Command::TurnInQuest {
             player_id,
             npc_id,
@@ -3693,13 +3669,7 @@ mod tests {
         );
 
         world.players.get_mut(&target_id).unwrap().health = 40;
-        for _ in 0..4 {
-            world.step([Command::Move {
-                player_id: target_id,
-                dx: 10.0,
-                dy: 0.0,
-            }]);
-        }
+        move_player(&mut world, target_id, 40.0, 0.0);
         assert_eq!(
             world.step([Command::Heal {
                 player_id: healer_id,
@@ -3722,22 +3692,10 @@ mod tests {
         assert_eq!(timing.tick_hz(), 20);
         assert_eq!(world.tick(), 1);
         world.step_with_combat_timing(
-            [
-                Command::Move {
-                    player_id,
-                    dx: 10.0,
-                    dy: 0.0,
-                },
-                Command::Move {
-                    player_id,
-                    dx: 10.0,
-                    dy: 0.0,
-                },
-                Command::SelectTarget {
-                    player_id,
-                    target_id: enemy_id,
-                },
-            ],
+            [Command::SelectTarget {
+                player_id,
+                target_id: enemy_id,
+            }],
             timing,
         );
         assert_eq!(world.tick(), 2);
@@ -3801,22 +3759,10 @@ mod tests {
         let enemy_id = first_enemy(&world);
         let timing = CombatTiming::new(20, 0, 2).unwrap();
         world.step_with_combat_timing(
-            [
-                Command::Move {
-                    player_id,
-                    dx: 10.0,
-                    dy: 0.0,
-                },
-                Command::Move {
-                    player_id,
-                    dx: 10.0,
-                    dy: 0.0,
-                },
-                Command::SelectTarget {
-                    player_id,
-                    target_id: enemy_id,
-                },
-            ],
+            [Command::SelectTarget {
+                player_id,
+                target_id: enemy_id,
+            }],
             timing,
         );
         world.step_with_combat_timing([Command::BasicAttack { player_id }], timing);
@@ -3842,22 +3788,10 @@ mod tests {
         let enemy_id = first_enemy(&world);
         let timing = CombatTiming::new(20, 0, 2).unwrap();
         world.step_with_combat_timing(
-            [
-                Command::Move {
-                    player_id,
-                    dx: 10.0,
-                    dy: 0.0,
-                },
-                Command::Move {
-                    player_id,
-                    dx: 10.0,
-                    dy: 0.0,
-                },
-                Command::SelectTarget {
-                    player_id,
-                    target_id: enemy_id,
-                },
-            ],
+            [Command::SelectTarget {
+                player_id,
+                target_id: enemy_id,
+            }],
             timing,
         );
         world.step_with_combat_timing([Command::BasicAttack { player_id }], timing);

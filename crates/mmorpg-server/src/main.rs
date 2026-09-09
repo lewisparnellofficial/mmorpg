@@ -3975,10 +3975,10 @@ mod tests {
                 role: Role::DamageDealer,
             },
         ]);
-        for _ in 0..6 {
+        for _ in 0..172 {
             world.step([Command::Move {
                 player_id: EntityId(6),
-                dx: 10.0,
+                dx: 0.35,
                 dy: 0.0,
             }]);
         }

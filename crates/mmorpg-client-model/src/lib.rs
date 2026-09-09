@@ -991,7 +991,7 @@ mod tests {
         let events = authoritative.step([
             Command::Move {
                 player_id,
-                dx: 5.0,
+                dx: 0.35,
                 dy: 0.0,
             },
             Command::SelectTarget {
@@ -1003,7 +1003,7 @@ mod tests {
         apply_all(&mut model, &events);
         assert_eq!(
             model.player(player_id).unwrap().position,
-            Position::new(5.0, 0.0)
+            Position::new(0.35, 0.0)
         );
         assert_eq!(model.player(player_id).unwrap().target, Some(wolf_id));
         assert_eq!(model.npc(wolf_id).unwrap().health, 88);

@@ -93,15 +93,19 @@ catalog that runtime code consumes; it is not yet the full terrain, placement,
 particle, NPC, or quest editor.
 
 The editor-side foundation is `tools/mmorpg-editor-core`, a standalone,
-dependency-light heightmap and tablet-input model. It currently provides a
-device-neutral tablet sample, pressure-aware terrain brushes, deterministic
-source persistence, and stroke-level undo/redo; a Linux GUI/device shell is
-still a future spike.
+dependency-light heightmap and tablet-input model. It provides a device-neutral
+tablet sample, pressure-aware terrain brushes, deterministic source
+persistence, and stroke-level undo/redo. `tools/mmorpg-editor-qt` now supplies
+the Linux Qt/Quick3D shell and Rust process bridge; physical tablet and fixed
+latency evidence remain pending in EXP-007.
 
 The authoritative core now also exposes an explicit fixed-tick combat path for
-cast-time and cooldown experiments. The original immediate development path
-remains available for compatibility, while timed combat state is owned by the
-world owner and resolves through the same authoritative events. Enemy respawn
+cast-time and cooldown experiments. Player movement is limited to 7
+units/second at the default 20 Hz cadence (0.35 units per tick); excess and
+same-tick duplicate movement intents are rejected without hidden debt. The
+compatibility `World::step` entry point delegates to the same machinery. Timed
+combat state is owned by the world owner and resolves through the same
+authoritative events. Enemy respawn
 is now integrated as a bounded fixed-tick, generation-reset transition and is
 carried over typed wire. A bounded threat/leash slice also runs in the world
 owner: authoritative damage/healing creates threat, enemies can attack on a

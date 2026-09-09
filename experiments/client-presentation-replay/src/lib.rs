@@ -101,35 +101,10 @@ pub fn run_replay() -> ReplayReport {
         }],
     );
 
-    // Leave town and move into attack range. Each movement command stays
-    // within the core's per-command movement limit.
-    applied_events += apply_step(
-        &mut world,
-        &mut client,
-        [Command::Move {
-            player_id,
-            dx: 10.0,
-            dy: 0.0,
-        }],
-    );
-    applied_events += apply_step(
-        &mut world,
-        &mut client,
-        [Command::Move {
-            player_id,
-            dx: 10.0,
-            dy: 0.0,
-        }],
-    );
-    applied_events += apply_step(
-        &mut world,
-        &mut client,
-        [Command::Move {
-            player_id,
-            dx: 4.0,
-            dy: 0.0,
-        }],
-    );
+    // Leave town and move into attack range at the authoritative 7 units/sec
+    // limit (0.35 units per 20 Hz tick). Ten units is enough to keep all
+    // starter wolves in attack range while still exercising real movement.
+    applied_events += move_player(&mut world, &mut client, player_id, 10.0);
 
     // Kill and loot all three wolves. DamageDealer damage is 12, so nine
     // authoritative attacks are required for each 100-health enemy.
@@ -160,17 +135,7 @@ pub fn run_replay() -> ReplayReport {
     }
 
     // Return to town and turn in the now-completed quest.
-    for dx in [-10.0, -10.0, -4.0] {
-        applied_events += apply_step(
-            &mut world,
-            &mut client,
-            [Command::Move {
-                player_id,
-                dx,
-                dy: 0.0,
-            }],
-        );
-    }
+    applied_events += move_player(&mut world, &mut client, player_id, -10.0);
     applied_events += apply_step(
         &mut world,
         &mut client,
@@ -233,6 +198,29 @@ where
     apply_events(client, &events)
 }
 
+fn move_player(
+    world: &mut World,
+    client: &mut ClientWorld,
+    player_id: EntityId,
+    distance: f32,
+) -> usize {
+    let steps = (distance.abs() / 0.35).ceil() as usize;
+    let direction = distance.signum();
+    (0..steps)
+        .map(|_| {
+            apply_step(
+                world,
+                client,
+                [Command::Move {
+                    player_id,
+                    dx: direction * 0.35,
+                    dy: 0.0,
+                }],
+            )
+        })
+        .sum()
+}
+
 fn apply_events(client: &mut ClientWorld, events: &[Event]) -> usize {
     for event in events {
         assert_eq!(
@@ -260,10 +248,11 @@ mod tests {
         let report = run_replay();
 
         assert_eq!(report.enemy_ids.len(), 3);
-        assert_eq!(report.applied_events, 83);
-        assert_eq!(report.projected_position, (0.0, 0.0));
+        assert_eq!(report.applied_events, 135);
+        assert!(report.projected_position.0.abs() < 0.0001);
+        assert!(report.projected_position.1.abs() < 0.0001);
         assert_eq!(report.projected_area, mmorpg_core::ZoneArea::Town);
-        assert_eq!(report.projected_health, 76);
+        assert_eq!(report.projected_health, 92);
         assert_eq!(report.projected_pelts, 3);
         assert_eq!(report.projected_rations, 5);
         assert_eq!(report.projected_potions, 1);

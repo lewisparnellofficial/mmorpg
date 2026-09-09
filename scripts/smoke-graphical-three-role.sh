@@ -44,7 +44,7 @@ for character_id in 1 2 3; do
     client_pids+=("$!")
     sleep 0.5
 done
-sleep 20
+sleep 34
 
 for character_id in 1 2 3; do
     log="$work_dir/client-$character_id.log"

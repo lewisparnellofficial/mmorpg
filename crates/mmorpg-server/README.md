@@ -98,9 +98,12 @@ use the reliable ordered queue. This is a minimum-interest development
 boundary, not production spatial replication or backpressure.
 
 The fixed-tick server uses a two-tick basic-combat cast and a two-tick
-basic-combat cooldown at the default 20 Hz rate. The compatibility
-`mmorpg-core::World::step` API remains immediate for older non-server callers;
-live server commands use the deferred timing path.
+basic-combat cooldown at the default 20 Hz rate. Player movement is
+server-authoritative at 7 units/second (0.35 units per 20 Hz tick); a command
+that exceeds the per-tick allowance or a second movement command for the same
+player in one tick is rejected without accumulating hidden movement debt. The
+compatibility `mmorpg-core::World::step` API delegates to the same fixed-tick
+machinery.
 At deterministic shutdown the server reports measured tick count, deadline
 misses, and maximum observed simulation duration; these counters are local
 telemetry and do not constitute a capacity claim.

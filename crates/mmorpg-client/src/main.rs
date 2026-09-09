@@ -41,8 +41,8 @@ use ui_scripting_spike::{AddonPolicy, AddonRunner};
 const FIELD_SIZE: Vec2 = Vec2::new(40.0, 30.0);
 const DEFAULT_SERVER_ADDRESS: &str = "127.0.0.1:4000";
 const DEV_AUTH_TOKEN: &str = "dev-local";
-const MOVEMENT_STEP: f32 = 2.0;
-const MOVEMENT_REPEAT_SECONDS: f32 = 0.12;
+const MOVEMENT_STEP: f32 = 0.35;
+const MOVEMENT_REPEAT_SECONDS: f32 = 0.05;
 const MAX_LOG_LINES: usize = 6;
 const COMMAND_QUEUE_CAPACITY: usize = 64;
 const MAX_DEFERRED_COMMANDS: usize = 32;
@@ -586,7 +586,7 @@ fn acceptance_smoke_input(
     let role = state.connected_role;
     let command = match role {
         Some(RoleCode::Tank) => match smoke.step {
-            0 => ClientCommand::Move { dx: 10.0, dy: 0.0 },
+            0 => ClientCommand::Target(EntityId(4)),
             8..=9 => ClientCommand::InvitePartyMember(EntityId(7)),
             10 => ClientCommand::Target(EntityId(4)),
             11..=15 => ClientCommand::Taunt,
@@ -615,17 +615,18 @@ fn acceptance_smoke_input(
                 npc_id: EntityId(1),
                 quest_id: QuestId::CLEAR_THE_FIELD,
             },
-            4 => ClientCommand::Move { dx: 10.0, dy: 0.0 },
-            5 => ClientCommand::Target(EntityId(2)),
-            6..=14 => ClientCommand::Attack,
-            15 => ClientCommand::Loot(EntityId(2)),
-            16 => ClientCommand::Target(EntityId(3)),
-            17..=25 => ClientCommand::Attack,
-            26 => ClientCommand::Loot(EntityId(3)),
-            27 => ClientCommand::Target(EntityId(4)),
-            28..=36 => ClientCommand::Attack,
-            37 => ClientCommand::Loot(EntityId(4)),
-            38 => ClientCommand::TurnInQuest {
+            4..=32 => ClientCommand::Move { dx: 0.35, dy: 0.0 },
+            33 => ClientCommand::Target(EntityId(2)),
+            34..=42 => ClientCommand::Attack,
+            43 => ClientCommand::Loot(EntityId(2)),
+            44 => ClientCommand::Target(EntityId(3)),
+            45..=53 => ClientCommand::Attack,
+            54 => ClientCommand::Loot(EntityId(3)),
+            55 => ClientCommand::Target(EntityId(4)),
+            56..=64 => ClientCommand::Attack,
+            65 => ClientCommand::Loot(EntityId(4)),
+            66..=94 => ClientCommand::Move { dx: -0.35, dy: 0.0 },
+            95 => ClientCommand::TurnInQuest {
                 npc_id: EntityId(1),
                 quest_id: QuestId::CLEAR_THE_FIELD,
             },
@@ -1256,6 +1257,12 @@ fn keyboard_input(
     }
     if input.pressed(KeyCode::KeyW) {
         dy += MOVEMENT_STEP;
+    }
+    let movement_length = dx.hypot(dy);
+    if movement_length > MOVEMENT_STEP {
+        let scale = MOVEMENT_STEP / movement_length;
+        dx *= scale;
+        dy *= scale;
     }
 
     let repeating = repeat.0.tick(time.delta()).just_finished();

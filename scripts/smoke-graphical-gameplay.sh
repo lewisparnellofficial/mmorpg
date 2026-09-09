@@ -34,7 +34,7 @@ done
     127.0.0.1:4700 --wire-address 127.0.0.1:4701 --character-id 1 \
     --acceptance-smoke >"$client_log" 2>&1 &
 client_pid=$!
-sleep 18
+sleep 32
 
 if ! rg -q "loaded zone 'Greenfield'" "$client_log"; then
     echo "graphical acceptance client did not load Greenfield" >&2

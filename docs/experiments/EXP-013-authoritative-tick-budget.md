@@ -11,6 +11,11 @@ Measure the authoritative simulation work for the first three-role shared-zone
 slice under the fixed-tick combat policy from Milestone 6. The fixed gate is a
 p99 simulation-work duration no greater than 12.5 ms for a 20 Hz tick.
 
+The same gameplay timing policy fixes player movement at 7 units/second. At
+20 Hz, the core admits at most 0.35 units for one player movement intent per
+tick; excess and same-tick duplicate intents are rejected without carrying
+hidden movement debt into a later tick.
+
 ## Workload and method
 
 The standalone `experiments/server-tick-bench` executable constructs one
