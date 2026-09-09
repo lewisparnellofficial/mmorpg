@@ -12,12 +12,10 @@ use mmorpg_client_adapter::{
     apply_event as apply_presentation_event, apply_snapshot as apply_presentation_snapshot,
 };
 use mmorpg_client_model::{ClientEntity, ClientWorld};
-use mmorpg_client_session::{Session as TypedSession, SessionInput, SessionOutput, SessionState};
-use mmorpg_client_protocol::{
-    EntityId, NpcKind, SnapshotAssembler,
-};
+use mmorpg_client_protocol::{EntityId, NpcKind, SnapshotAssembler};
 #[cfg(test)]
 use mmorpg_client_protocol::{ServerEvent, ServerLine, Snapshot, decode_server_line};
+use mmorpg_client_session::{Session as TypedSession, SessionInput, SessionOutput, SessionState};
 use mmorpg_content::{ItemId, QuestId, item_definition, starter_catalog};
 use mmorpg_wire::{
     CharacterSummary, ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope,
@@ -466,7 +464,8 @@ fn spawn_wire_network_worker(
                         ));
                         break 'connection;
                     }
-                    let (sequence, message) = match SequencedServerMessage::decode_payload(&payload) {
+                    let (sequence, message) = match SequencedServerMessage::decode_payload(&payload)
+                    {
                         Ok(message) => (Some(message.sequence), message.message),
                         Err(_) => match ServerMessage::decode_payload(&payload) {
                             Ok(message) => (None, message),
@@ -479,13 +478,17 @@ fn spawn_wire_network_worker(
                         },
                     };
                     let session_input = match sequence {
-                        Some(sequence) => SessionInput::Sequenced { sequence, message: message.clone() },
+                        Some(sequence) => SessionInput::Sequenced {
+                            sequence,
+                            message: message.clone(),
+                        },
                         None => SessionInput::Server(message.clone()),
                     };
                     let session_outputs = session.handle(session_input);
-                    if session_outputs.iter().any(|output| {
-                        matches!(output, SessionOutput::Rejected { .. })
-                    }) {
+                    if session_outputs
+                        .iter()
+                        .any(|output| matches!(output, SessionOutput::Rejected { .. }))
+                    {
                         if let ServerMessage::Error { message } = &message {
                             let _ = event_tx.send(NetworkEvent::Status(format!(
                                 "typed wire session rejected message: {message}"
@@ -493,7 +496,8 @@ fn spawn_wire_network_worker(
                         }
                     }
                     queue_session_outputs(&mut outgoing, session_outputs);
-                    if matches!(message, ServerMessage::CharacterList { ref characters, .. } if characters.is_empty()) {
+                    if matches!(message, ServerMessage::CharacterList { ref characters, .. } if characters.is_empty())
+                    {
                         let _ = event_tx.send(NetworkEvent::Status(
                             "authenticated account has no characters".to_owned(),
                         ));
@@ -503,7 +507,8 @@ fn spawn_wire_network_worker(
                         while let Some(command) = deferred_commands.pop_front() {
                             queue_session_outputs(
                                 &mut outgoing,
-                                session.handle(SessionInput::Intent(client_command_to_wire(command))),
+                                session
+                                    .handle(SessionInput::Intent(client_command_to_wire(command))),
                             );
                         }
                     }
@@ -1132,7 +1137,9 @@ fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
             state.log("content compatibility rejected".to_owned());
         }
         ServerMessage::Error { message } => state.log(format!("rejected: {message}")),
-        ServerMessage::Event(_) | ServerMessage::SkippedEvent { .. } | ServerMessage::Snapshot(_) => {}
+        ServerMessage::Event(_)
+        | ServerMessage::SkippedEvent { .. }
+        | ServerMessage::Snapshot(_) => {}
     }
     if let Err(error) = apply_wire_message(&mut state.presentation, message) {
         state.log(format!("authoritative presentation rejected: {error}"));

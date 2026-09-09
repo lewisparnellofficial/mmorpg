@@ -382,7 +382,10 @@ impl WireConnection {
         }
         match mmorpg_wire::SequencedServerMessage::decode_payload(&decoded.envelope.payload) {
             Ok(message) => Ok((Some(message.sequence), message.message)),
-            Err(_) => Ok((None, ServerMessage::decode_payload(&decoded.envelope.payload)?)),
+            Err(_) => Ok((
+                None,
+                ServerMessage::decode_payload(&decoded.envelope.payload)?,
+            )),
         }
     }
 
