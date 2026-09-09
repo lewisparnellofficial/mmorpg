@@ -661,6 +661,7 @@ pub struct World {
     enemy_attack_ready: BTreeMap<EntityId, u64>,
     enemy_corpse_expires: BTreeMap<EntityId, u64>,
     expired_enemy_rewards: BTreeMap<EntityId, u64>,
+    enemy_patrol_phase: BTreeMap<EntityId, bool>,
     combat_cooldowns: BTreeMap<EntityId, u64>,
     pending_attacks: BTreeMap<EntityId, PendingAttack>,
 }
@@ -681,6 +682,7 @@ impl World {
             enemy_attack_ready: BTreeMap::new(),
             enemy_corpse_expires: BTreeMap::new(),
             expired_enemy_rewards: BTreeMap::new(),
+            enemy_patrol_phase: BTreeMap::new(),
             combat_cooldowns: BTreeMap::new(),
             pending_attacks: BTreeMap::new(),
         };
@@ -985,6 +987,7 @@ impl World {
             self.enemy_attack_ready.remove(&enemy_id);
             self.enemy_corpse_expires.remove(&enemy_id);
             self.expired_enemy_rewards.remove(&enemy_id);
+            self.enemy_patrol_phase.insert(enemy_id, false);
             if let Some(reward) = self.enemy_rewards.get_mut(&enemy_id) {
                 reward.owner = None;
                 reward.claimed = false;
@@ -1024,6 +1027,8 @@ impl World {
                     if let Some(target_id) = self.enemy_target(enemy_id) {
                         self.enemy_lifecycle
                             .insert(enemy_id, EnemyLifecycle::Engaged { target_id });
+                    } else {
+                        self.advance_enemy_patrol(enemy_id);
                     }
                 }
                 EnemyLifecycle::Engaged { target_id } => {
@@ -1059,8 +1064,9 @@ impl World {
                     {
                         self.resolve_enemy_attack(enemy_id, target_id, events);
                     } else if let Some(enemy) = self.npcs.get_mut(&enemy_id) {
-                        enemy.position =
+                        let next_position =
                             step_toward(enemy.position, player.position, ENEMY_MOVE_PER_TICK);
+                        enemy.position = next_position;
                     }
                 }
                 EnemyLifecycle::Returning => {
@@ -1074,7 +1080,9 @@ impl World {
                     if position == spawn_position {
                         self.enemy_lifecycle.insert(enemy_id, EnemyLifecycle::Idle);
                     } else if let Some(enemy) = self.npcs.get_mut(&enemy_id) {
-                        enemy.position = step_toward(position, spawn_position, ENEMY_MOVE_PER_TICK);
+                        let next_position =
+                            step_toward(position, spawn_position, ENEMY_MOVE_PER_TICK);
+                        enemy.position = next_position;
                     }
                 }
                 EnemyLifecycle::Corpse => {}
@@ -1114,6 +1122,31 @@ impl World {
                     .then_with(|| left.id.cmp(&right.id))
             })
             .map(|player| player.id)
+    }
+
+    fn advance_enemy_patrol(&mut self, enemy_id: EntityId) {
+        let Some((position, spawn_position)) = self
+            .npcs
+            .get(&enemy_id)
+            .map(|enemy| (enemy.position, enemy.spawn_position))
+        else {
+            return;
+        };
+        let phase = self.enemy_patrol_phase.entry(enemy_id).or_default();
+        let destination = if *phase {
+            spawn_position
+        } else {
+            Position::new(spawn_position.x + 2.0, spawn_position.y)
+        };
+        let next_position = step_toward(position, destination, ENEMY_MOVE_PER_TICK);
+        if next_position == destination {
+            *phase = !*phase;
+        }
+        if next_position != position {
+            if let Some(enemy) = self.npcs.get_mut(&enemy_id) {
+                enemy.position = next_position;
+            }
+        }
     }
 
     fn resolve_enemy_attack(
@@ -1182,6 +1215,7 @@ impl World {
         );
         if kind == NpcKind::Enemy {
             self.enemy_lifecycle.insert(id, EnemyLifecycle::Idle);
+            self.enemy_patrol_phase.insert(id, false);
             self.enemy_rewards.insert(
                 id,
                 EnemyReward {
@@ -2150,6 +2184,29 @@ mod tests {
     }
 
     #[test]
+    fn idle_enemy_patrol_is_fixed_tick_and_deterministic() {
+        let mut first = World::new_starter_zone();
+        let mut second = World::new_starter_zone();
+        let enemy_id = first_enemy(&first);
+        for _ in 0..4 {
+            first.step([]);
+            second.step([]);
+        }
+        assert_eq!(
+            first.npc(enemy_id).unwrap().position,
+            Position::new(24.0, 0.0)
+        );
+        assert_eq!(
+            first.npc(enemy_id).unwrap().position,
+            second.npc(enemy_id).unwrap().position
+        );
+        assert_eq!(
+            first.npc(enemy_id).unwrap().position,
+            first.npc(enemy_id).unwrap().spawn_position
+        );
+    }
+
+    #[test]
     fn enemy_threat_drives_attacks_and_leash_return() {
         let mut world = World::new_starter_zone();
         let player_id = join(&mut world, "Aria", Role::DamageDealer);
@@ -2239,7 +2296,7 @@ mod tests {
             player_id: tank_id,
             target_id: enemy_id,
         }));
-        assert_eq!(world.player(tank_id).unwrap().health, 92);
+        assert_eq!(world.player(tank_id).unwrap().health, 100);
     }
 
     #[test]

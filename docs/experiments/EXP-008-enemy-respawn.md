@@ -34,17 +34,18 @@ clears the generation's threat and reward claimability, emits
 until the scheduled respawn.
 
 This is intentionally narrower than the standalone AI experiment: patrol
-waypoints, corpse expiry, and
+waypoints now run in the authoritative owner, while corpse expiry and
 deterministic loot selection across multiple eligible players are not yet
 integrated.
 
 ## Measured local result
 
-The root workspace core suite completed with **27 passed, 0 failed**, including
+The root workspace core suite completed with **28 passed, 0 failed**, including
 `defeated_enemy_respawns_on_a_fixed_tick_and_advances_generation` and
 `enemy_threat_drives_attacks_and_leash_return`,
 `defeated_player_can_release_to_town_and_clears_transient_combat`, and
-`enemy_corpse_expires_before_respawn_and_rejects_late_loot`. Workspace
+`enemy_corpse_expires_before_respawn_and_rejects_late_loot`, plus
+`idle_enemy_patrol_is_fixed_tick_and_deterministic`. Workspace
 format/check/test validation and the aggregate validation script remain the
 authoritative regression gates.
 
@@ -57,6 +58,8 @@ authoritative regression gates.
   server mappings, and client-model application.
 - **Project inference:** keeping the entity ID stable while advancing a spawn
   generation is a viable boundary for later threat/loot lifecycle work.
-- **Remaining uncertainty:** no patrol waypoints, multi-player loot selection,
-  or graphical respawn run has been measured. Stable corpse entity retention
-  is deliberate; physical entity deletion remains out of scope for this slice.
+- **Remaining uncertainty:** no multi-player loot selection or graphical
+  respawn run has been measured. Patrol state is authoritative but its movement
+  event replication remains deferred to addressed delivery. Stable corpse
+  entity retention is deliberate; physical entity deletion remains out of scope
+  for this slice.
