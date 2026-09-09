@@ -1,14 +1,15 @@
 # `mmorpg-client-transport`
 
-This crate contains two small blocking TCP adapters. `DevelopmentConnection`
-connects to the temporary line-oriented development server, sends typed
-`ProtocolLine` values produced by `mmorpg-client-protocol`, and reads bounded
-diagnostic lines. `WireConnection` uses the versioned `mmorpg-wire` envelope
-and provides both a compatibility method for carrying those validated command
-lines and `send_typed_command` for the first structured client-command schema.
-`read_server_message` now decodes the structured server-event and snapshot
-schema. `read_event_payload` remains as a compatibility method for temporary
-diagnostic text.
+This crate contains blocking TCP adapters for local tools. `WireConnection`
+uses the versioned `mmorpg-wire` envelope and provides typed command and
+server-message operations, including compatibility decoding for the retained
+fixture profile. The live server's primary listener is typed wire; it no
+longer exposes the former line gameplay listener.
+
+`DevelopmentConnection`, line-command helpers, and `read_event_payload` are
+retained only as compatibility APIs for fixture consumers. They do not
+represent a live gameplay path and cannot mutate the server's authoritative
+world.
 
 The line bridge intentionally does not parse `WELCOME`, `EVENT`, `WORLD`,
 `PLAYER`, or other server output into authoritative state. The wire bridge
@@ -29,6 +30,7 @@ cargo fmt --manifest-path crates/mmorpg-client-transport/Cargo.toml -- --check
 cargo test --manifest-path crates/mmorpg-client-transport/Cargo.toml
 ```
 
-The current wire bridge is still a transport prototype. Authentication,
-encryption, reconnection, queues, interest-managed replication, and production
-observability remain future work.
+The current wire bridge is still a transport prototype. Production
+authentication, encryption, session resume, interest-managed replication, and
+production observability remain future work; typed development authentication,
+bounded queues, and reconnect-by-new-session are implemented local behavior.

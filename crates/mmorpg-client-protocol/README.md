@@ -1,7 +1,9 @@
 # `mmorpg-client-protocol`
 
-This crate is a small, typed client-side adapter for the temporary
-line-oriented development protocol exposed by `mmorpg-server`.
+This crate is a small, typed compatibility adapter for retained line-oriented
+fixtures from the former `mmorpg-server` path. The runtime server and
+graphical client use the versioned `mmorpg-wire` protocol; this crate is not a
+live gameplay transport or listener.
 
 It constructs validated command lines and decodes the bounded structured state
 and event lines for the current development slice. Supported commands are:
@@ -75,11 +77,14 @@ Compound vendor and quest event fields use semicolon-separated records, with
 underscores representing spaces in display names. The protocol exposes owned
 strings; the client may resolve richer descriptions and metadata from its
 validated content package. No other prose or diagnostic line is interpreted.
-This remains a temporary development adapter, not a versioned production
-protocol.
+This remains inert compatibility data, not a versioned production protocol.
+The server no longer exposes a line listener or mutates authoritative state
+from these records. The retained parser and snapshot assembler support
+equivalence and fixture tests only.
 
-The adapter has no networking dependency. A transport reads one complete line
-and passes it to the decoder without its trailing newline.
+The adapter has no networking dependency. Compatibility tests may pass one
+complete fixture line to the decoder without its trailing newline. New runtime
+clients should use `mmorpg-wire` and `mmorpg-client-session` instead.
 
 ## Atomic snapshot assembly
 
