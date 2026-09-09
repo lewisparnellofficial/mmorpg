@@ -71,7 +71,7 @@ cargo run --quiet --manifest-path experiments/ui-scripting/Cargo.toml
 
 ## Measured local results
 
-The standalone test suite completed with **19 passed, 0 failed**. The tests
+The standalone test suite completed with **20 passed, 0 failed**. The tests
 covered:
 
 - the default UI and an addon using the same public functions;
@@ -89,6 +89,7 @@ covered:
 - contract validation rejecting an invalid operation batch atomically;
 - rollback of callback registrations made by a failed callback;
 - pre-VM manifest and source-integrity rejection;
+- deterministic dependency-first package ordering and cycle rejection;
 - account/package-scoped storage sharing and account isolation; and
 - rollback of storage writes made by a failed callback;
 - ordered-event storm isolation from the default UI; and

@@ -197,13 +197,7 @@ impl PackageRepository {
         Self { root: root.into() }
     }
 
-    pub fn load(
-        &self,
-        package_id: PackageId,
-        policy: AddonPolicy,
-        known_capabilities: &BTreeSet<String>,
-        package_ids: &BTreeSet<PackageId>,
-    ) -> Result<AddonRunner, AddonError> {
+    fn read_manifest(&self, package_id: PackageId) -> Result<Manifest, AddonError> {
         let package_dir = self.root.join(package_id.get().to_string());
         let manifest_path = package_dir.join("manifest.toml");
         let manifest_source = read_bounded(&manifest_path, MAX_MANIFEST_BYTES)?;
@@ -215,6 +209,80 @@ impl PackageRepository {
                 "directory and manifest package IDs differ".into(),
             ));
         }
+        Ok(manifest)
+    }
+
+    /// Resolves a complete package set before any VM is created. Dependencies
+    /// always precede dependents; unrelated packages use manifest load order
+    /// and then stable package ID as deterministic tie-breakers.
+    pub fn resolve_order(
+        &self,
+        package_ids: &BTreeSet<PackageId>,
+        known_capabilities: &BTreeSet<String>,
+    ) -> Result<Vec<PackageId>, AddonError> {
+        let mut manifests = BTreeMap::new();
+        for package_id in package_ids {
+            let manifest = self.read_manifest(*package_id)?;
+            validate_manifest(&manifest, known_capabilities, package_ids)
+                .map_err(|error| AddonError::InvalidManifest(error.to_string()))?;
+            manifests.insert(*package_id, manifest);
+        }
+
+        let mut indegree = manifests
+            .keys()
+            .copied()
+            .map(|package_id| (package_id, 0usize))
+            .collect::<BTreeMap<_, _>>();
+        let mut dependents = BTreeMap::<PackageId, Vec<PackageId>>::new();
+        for (package_id, manifest) in &manifests {
+            for dependency in &manifest.dependencies {
+                *indegree
+                    .get_mut(package_id)
+                    .expect("manifest IDs were inserted above") += 1;
+                dependents.entry(*dependency).or_default().push(*package_id);
+            }
+        }
+
+        let mut ready = manifests
+            .iter()
+            .filter_map(|(package_id, manifest)| {
+                (indegree[package_id] == 0).then_some((manifest.load_order, *package_id))
+            })
+            .collect::<Vec<_>>();
+        let mut order = Vec::with_capacity(manifests.len());
+        while !ready.is_empty() {
+            ready.sort_unstable();
+            let (_, package_id) = ready.remove(0);
+            order.push(package_id);
+            if let Some(children) = dependents.get(&package_id) {
+                for child in children {
+                    let count = indegree
+                        .get_mut(child)
+                        .expect("dependent IDs were validated above");
+                    *count -= 1;
+                    if *count == 0 {
+                        ready.push((manifests[child].load_order, *child));
+                    }
+                }
+            }
+        }
+        if order.len() != manifests.len() {
+            return Err(AddonError::InvalidManifest(
+                "addon dependency graph contains a cycle".into(),
+            ));
+        }
+        Ok(order)
+    }
+
+    pub fn load(
+        &self,
+        package_id: PackageId,
+        policy: AddonPolicy,
+        known_capabilities: &BTreeSet<String>,
+        package_ids: &BTreeSet<PackageId>,
+    ) -> Result<AddonRunner, AddonError> {
+        let package_dir = self.root.join(package_id.get().to_string());
+        let manifest = self.read_manifest(package_id)?;
         let entry = safe_entry_path(&package_dir, &manifest.entry)?;
         let source = read_bounded(&entry, policy.max_script_bytes)?;
         AddonRunner::load_from_manifest(&manifest, &source, policy, known_capabilities, package_ids)
@@ -1518,6 +1586,70 @@ mod tests {
                 &packages,
             ),
             Err(AddonError::InvalidManifest(_)) | Err(AddonError::PackageParse(_))
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn package_repository_resolves_stable_dependency_order_and_rejects_cycles() {
+        let root =
+            std::env::temp_dir().join(format!("mmorpg-ui-package-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for package_id in [9005_u64, 9006, 9007] {
+            std::fs::create_dir_all(root.join(package_id.to_string())).unwrap();
+            std::fs::write(
+                root.join(package_id.to_string()).join("main.lua"),
+                "ui.create_panel(\"ordered\")",
+            )
+            .unwrap();
+        }
+        let manifest = |package_id: u64, load_order: i32, dependencies: &str| {
+            format!(
+                "package_id = {package_id}\nname = \"package-{package_id}\"\nversion = \"1.0.0\"\nmanifest_schema = 1\napi_range = \"ui.v1\"\nruntime_range = \"luau-0.12\"\nentry = \"main.lua\"\nload_order = {load_order}\ndependencies = {dependencies}\ncapabilities = [\"ui.panel\"]\nintegrity_sha256 = \"{}\"\n",
+                source_sha256("ui.create_panel(\"ordered\")")
+            )
+        };
+        std::fs::write(
+            root.join("9005").join("manifest.toml"),
+            manifest(9005, 20, "[9006]"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("9006").join("manifest.toml"),
+            manifest(9006, 30, "[9007]"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("9007").join("manifest.toml"),
+            manifest(9007, 10, "[]"),
+        )
+        .unwrap();
+        let packages = [
+            PackageId::new(9005).unwrap(),
+            PackageId::new(9006).unwrap(),
+            PackageId::new(9007).unwrap(),
+        ]
+        .into_iter()
+        .collect();
+        let known = ["ui.panel".to_owned()].into_iter().collect();
+        let repository = PackageRepository::new(&root);
+        assert_eq!(
+            repository.resolve_order(&packages, &known).unwrap(),
+            [
+                PackageId::new(9007).unwrap(),
+                PackageId::new(9006).unwrap(),
+                PackageId::new(9005).unwrap(),
+            ]
+        );
+
+        std::fs::write(
+            root.join("9007").join("manifest.toml"),
+            manifest(9007, 10, "[9005]"),
+        )
+        .unwrap();
+        assert!(matches!(
+            repository.resolve_order(&packages, &known),
+            Err(AddonError::InvalidManifest(message)) if message.contains("cycle")
         ));
         std::fs::remove_dir_all(root).unwrap();
     }

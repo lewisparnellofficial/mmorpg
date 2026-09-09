@@ -43,7 +43,9 @@ validated TOML state file. It is a local persistence proof, not a production
 database or journal. The
 `load_from_manifest` entry point validates the manifest, capability set,
 dependency IDs, source entry path, and SHA-256 source integrity before VM
-construction. `storage.get`, `storage.set`, and `storage.delete` use the
+construction. `PackageRepository::resolve_order` validates a complete package
+set and produces a deterministic dependency-first order, rejecting cycles
+before VM construction. `storage.get`, `storage.set`, and `storage.delete` use the
 contract's bounded account/package/schema namespace; callers can share the
 store across runner instances to model character changes within one account.
 Storage mutations made during a failed callback are rolled back with the
