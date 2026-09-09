@@ -48,7 +48,7 @@ durable operation journal.
 
 The hypothesis is supported for the bounded prototype. With the opt-in
 character store, the journal records the typed intent before it enters the
-authoritative command queue and persists the completed result for restart
+  authoritative command queue and persists the completed result for restart
 loading. The wire codec accepts an additive `Retryable` wrapper, and duplicate operation
 keys for the same account and character are served from the bounded result
 cache without reapplying the core command.
@@ -62,8 +62,9 @@ cache without reapplying the core command.
   commit-before-live-apply transaction.
 - The restart smoke repeats the same wrapped operation IDs after process
   restart and passes; the loaded result cache prevents the second run from
-  reapplying those operations. Completion-store failure fallback remains an
-  explicitly unproven failure-atomicity path.
+  reapplying those operations. Completion-store failure recovery remains an
+  explicitly unproven cross-process path; within one live process the
+  staged world batch is discarded and the affected clients receive an error.
 - The prototype does not provide pending/failed journal states, cross-process
   fencing, or recovery of in-flight operations.
 - Rejected operations do not yet carry a durable typed result record suitable

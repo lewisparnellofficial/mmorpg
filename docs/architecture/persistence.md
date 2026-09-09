@@ -93,7 +93,7 @@ bounded writer, and revision fence demonstrate ownership and retry boundaries,
 but completion still follows live mutation and does not reconcile a crash
 between live mutation and result publication. A successful completion
 acknowledgement gates success-event publication; store failure currently falls
-back to the in-process result and remains a failure-atomicity gap. The
+back to a discarded staged batch and remains a crash-recovery gap. The
 repeatable evidence is recorded in
 [`EXP-005`](../experiments/EXP-005-durable-character-checkpoint.md).
 

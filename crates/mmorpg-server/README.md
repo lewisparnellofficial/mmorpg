@@ -100,8 +100,9 @@ queue, but completion is still appended after the live world step. It is a
 development boundary, not a complete transaction: it does not yet provide
 crash reconciliation for an operation that fails between live mutation and
 result publication. Successful journal acknowledgements gate the operation's
-success event; a completion-store failure currently falls back to the bounded
-in-process result and is logged for later failure-atomicity work.
+success event; a completion-store failure discards the staged world batch and
+returns a typed error to the affected clients. Recovery of an operation after
+an external process crash remains a later journal milestone.
 
 The typed gameplay vocabulary includes authoritative BasicAttack, party
 membership, and Heal { target_id } intents. Party invites and membership are

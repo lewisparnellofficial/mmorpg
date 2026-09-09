@@ -12,7 +12,7 @@ use mmorpg_wire::{
     SequencedServerMessage, ServerEvent, ServerMessage, VendorListingState, WorldSnapshot,
     ZoneAreaCode, decode_one,
 };
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -183,6 +183,15 @@ struct PendingCommand {
     operation: Option<OperationKey>,
 }
 
+struct StagedOperationBatch {
+    world: World,
+    events: Vec<Event>,
+    join_origins: VecDeque<ClientOrigin>,
+    operations: BTreeMap<OperationKey, u64>,
+    operation_events: BTreeMap<OperationKey, Vec<Event>>,
+    acknowledged: BTreeSet<OperationKey>,
+}
+
 struct Server {
     world: World,
     #[cfg(test)]
@@ -191,7 +200,7 @@ struct Server {
     detached_characters: BTreeMap<(u64, u64), DetachedCharacter>,
     commands: VecDeque<PendingCommand>,
     prepared_operations: BTreeMap<OperationKey, (u64, Command)>,
-    pending_operation_completions: BTreeMap<OperationKey, Vec<Event>>,
+    staged_operation_batch: Option<StagedOperationBatch>,
     completed_operations: BTreeMap<OperationKey, Vec<ServerMessage>>,
     operation_journal_worker: OperationJournalWorker,
     account_repository: Arc<dyn AccountCharacterRepository>,
@@ -242,7 +251,7 @@ impl Server {
             detached_characters: BTreeMap::new(),
             commands: VecDeque::new(),
             prepared_operations: BTreeMap::new(),
-            pending_operation_completions: BTreeMap::new(),
+            staged_operation_batch: None,
             completed_operations: completed_operations
                 .into_iter()
                 .map(|(key, payloads)| {
@@ -969,12 +978,22 @@ impl Server {
             return;
         }
 
+        if self.staged_operation_batch.is_some() {
+            self.poll_operation_journal();
+            self.schedule_next_tick();
+            return;
+        }
         self.poll_operation_journal();
         self.expire_detached_characters();
         let pending: Vec<_> = self.commands.drain(..).collect();
         let operation_commands: Vec<_> = pending
             .iter()
-            .filter_map(|pending| pending.operation.zip(command_player_id(&pending.command)))
+            .filter_map(|pending| {
+                pending
+                    .operation
+                    .zip(command_player_id(&pending.command))
+                    .map(|(key, player_id)| (key, player_id, pending.origin))
+            })
             .collect();
         let mut join_origins: VecDeque<ClientOrigin> = pending
             .iter()
@@ -986,6 +1005,13 @@ impl Server {
                 .then_some(pending.origin)
             })
             .collect();
+
+        if self.operation_journal_worker.enabled() && !operation_commands.is_empty() {
+            self.stage_operation_batch(pending, join_origins, operation_commands);
+            self.schedule_next_tick();
+            return;
+        }
+
         let events = self.world.step_with_combat_timing(
             pending.into_iter().map(|pending| pending.command),
             self.combat_timing,
@@ -994,82 +1020,22 @@ impl Server {
         // A journal-backed operation remains pending until its completed
         // result is durably acknowledged. The no-journal development path
         // retains the bounded in-process fence.
-        for (key, player_id) in operation_commands {
+        for (key, player_id, _) in operation_commands {
             let result = events
                 .iter()
                 .filter(|event| event_recipient(event) == Some(player_id))
                 .cloned()
                 .collect::<Vec<_>>();
-            let journal_payloads = result
+            let messages = result
                 .iter()
                 .filter_map(|event| wire_event(event).map(ServerMessage::Event))
-                .filter_map(|message| message.encode_payload().ok())
                 .collect();
-            if self.operation_journal_worker.enabled() {
-                self.pending_operation_completions.insert(key, result);
-                if self
-                    .operation_journal_worker
-                    .try_enqueue(OperationJournalJob::Complete {
-                        key,
-                        result_payloads: journal_payloads,
-                    })
-                    .is_err()
-                {
-                    eprintln!(
-                        "operation_journal_queue_full account={} character={} operation={}",
-                        key.account_id, key.character_id, key.operation_id
-                    );
-                    if let Some(events) = self.pending_operation_completions.remove(&key) {
-                        let messages = events
-                            .iter()
-                            .filter_map(|event| wire_event(event).map(ServerMessage::Event))
-                            .collect();
-                        self.insert_completed_operation(key, messages);
-                    }
-                }
-            } else {
-                let messages = result
-                    .iter()
-                    .filter_map(|event| wire_event(event).map(ServerMessage::Event))
-                    .collect();
-                self.insert_completed_operation(key, messages);
-            }
+            self.insert_completed_operation(key, messages);
         }
 
-        // The development protocol only accepts valid join commands, so join
-        // events correspond in order to the pending join origins.
-        for event in &events {
-            if let Event::PlayerJoined { player } = event
-                && let Some(origin) = join_origins.pop_front()
-            {
-                match origin {
-                    #[cfg(test)]
-                    ClientOrigin::Line(_) => {}
-                    ClientOrigin::Wire(origin) => {
-                        if let Some(client) = self
-                            .wire_clients
-                            .iter_mut()
-                            .find(|client| client.id == origin)
-                        {
-                            client.player_id = Some(player.id);
-                            client.queue_server_message(&ServerMessage::Connected {
-                                player_id: player.id.0,
-                                role: wire_role(player.role),
-                            });
-                        }
-                    }
-                }
-            }
-        }
+        self.apply_join_origins(&events, &mut join_origins);
 
         for event in events {
-            if self
-                .pending_operation_completions
-                .values()
-                .any(|pending| pending.iter().any(|deferred| deferred == &event))
-            {
-                continue;
-            }
             self.broadcast_wire_event(&event);
         }
 
@@ -1077,6 +1043,82 @@ impl Server {
             self.checkpoint_wire_players();
         }
 
+        self.schedule_next_tick();
+    }
+
+    fn stage_operation_batch(
+        &mut self,
+        pending: Vec<PendingCommand>,
+        join_origins: VecDeque<ClientOrigin>,
+        operation_commands: Vec<(OperationKey, EntityId, ClientOrigin)>,
+    ) {
+        let mut staged_world = self.world.clone();
+        let events = staged_world.step_with_combat_timing(
+            pending.into_iter().map(|pending| pending.command),
+            self.combat_timing,
+        );
+        let mut operations = BTreeMap::new();
+        let mut operation_events = BTreeMap::new();
+        for (key, player_id, origin) in operation_commands {
+            let result = events
+                .iter()
+                .filter(|event| event_recipient(event) == Some(player_id))
+                .cloned()
+                .collect::<Vec<_>>();
+            let payloads = result
+                .iter()
+                .filter_map(|event| wire_event(event).map(ServerMessage::Event))
+                .filter_map(|message| message.encode_payload().ok())
+                .collect();
+            if self
+                .operation_journal_worker
+                .try_enqueue(OperationJournalJob::Complete {
+                    key,
+                    result_payloads: payloads,
+                })
+                .is_err()
+            {
+                self.queue_wire_error(
+                    origin_client_id(origin),
+                    "operation journal queue is full".to_owned(),
+                );
+                return;
+            }
+            operations.insert(key, origin_client_id(origin));
+            operation_events.insert(key, result);
+        }
+        self.staged_operation_batch = Some(StagedOperationBatch {
+            world: staged_world,
+            events,
+            join_origins,
+            operations,
+            operation_events,
+            acknowledged: BTreeSet::new(),
+        });
+    }
+
+    fn apply_join_origins(&mut self, events: &[Event], join_origins: &mut VecDeque<ClientOrigin>) {
+        for event in events {
+            if let Event::PlayerJoined { player } = event
+                && let Some(origin) = join_origins.pop_front()
+            {
+                if let ClientOrigin::Wire(origin) = origin
+                    && let Some(client) = self
+                        .wire_clients
+                        .iter_mut()
+                        .find(|client| client.id == origin)
+                {
+                    client.player_id = Some(player.id);
+                    client.queue_server_message(&ServerMessage::Connected {
+                        player_id: player.id.0,
+                        role: wire_role(player.role),
+                    });
+                }
+            }
+        }
+    }
+
+    fn schedule_next_tick(&mut self) {
         self.next_tick += self.tick_interval;
         if self.next_tick <= Instant::now() {
             self.next_tick = Instant::now() + self.tick_interval;
@@ -1085,22 +1127,13 @@ impl Server {
 
     fn poll_operation_journal(&mut self) {
         let results: Vec<_> = self.operation_journal_worker.drain_results().collect();
+        let mut failed_batch = None;
         for result in results {
             if let Err(error) = result.result {
                 self.prepared_operations.remove(&result.key);
-                if !result.prepared
-                    && let Some(events) = self.pending_operation_completions.remove(&result.key)
-                {
-                    let messages = events
-                        .iter()
-                        .filter_map(|event| wire_event(event).map(ServerMessage::Event))
-                        .collect();
-                    self.insert_completed_operation(result.key, messages);
-                    for event in events {
-                        self.broadcast_wire_event(&event);
-                    }
-                } else {
-                    self.pending_operation_completions.remove(&result.key);
+                if !result.prepared {
+                    failed_batch = Some((result.key, error));
+                    break;
                 }
                 eprintln!(
                     "operation_journal_error account={} character={} operation={} error={error}",
@@ -1117,17 +1150,50 @@ impl Server {
                     Some(result.key),
                 );
             } else if !result.prepared
-                && let Some(events) = self.pending_operation_completions.remove(&result.key)
+                && let Some(batch) = self.staged_operation_batch.as_mut()
+                && batch.operations.contains_key(&result.key)
             {
-                let messages = events
-                    .iter()
-                    .filter_map(|event| wire_event(event).map(ServerMessage::Event))
-                    .collect::<Vec<_>>();
-                self.insert_completed_operation(result.key, messages);
-                for event in events {
-                    self.broadcast_wire_event(&event);
-                }
+                batch.acknowledged.insert(result.key);
             }
+        }
+
+        if let Some((failed_key, error)) = failed_batch {
+            if let Some(batch) = self.staged_operation_batch.take() {
+                for client_id in batch.operations.values().copied() {
+                    self.queue_wire_error(client_id, format!("operation journal failed: {error}"));
+                }
+                eprintln!(
+                    "operation_journal_error account={} character={} operation={} error={error}",
+                    failed_key.account_id, failed_key.character_id, failed_key.operation_id
+                );
+            }
+        } else if self
+            .staged_operation_batch
+            .as_ref()
+            .is_some_and(|batch| batch.acknowledged.len() == batch.operations.len())
+        {
+            self.commit_staged_operation_batch();
+        }
+    }
+
+    fn commit_staged_operation_batch(&mut self) {
+        let Some(mut batch) = self.staged_operation_batch.take() else {
+            return;
+        };
+        self.world = batch.world;
+        self.apply_join_origins(&batch.events, &mut batch.join_origins);
+        for (key, events) in batch.operation_events {
+            let messages = events
+                .iter()
+                .filter_map(|event| wire_event(event).map(ServerMessage::Event))
+                .collect();
+            self.insert_completed_operation(key, messages);
+        }
+        for event in batch.events {
+            self.broadcast_wire_event(&event);
+        }
+        if self.world.tick().is_multiple_of(CHECKPOINT_INTERVAL_TICKS) {
+            self.checkpoint_wire_players();
         }
     }
 
@@ -2440,6 +2506,14 @@ fn command_to_wire_payload(command: &Command) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("cannot encode operation journal command: {error}"))
 }
 
+fn origin_client_id(origin: ClientOrigin) -> u64 {
+    match origin {
+        #[cfg(test)]
+        ClientOrigin::Line(client_id) => client_id,
+        ClientOrigin::Wire(client_id) => client_id,
+    }
+}
+
 fn command_player_id(command: &Command) -> Option<EntityId> {
     match command {
         Command::BuyItem { player_id, .. }
@@ -2930,6 +3004,81 @@ mod tests {
         );
         assert!(server.commands.is_empty());
         assert!(!server.wire_clients[0].output.is_empty());
+    }
+
+    #[test]
+    fn journaled_operation_stages_world_before_commit_and_reloads_after_restart() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let checkpoint_path = std::env::temp_dir().join(format!("mmorpg-staged-{unique}.state"));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let _peer = TcpStream::connect(address).expect("connect test peer");
+        let (stream, _) = listener.accept().expect("accept test peer");
+        let mut server = Server::new(DEFAULT_TICK_HZ, false, Some(checkpoint_path.clone()));
+        let player_id = server
+            .world
+            .step([Command::JoinPlayer {
+                name: "Aria".to_owned(),
+                role: Role::DamageDealer,
+            }])
+            .into_iter()
+            .find_map(|event| match event {
+                Event::PlayerJoined { player } => Some(player.id),
+                _ => None,
+            })
+            .expect("test player should join");
+        let mut client = WireClient::new(1, stream);
+        client.authenticated = Some(AuthenticatedSession {
+            account_id: 1,
+            session_id: 1,
+        });
+        client.selected_character_id = Some(1);
+        client.content_compatible = true;
+        client.player_id = Some(player_id);
+        server.wire_clients.push(client);
+        let initial_gold = server.world.player(player_id).unwrap().gold;
+        let key = OperationKey {
+            account_id: 1,
+            character_id: 1,
+            operation_id: 700,
+        };
+
+        server.handle_wire_command(
+            1,
+            WireCommand::Retryable {
+                operation_id: key.operation_id,
+                command: Box::new(WireCommand::BuyItem {
+                    vendor_id: 1,
+                    item_id: ItemId::TOWN_RATION.0,
+                    quantity: 1,
+                }),
+            },
+        );
+
+        let mut applied = false;
+        for _ in 0..200 {
+            server.next_tick = Instant::now() - Duration::from_millis(1);
+            server.advance_if_due();
+            if server.completed_operations.contains_key(&key) {
+                applied = true;
+                break;
+            }
+            assert_eq!(server.world.player(player_id).unwrap().gold, initial_gold);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(applied, "journaled operation should eventually commit");
+        assert!(server.world.player(player_id).unwrap().gold < initial_gold);
+        drop(server);
+
+        let restarted = Server::new(DEFAULT_TICK_HZ, false, Some(checkpoint_path.clone()));
+        assert!(restarted.completed_operations.contains_key(&key));
+        let _ = std::fs::remove_file(checkpoint_path);
+        let _ = std::fs::remove_file(
+            std::env::temp_dir().join(format!("mmorpg-staged-{unique}.operations")),
+        );
     }
 
     #[test]

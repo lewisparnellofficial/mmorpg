@@ -757,6 +757,7 @@ struct PendingAttack {
 }
 
 /// Single-owner authoritative starter-zone simulation.
+#[derive(Clone)]
 pub struct World {
     tick: u64,
     next_entity_id: u64,
