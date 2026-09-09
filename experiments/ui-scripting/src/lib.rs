@@ -68,6 +68,8 @@ impl Default for AddonPolicy {
 /// schema.
 pub type VisibleState = ViewRecord;
 
+const ALLOWLISTED_SECURE_ACTIONS: &[&str] = &["basic_attack"];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UiNode {
     pub id: u64,
@@ -956,6 +958,11 @@ impl AddonRunner {
         if let Some(reason) = &self.disabled {
             return Err(AddonError::Disabled(reason.clone()));
         }
+        if !ALLOWLISTED_SECURE_ACTIONS.contains(&action) {
+            return Err(AddonError::Runtime(
+                "secure action is not allowlisted".to_owned(),
+            ));
+        }
         let mut host = self.host.borrow_mut();
         host.check_owner(node_id)
             .map_err(|error| AddonError::Runtime(error.to_string()))?;
@@ -1299,7 +1306,7 @@ mod tests {
         );
         assert!(runner.snapshot().secure_intents.is_empty());
         assert_eq!(
-            runner.secure_input(999, "attack").unwrap_err(),
+            runner.secure_input(999, "basic_attack").unwrap_err(),
             AddonError::Runtime("runtime error: UI node is not owned by this addon".to_owned())
         );
     }
@@ -1311,7 +1318,11 @@ mod tests {
         let mut second = AddonRunner::load("second", source, AddonPolicy::default()).unwrap();
         let node_id = first.snapshot().nodes[0].id;
         assert_ne!(node_id, second.snapshot().nodes[0].id);
-        assert!(first.secure_input(node_id, "open").is_ok());
+        assert_eq!(
+            first.secure_input(node_id, "open").unwrap_err(),
+            AddonError::Runtime("secure action is not allowlisted".to_owned())
+        );
+        assert!(first.secure_input(node_id, "basic_attack").is_ok());
         assert!(second.secure_input(node_id, "open").is_err());
     }
 

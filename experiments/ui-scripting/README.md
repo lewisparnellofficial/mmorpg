@@ -19,7 +19,8 @@ only bounded `get`, `set`, and `delete` operations. There is no script function
 for movement, targeting, casting, packets, file
 access, process execution, sockets, native modules, or secure input. A native
 caller may use `AddonRunner::secure_input` after validating ownership; that
-operation is deliberately outside the Lua environment.
+operation is deliberately outside the Lua environment and currently accepts
+only the allowlisted `basic_attack` action.
 
 The runner enforces source-size, memory, instruction, UI-node, event, and text
 limits. A callback is applied as one host-state transaction: if it fails, its

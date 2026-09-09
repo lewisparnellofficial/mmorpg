@@ -39,7 +39,9 @@ replays using this constant-size watermark; it does not accumulate an
 unbounded per-event replay set over the lifetime of a client.
 
 The Bevy host owns hit testing and translates a consumed allowlisted action
-into a bounded `ClientCommand` intent. The native HUD and ordinary addon use
+into a bounded `ClientCommand` intent. The current slice allowlists only
+`basic_attack`; adding another protected action requires a separate explicit
+binding and validation change. The native HUD and ordinary addon use
 the same host binding mechanism. The server still validates the resulting
 typed intent for ownership, role, target, range, liveness, cooldown, and all
 other gameplay rules; physical provenance does not grant gameplay authority.
