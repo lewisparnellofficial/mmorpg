@@ -28,9 +28,11 @@ replaceable state coalesces by key, ordered events retain FIFO order, and an
 ordered overflow disables only the affected addon. Separate runners cannot
 use each other's node handles.
 
-This rollback is currently limited to host-owned panel state. The standalone
-contract crate's `UiOperation` buffer, package manifest, and storage lifecycle
-are not yet the implementation behind this Luau adapter.
+Panel mutations are staged as the contract crate's `UiOperation` values and
+validated with the addon package/generation before atomic host commit.
+Subscription registration made during a callback is committed with the same
+transaction. The standalone contract crate's package manifest and storage
+lifecycle are not yet the implementation behind this Luau adapter.
 
 This is evidence for a Luau embedding direction, not a security certification.
 The remaining production questions include package/signature policy, exact
