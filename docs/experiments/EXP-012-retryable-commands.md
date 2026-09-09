@@ -49,6 +49,9 @@ durable operation journal.
   readable with revision zero.
 - Interrupted-prepare restart test: passed; a journal ending in `prepared` is
   converted to a durable rejection before the operation key can be retried.
+- Completed-record recovery test: passed; a completed durable command with an
+  older checkpoint revision is replayed once through the staged world path,
+  while the cached result remains the duplicate fence.
 - Typed gameplay smoke: passed with purchase, loot, and quest completion.
 - Three-client gate: passed; the tank and healer shared one party summary while
   the unrelated damage client received no private party summary.
@@ -86,12 +89,14 @@ cache without reapplying the core command.
   reapplying those operations. Completion-store failure recovery remains an
   explicitly unproven cross-process path; within one live process the
   staged world batch is discarded and the affected clients receive an error.
-- The prototype does not provide cross-process fencing or replay recovery for
-  a completed record whose live-world application was interrupted after the
-  journal acknowledgement. Prepared-but-not-completed records have an
-  explicit no-replay failure policy. The deterministic shutdown path covers
-  orderly local exit and now drains pending failed-operation records; the
-  bounded timeout path explicitly reports abandoned failures.
+- Legacy version-2 completion records written before command-payload capture
+  remain deduplication-only and cannot be replayed after a checkpoint gap.
+  Current records compare operation and checkpoint revisions before replaying
+  a completed command. Cross-process fencing and database-level transaction
+  semantics remain outside the prototype. Prepared-but-not-completed records
+  have an explicit no-replay failure policy. The deterministic shutdown path
+  covers orderly local exit and now drains pending failed-operation records;
+  the bounded timeout path explicitly reports abandoned failures.
 - Failed validation outcomes now carry a durable failed-operation record and
   are replayed as the same error for a duplicate key after restart. Core
   gameplay rejections and a general typed error-result schema remain outside
@@ -104,9 +109,9 @@ cache without reapplying the core command.
 - Extend the durable operation record toward explicit pending, committed, and
   failed states for core gameplay outcomes, not only validation-level
   rejections.
-- Define commit ordering and recovery behavior for crashes between the journal
-  write and live simulation application, including reconciliation of completed
-  records against checkpoint state.
+- Add crash-injection coverage for checkpoint/journal races and replace the
+  development replay policy with a database-backed transaction before
+  production operation.
 - Add crash-oriented restart and failure-injection tests for the commit-before-
   live-apply boundary, including duplicate retries after an interrupted
   process restart.

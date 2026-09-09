@@ -97,6 +97,12 @@ between live mutation and result publication. A journal that ends in a
 prepared record is recovered as an explicit interrupted-operation failure
 before that key can be retried; because live mutation is staged until
 completion acknowledgement, this recovery policy does not replay the command.
+Completed records retain their original durable command payload. On world
+entry, the server compares the record revision with the selected character's
+checkpoint revision and replays an older completed operation once through the
+staged path; an equal-or-newer checkpoint keeps the cached result without
+replay. Legacy version-2 records without a command payload remain
+deduplication-only.
 A successful completion
 acknowledgement gates success-event publication; store failure currently falls
 back to a discarded staged batch and remains a crash-recovery gap. The

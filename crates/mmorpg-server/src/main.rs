@@ -211,6 +211,9 @@ struct Server {
     prepared_operations: BTreeMap<OperationKey, (u64, Command)>,
     staged_operation_batch: Option<StagedOperationBatch>,
     completed_operations: BTreeMap<OperationKey, Vec<ServerMessage>>,
+    recovery_operations: BTreeMap<OperationKey, (u64, WireCommand)>,
+    pending_recovery_operations: BTreeMap<(u64, u64), Vec<(OperationKey, WireCommand)>>,
+    recovering_operations: BTreeSet<OperationKey>,
     failed_operations: BTreeMap<OperationKey, String>,
     pending_failed_operations: BTreeMap<OperationKey, (u64, String)>,
     operation_journal_worker: OperationJournalWorker,
@@ -255,6 +258,7 @@ impl Server {
             })
             .unwrap_or_else(|| (OperationJournalWorker::disabled(), BTreeMap::new()));
         let mut completed_operations = BTreeMap::new();
+        let mut recovery_operations = BTreeMap::new();
         let mut failed_operations = BTreeMap::new();
         let mut interrupted_operations = Vec::new();
         for (key, operation) in persisted_operations {
@@ -266,12 +270,21 @@ impl Server {
                     );
                     interrupted_operations.push(key);
                 }
-                PersistedOperation::Completed { payloads, .. } => {
+                PersistedOperation::Completed {
+                    revision,
+                    payloads,
+                    command_payload,
+                } => {
                     let messages = payloads
                         .into_iter()
                         .filter_map(|payload| ServerMessage::decode_payload(&payload).ok())
                         .collect();
                     completed_operations.insert(key, messages);
+                    if let Some(command_payload) = command_payload
+                        && let Ok(command) = WireCommand::decode_payload(&command_payload)
+                    {
+                        recovery_operations.insert(key, (revision, command));
+                    }
                 }
                 PersistedOperation::Failed(reason) => {
                     failed_operations.insert(key, reason);
@@ -295,6 +308,9 @@ impl Server {
             prepared_operations: BTreeMap::new(),
             staged_operation_batch: None,
             completed_operations,
+            recovery_operations,
+            pending_recovery_operations: BTreeMap::new(),
+            recovering_operations: BTreeSet::new(),
             failed_operations,
             pending_failed_operations: BTreeMap::new(),
             operation_journal_worker,
@@ -641,15 +657,18 @@ impl Server {
                     return;
                 }
             }
-            let command = match self
+            let (command, checkpoint_revision) = match self
                 .account_repository
-                .load_checkpoint(account_id, character_id)
+                .load_checkpoint_with_revision(account_id, character_id)
             {
-                Ok(Some(state)) => Command::RestorePlayer { state },
-                Ok(None) => Command::JoinPlayer {
-                    name: character.name,
-                    role: character.role,
-                },
+                Ok(Some((state, revision))) => (Command::RestorePlayer { state }, revision),
+                Ok(None) => (
+                    Command::JoinPlayer {
+                        name: character.name,
+                        role: character.role,
+                    },
+                    0,
+                ),
                 Err(error) => {
                     self.queue_wire_error(
                         client_id,
@@ -659,6 +678,20 @@ impl Server {
                 }
             };
             self.enqueue_pending_wire_command(client_id, command);
+            let recoveries: Vec<_> = self
+                .recovery_operations
+                .iter()
+                .filter_map(|(key, (revision, command))| {
+                    (key.account_id == account_id
+                        && key.character_id == character_id
+                        && *revision > checkpoint_revision)
+                        .then_some((*key, command.clone()))
+                })
+                .collect();
+            if !recoveries.is_empty() {
+                self.pending_recovery_operations
+                    .insert((account_id, character_id), recoveries);
+            }
             return;
         }
         if matches!(command, WireCommand::Snapshot) {
@@ -708,6 +741,9 @@ impl Server {
                 character_id,
                 operation_id,
             };
+            if self.recovering_operations.contains(&key) {
+                return;
+            }
             if let Some(events) = self.completed_operations.get(&key).cloned() {
                 if let Some(client) = self
                     .wire_clients
@@ -1145,6 +1181,16 @@ impl Server {
         operation_commands: Vec<(OperationKey, EntityId, ClientOrigin)>,
     ) {
         let mut staged_world = self.world.clone();
+        let operation_payloads: BTreeMap<OperationKey, Vec<u8>> = pending
+            .iter()
+            .filter_map(|pending| {
+                pending.operation.and_then(|key| {
+                    command_to_wire_payload(&pending.command)
+                        .ok()
+                        .map(|payload| (key, payload))
+                })
+            })
+            .collect();
         let events = staged_world.step_with_combat_timing(
             pending.into_iter().map(|pending| pending.command),
             self.combat_timing,
@@ -1166,6 +1212,7 @@ impl Server {
             journal_jobs.push(OperationJournalJob::Complete {
                 key,
                 revision: staged_world.tick(),
+                command_payload: operation_payloads.get(&key).cloned().unwrap_or_default(),
                 result_payloads: payloads,
             });
             operations.insert(key, origin_client_id(origin));
@@ -1202,11 +1249,37 @@ impl Server {
                         .iter_mut()
                         .find(|client| client.id == origin)
                 {
+                    let identity = client
+                        .authenticated
+                        .zip(client.selected_character_id)
+                        .map(|(session, character_id)| (session.account_id, character_id));
                     client.player_id = Some(player.id);
                     client.queue_server_message(&ServerMessage::Connected {
                         player_id: player.id.0,
                         role: wire_role(player.role),
                     });
+                    let _ = client;
+                    if let Some(identity) = identity
+                        && let Some(recoveries) = self.pending_recovery_operations.remove(&identity)
+                    {
+                        for (key, command) in recoveries {
+                            let Some(command) = wire_command_to_core(command, player.id).ok()
+                            else {
+                                self.failed_operations.insert(
+                                    key,
+                                    "recovered operation command was invalid".to_owned(),
+                                );
+                                self.trim_operation_results();
+                                continue;
+                            };
+                            self.recovering_operations.insert(key);
+                            self.commands.push_back(PendingCommand {
+                                origin: ClientOrigin::Wire(origin),
+                                command,
+                                operation: Some(key),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1303,6 +1376,8 @@ impl Server {
         self.world = batch.world;
         self.apply_join_origins(&batch.events, &mut batch.join_origins);
         for (key, events) in batch.operation_events {
+            self.recovery_operations.remove(&key);
+            self.recovering_operations.remove(&key);
             let messages = events
                 .iter()
                 .filter_map(|event| wire_event(event).map(ServerMessage::Event))
@@ -3412,8 +3487,51 @@ mod tests {
         assert!(server.world.player(player_id).unwrap().gold < initial_gold);
         drop(server);
 
-        let restarted = Server::new(DEFAULT_TICK_HZ, false, Some(checkpoint_path.clone()));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind restart listener");
+        let address = listener.local_addr().expect("restart listener address");
+        let _peer = TcpStream::connect(address).expect("connect restart peer");
+        let (stream, _) = listener.accept().expect("accept restart peer");
+        let mut restarted = Server::new(DEFAULT_TICK_HZ, false, Some(checkpoint_path.clone()));
         assert!(restarted.completed_operations.contains_key(&key));
+        assert!(restarted.recovery_operations.contains_key(&key));
+        let mut client = WireClient::new(1, stream);
+        client.authenticated = Some(AuthenticatedSession {
+            account_id: 1,
+            session_id: 2,
+        });
+        client.selected_character_id = Some(1);
+        client.content_compatible = true;
+        restarted.wire_clients.push(client);
+        restarted.handle_wire_command(1, WireCommand::EnterWorld);
+        assert!(restarted.pending_recovery_operations.contains_key(&(1, 1)));
+        assert!(!restarted.commands.is_empty());
+        restarted.next_tick = Instant::now() - Duration::from_millis(1);
+        restarted.advance_if_due();
+        let restarted_player = restarted.wire_clients[0]
+            .player_id
+            .expect("restart enter-world should bind a player");
+        assert!(restarted.world.player(restarted_player).is_some());
+        assert!(!restarted.commands.is_empty());
+        for _ in 0..200 {
+            restarted.next_tick = Instant::now() - Duration::from_millis(1);
+            restarted.advance_if_due();
+            if restarted
+                .world
+                .player(restarted_player)
+                .is_some_and(|player| player.gold < initial_gold)
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            restarted
+                .world
+                .player(restarted_player)
+                .is_some_and(|player| player.gold < initial_gold),
+            "an older checkpoint should trigger one operation replay"
+        );
+        drop(restarted);
         let _ = std::fs::remove_file(checkpoint_path);
         let _ = std::fs::remove_file(
             std::env::temp_dir().join(format!("mmorpg-staged-{unique}.operations")),

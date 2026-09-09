@@ -118,6 +118,11 @@ is submitted, and failed operation attempts have an explicit journal record.
 On startup, a journal ending in `prepared` is converted into a durable
 interrupted-operation rejection before that key can be retried; this avoids
 reapplying a command whose staged world was never committed.
+Completed records retain the original durable command payload. If the selected
+character's checkpoint revision is older than the recorded operation revision,
+the server replays that command once through the normal staged path on world
+entry; a checkpoint at or beyond the revision uses the cached result without
+replay.
 Shutdown also drains pending failed-operation records, or returns an explicit
 abandonment error to the affected client after the bounded drain deadline. On
 restart, a torn non-newline-terminated final journal record is ignored while

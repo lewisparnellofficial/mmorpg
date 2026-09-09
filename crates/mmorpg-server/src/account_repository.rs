@@ -77,6 +77,15 @@ pub trait AccountCharacterRepository: Send + Sync {
         character_id: u64,
     ) -> Result<Option<DurablePlayerState>, String>;
 
+    fn load_checkpoint_with_revision(
+        &self,
+        account_id: u64,
+        character_id: u64,
+    ) -> Result<Option<(DurablePlayerState, u64)>, String> {
+        self.load_checkpoint(account_id, character_id)
+            .map(|state| state.map(|state| (state, 0)))
+    }
+
     fn save_checkpoint(
         &self,
         account_id: u64,
@@ -116,6 +125,14 @@ impl<T: AccountCharacterRepository + ?Sized> AccountCharacterRepository for Arc<
         character_id: u64,
     ) -> Result<Option<DurablePlayerState>, String> {
         (**self).load_checkpoint(account_id, character_id)
+    }
+
+    fn load_checkpoint_with_revision(
+        &self,
+        account_id: u64,
+        character_id: u64,
+    ) -> Result<Option<(DurablePlayerState, u64)>, String> {
+        (**self).load_checkpoint_with_revision(account_id, character_id)
     }
 
     fn save_checkpoint(
@@ -170,6 +187,7 @@ pub enum OperationJournalJob {
     Complete {
         key: OperationKey,
         revision: u64,
+        command_payload: Vec<u8>,
         result_payloads: Vec<Vec<u8>>,
     },
     Failed {
@@ -191,6 +209,7 @@ pub enum PersistedOperation {
     Completed {
         revision: u64,
         payloads: Vec<Vec<u8>>,
+        command_payload: Option<Vec<u8>>,
     },
     Failed(String),
 }
@@ -510,6 +529,21 @@ impl AccountCharacterRepository for DevelopmentAccountRepository {
         })
     }
 
+    fn load_checkpoint_with_revision(
+        &self,
+        account_id: u64,
+        character_id: u64,
+    ) -> Result<Option<(DurablePlayerState, u64)>, String> {
+        if self.find_character(account_id, character_id).is_none() {
+            return Ok(None);
+        }
+        self.checkpoint_store.as_ref().map_or(Ok(None), |store| {
+            LocalCheckpointStore::new(store.path_for_character(account_id, character_id))
+                .load_record()
+                .map(|record| record.map(|record| (record.state, record.revision)))
+        })
+    }
+
     fn save_checkpoint(
         &self,
         account_id: u64,
@@ -637,7 +671,7 @@ fn load_operation_journal(
             continue;
         }
         let fields: Vec<_> = line.split('\t').collect();
-        if fields.len() != 6 && fields.len() != 7 {
+        if fields.len() != 6 && fields.len() != 7 && fields.len() != 8 {
             return Err("malformed operation journal record".to_owned());
         }
         let version = fields[0];
@@ -687,16 +721,24 @@ fn load_operation_journal(
         if fields[1] != "completed" {
             return Err("unknown operation journal record kind".to_owned());
         }
-        let (revision, results_field) = if version == "version=2" {
-            if fields.len() != 7 {
+        let (revision, command_payload, results_field) = if version == "version=2" {
+            if fields.len() != 7 && fields.len() != 8 {
                 return Err("malformed operation journal completed record".to_owned());
             }
-            (parse_journal_field(fields[5], "revision")?, fields[6])
+            let revision = parse_journal_field(fields[5], "revision")?;
+            if fields.len() == 8 {
+                let command = fields[6]
+                    .strip_prefix("command=")
+                    .ok_or_else(|| "malformed operation journal command field".to_owned())?;
+                (revision, Some(decode_hex(command)?), fields[7])
+            } else {
+                (revision, None, fields[6])
+            }
         } else {
             if fields.len() != 6 {
                 return Err("malformed operation journal completed record".to_owned());
             }
-            (0, fields[5])
+            (0, None, fields[5])
         };
         let payloads = if let Some(encoded) = results_field.strip_prefix("results=") {
             if encoded.is_empty() {
@@ -710,13 +752,29 @@ fn load_operation_journal(
         } else {
             return Err("malformed operation journal result field".to_owned());
         };
+        let prior_command_payload = match operations.remove(&OperationKey {
+            account_id,
+            character_id,
+            operation_id,
+        }) {
+            Some(PersistedOperation::Prepared(command_payload)) => Some(command_payload),
+            Some(PersistedOperation::Completed {
+                command_payload, ..
+            }) => command_payload,
+            _ => None,
+        };
+        let command_payload = command_payload.or(prior_command_payload);
         operations.insert(
             OperationKey {
                 account_id,
                 character_id,
                 operation_id,
             },
-            PersistedOperation::Completed { revision, payloads },
+            PersistedOperation::Completed {
+                revision,
+                payloads,
+                command_payload,
+            },
         );
     }
     Ok(operations)
@@ -745,6 +803,7 @@ fn append_operation_journal(path: &Path, job: &OperationJournalJob) -> Result<()
         OperationJournalJob::Complete {
             key,
             revision,
+            command_payload,
             result_payloads,
         } => {
             let results = result_payloads
@@ -753,8 +812,13 @@ fn append_operation_journal(path: &Path, job: &OperationJournalJob) -> Result<()
                 .collect::<Vec<_>>()
                 .join(",");
             format!(
-                "version=2\tcompleted\taccount={}\tcharacter={}\toperation={}\trevision={}\tresults={}",
-                key.account_id, key.character_id, key.operation_id, revision, results
+                "version=2\tcompleted\taccount={}\tcharacter={}\toperation={}\trevision={}\tcommand={}\tresults={}",
+                key.account_id,
+                key.character_id,
+                key.operation_id,
+                revision,
+                encode_hex(command_payload),
+                results
             )
         }
         OperationJournalJob::Failed { key, reason } => format!(
@@ -1244,6 +1308,7 @@ mod tests {
             .try_enqueue(OperationJournalJob::Complete {
                 key,
                 revision: 7,
+                command_payload: vec![0x09, 0x08],
                 result_payloads: vec![vec![0x01, 0xa5, 0xff]],
             })
             .expect("result should enter bounded queue");
@@ -1311,6 +1376,7 @@ mod tests {
             .try_enqueue(OperationJournalJob::Complete {
                 key,
                 revision: 42,
+                command_payload: Vec::new(),
                 result_payloads: vec![vec![0xaa, 0xbb]],
             })
             .expect("completed operation should enter bounded queue");
@@ -1331,6 +1397,7 @@ mod tests {
             Some(&PersistedOperation::Completed {
                 revision: 42,
                 payloads: vec![vec![0xaa, 0xbb]],
+                command_payload: Some(Vec::new()),
             })
         );
         let _ = fs::remove_file(path);
