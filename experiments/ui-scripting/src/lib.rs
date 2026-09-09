@@ -37,6 +37,7 @@ pub const DEFAULT_MAX_MEMORY_BYTES: usize = 4 * 1024 * 1024;
 pub const DEFAULT_MAX_INSTRUCTIONS: u64 = 100_000;
 pub const DEFAULT_MAX_OPERATIONS: usize = 512;
 const MAX_TEXT_BYTES: usize = 4 * 1024;
+const MAX_SECURE_INTENTS: usize = 64;
 static NEXT_NODE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_PACKAGE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -966,6 +967,11 @@ impl AddonRunner {
         let mut host = self.host.borrow_mut();
         host.check_owner(node_id)
             .map_err(|error| AddonError::Runtime(error.to_string()))?;
+        if host.secure_intents.len() >= MAX_SECURE_INTENTS {
+            return Err(AddonError::Runtime(
+                "secure intent budget exceeded".to_owned(),
+            ));
+        }
         host.secure_intents.push(SecureIntent {
             action: action.to_owned(),
             node_id,
@@ -1324,6 +1330,23 @@ mod tests {
         );
         assert!(first.secure_input(node_id, "basic_attack").is_ok());
         assert!(second.secure_input(node_id, "open").is_err());
+    }
+
+    #[test]
+    fn secure_intent_retention_is_bounded() {
+        let source = r#"ui.create_panel("secure")"#;
+        let mut runner = AddonRunner::load("bounded", source, AddonPolicy::default()).unwrap();
+        let node_id = runner.snapshot().nodes[0].id;
+        for _ in 0..MAX_SECURE_INTENTS {
+            runner
+                .secure_input(node_id, "basic_attack")
+                .expect("secure intent should fit its host budget");
+        }
+        assert_eq!(
+            runner.secure_input(node_id, "basic_attack").unwrap_err(),
+            AddonError::Runtime("secure intent budget exceeded".to_owned())
+        );
+        assert_eq!(runner.snapshot().secure_intents.len(), MAX_SECURE_INTENTS);
     }
 
     #[test]

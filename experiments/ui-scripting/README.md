@@ -22,8 +22,9 @@ caller may use `AddonRunner::secure_input` after validating ownership; that
 operation is deliberately outside the Lua environment and currently accepts
 only the allowlisted `basic_attack` action.
 
-The runner enforces source-size, memory, instruction, UI-node, event, and text
-limits. A callback is applied as one host-state transaction: if it fails, its
+The runner enforces source-size, memory, instruction, UI-node, event, text,
+and retained secure-intent limits. A callback is applied as one host-state
+transaction: if it fails, its
 panel mutations are rolled back before the addon is disabled and the failure
 is recorded. Runtime errors disable only the failing addon and are recorded in
 its diagnostics. Contract `UiEvent`s enter a bounded queue before dispatch;

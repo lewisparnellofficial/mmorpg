@@ -104,6 +104,10 @@ set/delete request in one rolling minute is rejected without changing the
 last committed file. The commit budget is shared by sets and deletes and is
 enforced on the off-thread persistence owner.
 
+The host also bounds retained native secure-intent diagnostics at 64 entries;
+the next host submission is rejected rather than growing the addon state
+without limit.
+
 These are local test observations, not production capacity measurements or a
 security proof.
 

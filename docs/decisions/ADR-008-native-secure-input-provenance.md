@@ -78,6 +78,8 @@ model.
 - A trusted dispatch is single-use and tied to current physical, focus, node,
   and addon generations.
 - Native input state is not serializable into addon values or replay fixtures.
+- Retained secure-intent diagnostics have a bounded 64-entry host budget;
+  exceeding it fails closed rather than growing addon state indefinitely.
 - The current implementation supports one real Bevy secure-action
   presentation path and native dispatch integration, not every future widget
   or pointer interaction.
