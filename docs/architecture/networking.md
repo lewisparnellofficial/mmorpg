@@ -81,6 +81,12 @@ The server must avoid broadcasting the entire world to every connected client. I
 
 Players should not receive information about entities they cannot legitimately perceive. This is both a scalability and gameplay-security requirement.
 
+The current development boundary has a first privacy floor: typed bootstrap
+snapshots contain only the bound player's player record, and player-private
+vendor, loot, quest, and transaction events are addressed to that session.
+Public world/combat events are still broadcast; spatial `Nearby` filtering and
+party audiences remain future work.
+
 ## Large encounter requirements
 
 The server must be benchmarked with:

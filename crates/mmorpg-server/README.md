@@ -124,8 +124,10 @@ another player.
 
 `snapshot` returns a temporary machine-readable bootstrap response for the
 graphical client. It is framed by `TEMP_SNAPSHOT_BEGIN version=2` and
-`TEMP_SNAPSHOT_END`; the records between those markers include the authoritative
-world summary and player/NPC state. Each player record carries its explicit
+`TEMP_SNAPSHOT_END`; the typed snapshot carries the bound player's authoritative
+player state and the NPC state visible in the starter zone. Player-private
+vendor, loot, quest, and transaction events are addressed only to the bound
+session. Each player record carries its explicit
 inventory `capacity`, alongside inventory and quest records. Text values are
 percent-encoded. This development response is not the future production wire
 protocol.

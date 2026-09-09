@@ -572,7 +572,16 @@ impl Server {
     }
 
     fn send_wire_machine_snapshot(&mut self, client_id: u64) {
-        let snapshot = wire_snapshot(&self.world);
+        let Some(player_id) = self
+            .wire_clients
+            .iter()
+            .find(|client| client.id == client_id)
+            .and_then(|client| client.player_id)
+        else {
+            self.queue_wire_error(client_id, "connect first".to_owned());
+            return;
+        };
+        let snapshot = wire_snapshot_for_player(&self.world, player_id);
         if let Some(client) = self
             .wire_clients
             .iter_mut()
@@ -916,11 +925,14 @@ impl Server {
     }
 
     fn broadcast_wire_event(&mut self, event: &Event) {
+        let recipient = event_recipient(event);
         let Some(event) = wire_event(event) else {
             return;
         };
         for client in &mut self.wire_clients {
-            if !client.closed {
+            if !client.closed
+                && recipient.is_none_or(|player_id| client.player_id == Some(player_id))
+            {
                 client.queue_server_message(&ServerMessage::Event(event.clone()));
             }
         }
@@ -1230,6 +1242,31 @@ fn wire_snapshot(world: &World) -> WorldSnapshot {
         vendor_count: summary.vendor_count as u32,
         players: world.players().map(wire_live_player).collect(),
         npcs: world.npcs().map(wire_npc).collect(),
+    }
+}
+
+fn wire_snapshot_for_player(world: &World, player_id: EntityId) -> WorldSnapshot {
+    let mut snapshot = wire_snapshot(world);
+    snapshot
+        .players
+        .retain(|player| player.player_id == player_id.0);
+    snapshot.player_count = snapshot.players.len() as u32;
+    snapshot
+}
+
+fn event_recipient(event: &Event) -> Option<EntityId> {
+    match event {
+        Event::VendorListed { player_id, .. }
+        | Event::ItemPurchased { player_id, .. }
+        | Event::LootRewarded { player_id, .. }
+        | Event::TransactionRejected { player_id, .. }
+        | Event::QuestOffersListed { player_id, .. }
+        | Event::QuestAccepted { player_id, .. }
+        | Event::QuestProgressed { player_id, .. }
+        | Event::QuestCompleted { player_id, .. }
+        | Event::QuestRewarded { player_id, .. }
+        | Event::QuestRejected { player_id, .. } => Some(*player_id),
+        _ => None,
     }
 }
 
@@ -1980,6 +2017,43 @@ mod tests {
         assert!(!server.character_reserved_by_other(2, 8, 42));
         assert!(!server.character_reserved_by_other(2, 7, 43));
         assert!(!server.character_reserved_by_other(1, 7, 42));
+    }
+
+    #[test]
+    fn private_events_and_snapshots_are_scoped_to_the_bound_player() {
+        let player_id = EntityId(7);
+        let other_id = EntityId(8);
+        assert_eq!(
+            event_recipient(&Event::ItemPurchased {
+                player_id,
+                vendor_id: EntityId(1),
+                item_id: ItemId::TOWN_RATION,
+                quantity: 1,
+                total_price: 2,
+                gold_remaining: 18,
+            }),
+            Some(player_id)
+        );
+        assert_eq!(
+            event_recipient(&Event::EnemyDefeated { enemy_id: other_id }),
+            None
+        );
+
+        let mut world = World::new_starter_zone();
+        world.step([
+            Command::JoinPlayer {
+                name: "One".to_owned(),
+                role: Role::Tank,
+            },
+            Command::JoinPlayer {
+                name: "Two".to_owned(),
+                role: Role::Healer,
+            },
+        ]);
+        let snapshot = wire_snapshot_for_player(&world, EntityId(5));
+        assert_eq!(snapshot.players.len(), 1);
+        assert_eq!(snapshot.players[0].player_id, 5);
+        assert_eq!(snapshot.player_count, 1);
     }
 
     #[test]
