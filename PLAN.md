@@ -1,7 +1,9 @@
 # MMORPG Integration Gates and First Vertical Slice Plan
 
-**Status:** Active planning baseline. Architecture choices remain provisional
-until their named integration tests, experiment records, and ADR gates pass.
+**Status:** Active planning baseline. The implementation and evidence below
+cover the typed-wire, UI-contract, secure-input, addon-hardening, and first
+vertical-slice development gates; architecture choices remain provisional
+where their named hardware or renderer-quality gates are still open.
 
 This plan closes the editor, typed-wire, and UI-scripting technology-spike
 gaps, proves secure input and addon isolation, and then freezes those programs
@@ -10,15 +12,19 @@ vertical slice.
 
 ## Baseline and governing decisions
 
-As of 2026-09-07, `./scripts/validate-all.sh` passes from a clean working tree.
-Typed wire already covers loopback development authentication, explicit
-character selection, world entry, starter-loop commands/events, reconnect, and
-atomic snapshot projection, but it remains opt-in beside an unauthenticated
-line-gameplay listener. `mmorpg-editor-core` has a bounded tablet bridge,
-pressure-aware height editing, deterministic persistence, and stroke-level
-undo/redo, but no native shell or hardware evidence. The Luau spike has eight
-passing tests but no language-neutral contract, package model, event queue,
-saved data, renderer integration, or genuine secure-input provenance.
+As of 2026-09-09, `./scripts/validate-all.sh` passes from a clean working tree.
+Typed wire covers loopback development authentication, explicit character
+selection, world entry, starter-loop commands/events, reconnect, atomic
+snapshot projection, compatibility fixtures, content-digest validation, and
+the complete typed gameplay path. It is the only runtime gameplay listener;
+retained line parsing is limited to inert compatibility and equivalence tests.
+`mmorpg-editor-core` has a bounded tablet bridge, pressure-aware height
+editing, deterministic persistence, stroke-level undo/redo, and a Qt/Quick3D
+shell, but the physical tablet and fixed renderer-latency gates remain open.
+The Luau spike now sits behind a language-neutral contract with package
+validation, bounded queues, saved data, secure-input presentation, and
+adversarial/fuzz evidence; the production runtime/isolation decision remains
+provisional.
 
 Owner decisions incorporated here:
 

@@ -1,25 +1,41 @@
 # Next Steps
 
-## 1. Prove the editor with a real native tablet shell
+## 1. Complete the editor’s physical tablet gate
 
-Build the smallest Linux editor shell that connects an actual Qt or SDL tablet callback to `TabletEventBridge`. Demonstrate physical proximity, press, motion, release, cancellation, pressure-based terrain editing, mouse fallback, stroke replay, save/reload, and stroke-level undo; record hardware and responsiveness results in a new experiment instead of treating synthetic unit tests as hardware evidence.
+The Qt/Quick3D shell and the device-neutral bridge are implemented. Run the
+shell with an actual pressure-sensitive Wayland tablet and record physical
+proximity, press, motion, release, cancellation, pressure-based terrain
+editing, mouse fallback, stroke replay, save/reload, and stroke-level undo in
+EXP-007. Synthetic and headless tests cannot close this gate.
 
-## 2. Make typed wire the default client path
+## 2. Close the renderer-quality gate
 
-Move the graphical client and launch scripts to typed-wire mode by default, covering authentication, character selection, world entry, snapshot bootstrap, events, reconnect, and stale-entity replacement. Keep the line protocol only as a diagnostic fallback until equivalence tests pass, then close or remove its unauthenticated gameplay surface according to the protocol plan.
+The release Wayland Vulkan path now passes the bounded frame-time limits and
+has no loader or validation diagnostics. The debug path still reports
+application-visible swapchain layout/semaphore validation errors on the
+documented NVIDIA host. Resolve or independently validate that behavior on a
+supported renderer/driver, then update EXP-011; do not hide the diagnostics.
 
-## 3. Stabilize the versioned UI host contract
+## 3. Decide the addon runtime boundary
 
-Turn the current Luau API into an explicit language-neutral `ui.v1` contract with immutable view-model records, event names, bounded queues, coalescing rules, error semantics, and version compatibility behavior. Define bounded saved-data storage and package-manifest responsibilities before adding a larger widget or gameplay-facing API.
+The `ui.v1` contract, package model, bounded storage, secure-input boundary,
+adversarial gate, extended fuzz corpus, and Wasmi comparison are implemented.
+Use that evidence to accept a runtime ADR only after deciding whether Luau’s
+native embedding is sufficient or the stronger Wasmi isolation boundary is
+required. Keep the decision provisional until the host/process isolation and
+minimum-hardware evidence are available.
 
-## 4. Implement real secure-input provenance
+## 4. Finish the first vertical-slice acceptance record
 
-Replace the prototype’s native-only `secure_input` placeholder with a design and testable token flow tied to trusted physical input context. Prove that scripts can render and configure action presentation but cannot activate protected actions from timers, event callbacks, replayed tokens, forged handles, or addon-to-addon calls; retain server authority as the final validation layer.
+The authoritative three-role encounter, party privacy, recovery, loot
+generations, typed reconnect, persistence, retry, slow-client, and release
+graphical smokes pass. Complete the remaining graphical/physical evidence
+required by Milestone 13, including durable progress across restart and the
+documented renderer-quality limitation.
 
-## 5. Harden the addon boundary adversarially
+## 5. Return to post-slice production work
 
-Extend the eight passing Luau tests with fuzzing and stress coverage for event payloads, value conversion, handle ownership, recursion, allocation, event storms, repeated failures, unload/reload, and disabled-addon behavior. Calibrate instruction, memory, queue, node, and storage budgets on the minimum supported Linux client, and compare against Wasm only if Luau exposes a concrete isolation or resource-control limitation.
-
-## 6. Return to the main vertical slice
-
-Once the editor and addon experiments have real integration evidence, stop expanding technology spikes and resume the main gameplay sequence. Select the next authoritative-server milestone from the generated `PLAN.md`, preserving typed identity, audience filtering, bounded intake, durable commit-before-publish behavior, and the repository’s existing validation/documentation workflow.
+After the open gates are resolved or explicitly accepted as development
+limitations, freeze editor/addon expansion and select the next authoritative
+server milestone from PLAN.md. Keep production authentication, capacity,
+interest-management, and durable-storage claims out of the development slice.
