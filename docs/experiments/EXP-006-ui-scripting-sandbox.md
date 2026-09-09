@@ -3,7 +3,7 @@
 **Status:** Measured local technology spike plus a provisional language-neutral
 host contract; production decision remains provisional
 
-**Date:** 2026-09-07
+**Date:** 2026-09-09
 
 ## Objective
 
@@ -66,11 +66,12 @@ Run from the repository root on the measured Linux development environment:
 cargo fmt --manifest-path experiments/ui-scripting/Cargo.toml -- --check
 cargo test --manifest-path experiments/ui-scripting/Cargo.toml
 cargo run --quiet --manifest-path experiments/ui-scripting/Cargo.toml
+./scripts/smoke-ui-adversarial.sh
 ```
 
 ## Measured local results
 
-The standalone test suite completed with **15 passed, 0 failed**. The tests
+The standalone test suite completed with **19 passed, 0 failed**. The tests
 covered:
 
 - the default UI and an addon using the same public functions;
@@ -89,13 +90,36 @@ covered:
 - rollback of callback registrations made by a failed callback;
 - pre-VM manifest and source-integrity rejection;
 - account/package-scoped storage sharing and account isolation; and
-- rollback of storage writes made by a failed callback.
+- rollback of storage writes made by a failed callback;
+- ordered-event storm isolation from the default UI; and
+- a deterministic hostile-source corpus covering loops, recursion, memory
+  growth, forbidden libraries, and oversized diagnostics.
 
 The demo process also completed and reported one created panel, one registered
 event, zero secure intents, and zero errors after a normal event dispatch.
 
 These are local test observations, not production capacity measurements or a
 security proof.
+
+### Adversarial and runtime gate
+
+The aggregate gate now runs `scripts/smoke-ui-adversarial.sh`. It repeats a
+bounded addon load and callback workload 100 times, exercises the hostile
+source corpus and ordered-queue isolation tests, and prints local timing
+percentiles. The 2026-09-09 run on CachyOS Linux, kernel
+`7.2.2-1-cachyos`, x86_64, AMD Ryzen 7 2700X, reported:
+
+```text
+iterations=100
+load p50=639026 ns, p95=997021 ns, max=1351470 ns
+callback p50=36484 ns, p95=55596 ns, max=67734 ns
+```
+
+The callback measurement is the average of ten dispatches within each sample;
+the load measurement includes VM construction and source execution. These are
+repeatable local observations for quota calibration, not a universal
+performance guarantee. The gate does not yet provide coverage-guided fuzzing,
+renderer frame-time data, OS/process isolation, or minimum-hardware proof.
 
 ## Result
 
@@ -116,9 +140,10 @@ mode, because sandbox mode makes the global table read-only.
 - The host integration covers one real Bevy secure-action presentation and
   native dispatch path, but does not yet cover every pointer hit-test,
   reload, overlay, or addon-unload scenario end to end.
-- There is no full scripted-HUD renderer integration, event-queue backpressure
-  measurement, wall-clock benchmark, fuzzing campaign, or minimum-hardware
-  calibration.
+- There is no full scripted-HUD renderer integration, coverage-guided fuzzing
+  campaign, OS/process isolation, or minimum-hardware calibration. The new
+  adversarial gate is deterministic stress/regression coverage rather than a
+  claim of exhaustive fuzzing.
 - The empty `game` namespace is a placeholder, not the final public API.
 - Callback rollback covers host state, staged panel operations, and
   registrations made during callbacks; initial script-load registration still
@@ -131,10 +156,10 @@ mode, because sandbox mode makes the global table read-only.
   built-in source strings; package repository loading is tested in the
   adapter, but is not yet the client package-discovery path.
 
-Next work should add manifest/value-boundary fuzzing, calibrate quotas on the
-minimum supported Linux client, and compare the same language-neutral contract
-with a stronger Wasm isolation alternative before accepting an architecture
-decision.
+Next work should add coverage-guided manifest/value-boundary fuzzing, calibrate
+quotas on the minimum supported Linux client, and compare the same
+language-neutral contract with a stronger Wasm isolation alternative before
+accepting an architecture decision.
 
 ## Evidence classification
 

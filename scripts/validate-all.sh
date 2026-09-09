@@ -101,6 +101,7 @@ run_manifest_checks tools/mmorpg-content-check/Cargo.toml "content check"
 run_manifest_checks tools/mmorpg-wire-cli/Cargo.toml "typed diagnostic CLI"
 run_step "typed diagnostic smoke" "$repo_root/scripts/smoke-typed-diagnostic.sh"
 run_manifest_checks experiments/ui-scripting/Cargo.toml "UI scripting"
+run_step "UI scripting adversarial smoke" "$repo_root/scripts/smoke-ui-adversarial.sh"
 
 run_manifest_checks experiments/wire-gameplay-smoke/Cargo.toml "wire gameplay smoke"
 run_step "slow-client smoke" "$repo_root/scripts/smoke-slow-client.sh"

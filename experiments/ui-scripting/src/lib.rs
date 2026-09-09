@@ -1656,4 +1656,68 @@ mod tests {
         )
         .unwrap();
     }
+
+    #[test]
+    fn ordered_event_storm_disables_only_the_overloaded_addon() {
+        let mut overloaded = AddonRunner::load(
+            "overloaded",
+            r#"ui.on("combat.received", function() end)"#,
+            AddonPolicy::default(),
+        )
+        .unwrap();
+        for _ in 0..mmorpg_ui_contract::DEFAULT_EVENT_COUNT {
+            assert_eq!(
+                overloaded.enqueue_event(UiEvent::ordered("combat.received")),
+                QueueOutcome::Enqueued
+            );
+        }
+        assert_eq!(
+            overloaded.enqueue_event(UiEvent::ordered("combat.received")),
+            QueueOutcome::Disabled
+        );
+        assert!(overloaded.is_disabled());
+
+        let mut healthy = AddonRunner::load(
+            "healthy",
+            r#"ui.create_panel("default UI remains available")"#,
+            AddonPolicy::default(),
+        )
+        .unwrap();
+        assert!(!healthy.is_disabled());
+        assert_eq!(
+            healthy.deliver_event("frame", &state()),
+            DispatchResult::Applied
+        );
+        assert_eq!(healthy.snapshot().nodes.len(), 1);
+    }
+
+    #[test]
+    fn hostile_source_corpus_fails_closed_without_affecting_a_new_runner() {
+        let corpus = [
+            "while true do end",
+            "local function recurse() return recurse() end; recurse()",
+            "local x = {}; for i = 1, 100000 do x[i] = string.rep('x', 128) end",
+            "assert(io == nil); assert(os == nil); assert(require == nil)",
+            "error(string.rep('diagnostic', 4096))",
+        ];
+        for (index, source) in corpus.into_iter().enumerate() {
+            let policy = AddonPolicy {
+                max_instructions: 2_000,
+                max_memory_bytes: 256 * 1024,
+                ..AddonPolicy::default()
+            };
+            let result = AddonRunner::load(format!("hostile-{index}"), source, policy);
+            assert!(
+                result.is_err(),
+                "hostile corpus entry {index} unexpectedly loaded"
+            );
+        }
+        let healthy = AddonRunner::load(
+            "after-hostile-corpus",
+            "ui.create_panel('still isolated')",
+            AddonPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(healthy.snapshot().nodes[0].text, "still isolated");
+    }
 }

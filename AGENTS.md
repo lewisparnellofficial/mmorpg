@@ -261,6 +261,7 @@ cargo test --manifest-path tools/mmorpg-editor-core/Cargo.toml
 ./scripts/smoke-editor-bridge.sh
 cargo test --manifest-path experiments/client-presentation-replay/Cargo.toml
 cargo run --quiet --manifest-path experiments/client-presentation-replay/Cargo.toml
+./scripts/smoke-ui-adversarial.sh
 ```
 
 Qt editor shell configure/build check (does not launch a window):

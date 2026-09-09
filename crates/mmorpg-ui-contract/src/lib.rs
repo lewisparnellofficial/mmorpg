@@ -580,6 +580,38 @@ mod tests {
         assert!(q.stats().disabled);
     }
     #[test]
+    fn queue_pressure_drops_replaceable_state_once_and_then_disables_ordered_work() {
+        let mut q = EventQueue::new(2, 10_000).unwrap();
+        assert_eq!(
+            q.push(UiEvent::replaceable(
+                "player.updated",
+                "player",
+                ViewRecord::new("A", None, 0, 0),
+            )),
+            QueueOutcome::Enqueued
+        );
+        q.push(UiEvent::ordered("combat.received"));
+        assert_eq!(
+            q.push(UiEvent::replaceable(
+                "target.updated",
+                "target",
+                ViewRecord::new("A", Some("Wolf".into()), 0, 0),
+            )),
+            QueueOutcome::Enqueued
+        );
+        assert_eq!(q.stats().dropped, 1);
+        assert_eq!(
+            q.push(UiEvent::ordered("notification.received")),
+            QueueOutcome::Enqueued
+        );
+        assert_eq!(
+            q.push(UiEvent::ordered("host-error")),
+            QueueOutcome::Disabled
+        );
+        assert_eq!(q.stats().dropped, 2);
+        assert!(q.stats().disabled);
+    }
+    #[test]
     fn operations_are_atomic_on_foreign_or_stale_handles() {
         let (package, generation, node) = ids();
         let good = Handle {
