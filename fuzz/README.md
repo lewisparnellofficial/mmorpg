@@ -21,8 +21,8 @@ Run a bounded local smoke from the repository root:
 For a longer campaign, use the standard cargo-fuzz options, for example:
 
 ```bash
-RUSTUP_TOOLCHAIN=nightly cargo fuzz run \
-  --manifest-path fuzz/Cargo.toml ui-boundaries -- -max_total_time=300
+(cd fuzz && RUSTUP_TOOLCHAIN=nightly cargo fuzz run \
+  ui-boundaries -- -max_total_time=300)
 ```
 
 The normal aggregate validator remains usable without cargo-fuzz. Set

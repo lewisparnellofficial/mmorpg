@@ -264,6 +264,8 @@ cargo test --manifest-path tools/mmorpg-editor-core/Cargo.toml
 cargo test --manifest-path experiments/client-presentation-replay/Cargo.toml
 cargo run --quiet --manifest-path experiments/client-presentation-replay/Cargo.toml
 ./scripts/smoke-ui-adversarial.sh
+# Optional nightly libFuzzer boundary campaign (requires cargo-fuzz):
+MMORPG_RUN_FUZZ=1 ./scripts/validate-all.sh
 ```
 
 Qt editor shell configure/build check (does not launch a window):
