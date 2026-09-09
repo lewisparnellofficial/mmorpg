@@ -204,25 +204,52 @@ fn main() {
         .next()
         .unwrap_or_else(|| DEFAULT_SERVER_ADDRESS.to_owned());
     let mut wire_address = None;
+    let mut preferred_character_id = None;
     while let Some(argument) = arguments.next() {
-        if argument != "--wire-address" {
-            eprintln!("unknown argument '{argument}'");
-            return;
-        }
-        if wire_address.is_some() {
-            eprintln!("--wire-address may only be specified once");
-            return;
-        }
-        wire_address = arguments.next();
-        if wire_address.is_none() {
-            eprintln!("--wire-address requires an address");
-            return;
+        match argument.as_str() {
+            "--wire-address" => {
+                if wire_address.is_some() {
+                    eprintln!("--wire-address may only be specified once");
+                    return;
+                }
+                wire_address = arguments.next();
+                if wire_address.is_none() {
+                    eprintln!("--wire-address requires an address");
+                    return;
+                }
+            }
+            "--character-id" => {
+                if preferred_character_id.is_some() {
+                    eprintln!("--character-id may only be specified once");
+                    return;
+                }
+                let Some(value) = arguments.next() else {
+                    eprintln!("--character-id requires a numeric character ID");
+                    return;
+                };
+                match value.parse::<u64>() {
+                    Ok(0) | Err(_) => {
+                        eprintln!("--character-id must be a non-zero numeric character ID");
+                        return;
+                    }
+                    Ok(character_id) => preferred_character_id = Some(character_id),
+                }
+            }
+            _ => {
+                eprintln!("unknown argument '{argument}'");
+                return;
+            }
         }
     }
     let typed_address = wire_address.unwrap_or_else(|| server_address.clone());
     let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel();
-    spawn_wire_network_worker(typed_address.clone(), command_rx, event_tx);
+    spawn_wire_network_worker(
+        typed_address.clone(),
+        preferred_character_id,
+        command_rx,
+        event_tx,
+    );
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -462,6 +489,7 @@ fn setup_ui(mut commands: Commands) {
 /// presentation adapter.
 fn spawn_wire_network_worker(
     server_address: String,
+    preferred_character_id: Option<u64>,
     command_rx: Receiver<ClientCommand>,
     event_tx: Sender<NetworkEvent>,
 ) {
@@ -644,6 +672,21 @@ fn spawn_wire_network_worker(
                             "authenticated account has no characters".to_owned(),
                         ));
                         continue;
+                    }
+                    if let ServerMessage::CharacterList { characters, .. } = &message
+                        && let Some(character_id) = preferred_character_id
+                        && characters
+                            .iter()
+                            .any(|character| character.character_id == character_id)
+                    {
+                        queue_session_outputs(
+                            &mut outgoing,
+                            session.handle(SessionInput::SelectCharacter(character_id)),
+                        );
+                        println!("selecting startup character {character_id}");
+                        let _ = event_tx.send(NetworkEvent::Status(format!(
+                            "selecting startup character {character_id}"
+                        )));
                     }
                     if matches!(message, ServerMessage::Snapshot(_)) {
                         while let Some(command) = deferred_commands.pop_front() {
@@ -1600,7 +1643,7 @@ mod tests {
 
         let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let (event_tx, event_rx) = mpsc::channel();
-        spawn_wire_network_worker(address, command_rx, event_tx);
+        spawn_wire_network_worker(address, None, command_rx, event_tx);
 
         let character_list = wait_for_test_character_list(&event_rx);
         assert_eq!(character_list[0].character_id, 7);
