@@ -72,8 +72,10 @@ durability.
 
 Implemented as a local development prototype. `mmorpg-core` now validates a
 durable player restore state and resets transient combat/session state. The
-development repository can atomically write and load a strict version-1
+development repository can atomically write and load a strict version-2
 checkpoint when `mmorpg-server` is started with `--character-store <file>`.
+Checkpoint files are namespaced by authenticated account ID and stable
+character ID, and the reader exposes the stored revision before world entry.
 
 Directly measured on 2026-09-06: a fresh server completed the starter wire
 gameplay smoke with a checkpoint store, then a second fresh server process
@@ -86,7 +88,9 @@ this exact two-process scenario with an isolated temporary checkpoint path.
 This remains a local prototype, not production durability. The current write
 policy is bounded periodic checkpointing (20 simulation ticks at the default
 20 Hz) plus a safe-logout checkpoint; it is not a per-tick durability claim.
-It does not yet
-provide a transaction journal, retry/idempotency keys, fsync of the parent
-directory, multi-character storage, concurrent writers, migration tooling, or
+The local operation journal now persists retryable operation IDs, revisions,
+original command payloads, and result payloads off the simulation owner, and
+reconciles a completed command against an older checkpoint on restart. It does
+not yet provide database transactions or cross-process fencing, fsync of the
+parent directory, concurrent-writer coordination, migration tooling, or
 PostgreSQL-backed account data.
