@@ -3472,6 +3472,54 @@ mod tests {
     }
 
     #[test]
+    fn slow_client_delivery_is_bounded_and_evicted() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let _peer = TcpStream::connect(address).expect("connect test peer");
+        let (stream, _) = listener.accept().expect("accept test peer");
+        let mut client = WireClient::new(1, stream);
+
+        for _ in 0..20_000 {
+            client.queue_server_message(&ServerMessage::Welcome {
+                server: "mmorpg".to_owned(),
+            });
+            if client.closed {
+                break;
+            }
+        }
+
+        assert!(client.closed, "a saturated client must be evicted");
+        assert!(client.output.len() <= MAX_WIRE_OUTPUT_BYTES);
+
+        let replaceable_listener =
+            TcpListener::bind("127.0.0.1:0").expect("bind replaceable test listener");
+        let replaceable_address = replaceable_listener
+            .local_addr()
+            .expect("replaceable listener address");
+        let _replaceable_peer =
+            TcpStream::connect(replaceable_address).expect("connect replaceable test peer");
+        let (replaceable_stream, _) = replaceable_listener
+            .accept()
+            .expect("accept replaceable test peer");
+        let mut replaceable_client = WireClient::new(2, replaceable_stream);
+        for key in 0..=MAX_REPLACEABLE_EVENTS as u64 {
+            replaceable_client.queue_replaceable_server_message(
+                key,
+                ServerMessage::Event(ServerEvent::PlayerMoved {
+                    player_id: key,
+                    position: mmorpg_wire::PositionState { x: 0.0, y: 0.0 },
+                    area: ZoneAreaCode::Town,
+                }),
+            );
+        }
+        assert!(replaceable_client.closed);
+        assert_eq!(
+            replaceable_client.replaceable_events.len(),
+            MAX_REPLACEABLE_EVENTS
+        );
+    }
+
+    #[test]
     fn machine_snapshot_has_stable_bootstrap_records() {
         let mut world = World::new_starter_zone();
         world.step([Command::JoinPlayer {
