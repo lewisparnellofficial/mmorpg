@@ -15,7 +15,9 @@ use std::rc::Rc;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
+    mpsc::{self, Receiver, SyncSender, TrySendError},
 };
+use std::thread::{self, JoinHandle};
 
 use mlua::{Function, Lua, Result as LuaResult, VmState};
 pub use mmorpg_ui_contract::ViewRecord;
@@ -24,7 +26,7 @@ use mmorpg_ui_contract::{
     Storage, StorageNamespace, StoredValue, UiEvent, UiLimits, UiOperation, validate_manifest,
     validate_operations,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const DEFAULT_MAX_NODES: usize = 64;
@@ -217,6 +219,172 @@ impl PackageRepository {
         let source = read_bounded(&entry, policy.max_script_bytes)?;
         AddonRunner::load_from_manifest(&manifest, &source, policy, known_capabilities, package_ids)
     }
+}
+
+const STORAGE_QUEUE_CAPACITY: usize = 32;
+const MAX_STORAGE_FILE_BYTES: usize = mmorpg_ui_contract::MAX_STORAGE_BYTES + 16 * 1024;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StorageFile {
+    schema_version: u32,
+    values: BTreeMap<String, StoredValue>,
+}
+
+enum StorageJob {
+    Set {
+        request_id: u64,
+        key: String,
+        value: StoredValue,
+    },
+    Delete { request_id: u64, key: String },
+    Stop,
+}
+
+pub struct StorageResult {
+    pub request_id: u64,
+    pub result: Result<(), String>,
+}
+
+/// Bounded off-thread persistence for one account/package/schema namespace.
+/// The caller only queues validated values and polls ordered results; the
+/// worker owns all file writes and atomically replaces the last good file.
+pub struct StorageWorker {
+    sender: Option<SyncSender<StorageJob>>,
+    results: Receiver<StorageResult>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl StorageWorker {
+    pub fn open(path: PathBuf, namespace: StorageNamespace) -> Result<Self, AddonError> {
+        let mut initial = Storage::default();
+        if path.exists() {
+            let source = read_bounded(&path, MAX_STORAGE_FILE_BYTES)?;
+            let file: StorageFile = toml::from_str(&source)
+                .map_err(|error| AddonError::PackageParse(error.to_string()))?;
+            if file.schema_version != namespace.schema_version {
+                return Err(AddonError::PackageParse(
+                    "storage schema version mismatch".into(),
+                ));
+            }
+            initial
+                .replace_namespace(namespace.clone(), file.values)
+                .map_err(|error| AddonError::PackageParse(error.to_string()))?;
+        }
+        let (sender, receiver) = mpsc::sync_channel(STORAGE_QUEUE_CAPACITY);
+        let (result_sender, results) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("mmorpg-addon-storage".to_owned())
+            .spawn(move || {
+                let mut storage = initial;
+                while let Ok(job) = receiver.recv() {
+                    match job {
+                        StorageJob::Set {
+                            request_id,
+                            key,
+                            value,
+                        } => {
+                            let mut candidate = storage.clone();
+                            let result = candidate
+                                .set(namespace.clone(), key, value)
+                                .map_err(|error| error.to_string())
+                                .and_then(|()| persist_namespace(&path, &candidate, &namespace));
+                            if result.is_ok() {
+                                storage = candidate;
+                            }
+                            let _ = result_sender.send(StorageResult { request_id, result });
+                        }
+                        StorageJob::Delete { request_id, key } => {
+                            let mut candidate = storage.clone();
+                            candidate.delete(&namespace, &key);
+                            let result = persist_namespace(&path, &candidate, &namespace);
+                            if result.is_ok() {
+                                storage = candidate;
+                            }
+                            let _ = result_sender.send(StorageResult { request_id, result });
+                        }
+                        StorageJob::Stop => break,
+                    }
+                }
+            })
+            .map_err(|error| AddonError::PackageIo(format!("cannot start storage worker: {error}")))?;
+        Ok(Self {
+            sender: Some(sender),
+            results,
+            thread: Some(thread),
+        })
+    }
+
+    pub fn set(
+        &self,
+        request_id: u64,
+        key: String,
+        value: StoredValue,
+    ) -> Result<(), String> {
+        let sender = self.sender.as_ref().ok_or_else(|| "worker stopped".to_owned())?;
+        sender
+            .try_send(StorageJob::Set {
+                request_id,
+                key,
+                value,
+            })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => "storage queue is full".to_owned(),
+                TrySendError::Disconnected(_) => "storage worker disconnected".to_owned(),
+            })
+    }
+
+    pub fn delete(&self, request_id: u64, key: String) -> Result<(), String> {
+        let sender = self.sender.as_ref().ok_or_else(|| "worker stopped".to_owned())?;
+        sender
+            .try_send(StorageJob::Delete { request_id, key })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => "storage queue is full".to_owned(),
+                TrySendError::Disconnected(_) => "storage worker disconnected".to_owned(),
+            })
+    }
+
+    pub fn try_result(&self) -> Option<StorageResult> {
+        self.results.try_recv().ok()
+    }
+}
+
+impl Drop for StorageWorker {
+    fn drop(&mut self) {
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.send(StorageJob::Stop);
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn persist_namespace(
+    path: &Path,
+    storage: &Storage,
+    namespace: &StorageNamespace,
+) -> Result<(), String> {
+    let source = toml::to_string(&StorageFile {
+        schema_version: namespace.schema_version,
+        values: storage.snapshot_namespace(namespace),
+    })
+    .map_err(|error| format!("storage serialization failed: {error}"))?;
+    if source.len() > MAX_STORAGE_FILE_BYTES {
+        return Err("storage file exceeds the bounded file limit".into());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("storage directory failed: {error}"))?;
+    }
+    let temporary = path.with_extension("tmp");
+    if let Err(error) = fs::write(&temporary, source.as_bytes()) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("storage temporary write failed: {error}"));
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("storage atomic replace failed: {error}"));
+    }
+    Ok(())
 }
 
 fn read_bounded(path: &Path, maximum: usize) -> Result<String, AddonError> {
@@ -1346,6 +1514,61 @@ mod tests {
             Err(AddonError::InvalidManifest(_)) | Err(AddonError::PackageParse(_))
         ));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn storage_worker_commits_atomically_and_reloads_namespace() {
+        let path = std::env::temp_dir().join(format!(
+            "mmorpg-ui-storage-worker-{}.state",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let namespace = StorageNamespace {
+            account_id: AccountId::new(41).unwrap(),
+            package_id: PackageId::new(9004).unwrap(),
+            schema_version: 1,
+        };
+        let worker = StorageWorker::open(path.clone(), namespace.clone()).unwrap();
+        worker
+            .set(1, "name".into(), StoredValue::String("Aria".into()))
+            .unwrap();
+        let result = wait_for_storage_result(&worker);
+        assert_eq!(result.request_id, 1);
+        assert!(result.result.is_ok());
+        let committed = std::fs::read_to_string(&path).unwrap();
+        assert!(committed.contains("Aria"));
+
+        worker
+            .set(
+                2,
+                "too-large".into(),
+                StoredValue::String("x".repeat(mmorpg_ui_contract::MAX_STORAGE_VALUE_BYTES + 1)),
+            )
+            .unwrap();
+        let failed = wait_for_storage_result(&worker);
+        assert_eq!(failed.request_id, 2);
+        assert!(failed.result.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), committed);
+        drop(worker);
+
+        let worker = StorageWorker::open(path.clone(), namespace).unwrap();
+        worker.delete(3, "name".into()).unwrap();
+        let deleted = wait_for_storage_result(&worker);
+        assert_eq!(deleted.request_id, 3);
+        assert!(deleted.result.is_ok());
+        drop(worker);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("Aria"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn wait_for_storage_result(worker: &StorageWorker) -> StorageResult {
+        for _ in 0..100 {
+            if let Some(result) = worker.try_result() {
+                return result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("storage worker did not return a result");
     }
 
     #[test]

@@ -37,7 +37,10 @@ transaction. The standalone contract crate's package manifest is now used by
 the adapter's pre-VM load entry point. `PackageRepository` adds bounded TOML
 manifest/source loading from a numeric package directory, rejects path escapes
 and directory/manifest ID mismatches, and verifies the declared source hash
-before VM creation. Durable storage lifecycle remains separate work. The
+before VM creation. `StorageWorker` provides bounded off-thread set/delete
+operations for one account/package/schema namespace and atomically replaces a
+validated TOML state file. It is a local persistence proof, not a production
+database or journal. The
 `load_from_manifest` entry point validates the manifest, capability set,
 dependency IDs, source entry path, and SHA-256 source integrity before VM
 construction. `storage.get`, `storage.set`, and `storage.delete` use the

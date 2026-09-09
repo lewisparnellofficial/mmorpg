@@ -35,7 +35,9 @@ that dispatch are rolled back before the addon is disabled and the failure is
 recorded. Manifest validation and bounded storage are now adapter entry points;
 the adapter now also has a bounded filesystem package repository that reads a
 TOML manifest and source entry before VM creation, with path containment and
-integrity checks. Durable off-thread storage remains separate work.
+integrity checks. `StorageWorker` provides bounded queued set/delete operations
+for one account/package/schema namespace and atomically replaces a validated
+TOML state file on its own thread.
 
 The implementation is in
 [`experiments/ui-scripting`](../../experiments/ui-scripting/README.md). It uses
@@ -105,9 +107,10 @@ mode, because sandbox mode makes the global table read-only.
 
 ## Limitations and follow-up
 
-- The spike has no signature verifier, persistent saved-data store, or
-  bytecode compatibility policy. Its package repository validates manifest
-  dependency IDs but does not yet resolve or order a multi-package graph.
+- The spike has no signature verifier or bytecode compatibility policy. Its
+  package repository validates manifest dependency IDs but does not yet
+  resolve or order a multi-package graph. The storage worker is a local
+  atomic-file proof, not a production database or crash-recovery journal.
 - It does not provide process-level isolation from a compromised native
   runtime or binding.
 - The host integration covers one real Bevy secure-action presentation and
@@ -123,7 +126,7 @@ mode, because sandbox mode makes the global table read-only.
 - The adapter now consumes the contract event queue and operation validator,
   validates source-only manifests before VM creation, and exposes bounded
   account/package/schema storage. It does not yet load packages from a
-  repository or provide an off-thread durable storage worker.
+  repository or provide a production storage backend.
 - The Bevy client currently constructs the two integration runners from
   built-in source strings; package repository loading is tested in the
   adapter, but is not yet the client package-discovery path.

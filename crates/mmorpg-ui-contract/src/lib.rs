@@ -7,6 +7,7 @@
 //! these values and must treat a validated operation batch as one atomic
 //! presentation transaction.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
@@ -412,7 +413,7 @@ pub fn validate_manifest(
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum StoredValue {
     Null,
     Bool(bool),
@@ -517,6 +518,27 @@ impl Storage {
         if let Some(map) = self.values.get_mut(namespace) {
             map.remove(key);
         }
+    }
+
+    pub fn snapshot_namespace(
+        &self,
+        namespace: &StorageNamespace,
+    ) -> BTreeMap<String, StoredValue> {
+        self.values.get(namespace).cloned().unwrap_or_default()
+    }
+
+    pub fn replace_namespace(
+        &mut self,
+        namespace: StorageNamespace,
+        values: BTreeMap<String, StoredValue>,
+    ) -> Result<(), ContractError> {
+        let mut candidate = Storage::default();
+        for (key, value) in values {
+            candidate.set(namespace.clone(), key, value)?;
+        }
+        let snapshot = candidate.snapshot_namespace(&namespace);
+        self.values.insert(namespace, snapshot);
+        Ok(())
     }
 }
 
