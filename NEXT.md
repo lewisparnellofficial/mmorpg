@@ -20,10 +20,12 @@ supported renderer/driver, then update EXP-011; do not hide the diagnostics.
 
 The `ui.v1` contract, package model, bounded storage, secure-input boundary,
 adversarial gate, extended fuzz corpus, and Wasmi comparison are implemented.
-Use that evidence to accept a runtime ADR only after deciding whether Luau’s
-native embedding is sufficient or the stronger Wasmi isolation boundary is
-required. Keep the decision provisional until the host/process isolation and
-minimum-hardware evidence are available.
+The proposed boundary and explicit acceptance criteria are recorded in
+[ADR-010](docs/decisions/ADR-010-addon-runtime-boundary.md). The process
+wrapper and modeled constrained profile now provide additional evidence, but
+the decision remains provisional until the adapter lifecycle is integrated,
+process supervision is exercised through the graphical client, and
+minimum-hardware evidence is available.
 
 ## 4. Finish the first vertical-slice acceptance record
 

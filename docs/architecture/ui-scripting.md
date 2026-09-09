@@ -4,6 +4,9 @@
 Bevy secure-action integration are implemented, while production runtime and
 physical-input evidence remain required
 
+The provisional Luau-versus-Wasmi boundary and its acceptance conditions are
+recorded in [ADR-010](../decisions/ADR-010-addon-runtime-boundary.md).
+
 ## Contract boundary
 
 The dependency-light [`mmorpg-ui-contract`](../../crates/mmorpg-ui-contract/)
