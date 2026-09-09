@@ -44,9 +44,14 @@ by the editor-core tests but does not capture hardware or open a GUI; the next
 editor shell spike should connect Qt or SDL callbacks to this bridge and
 validate the interaction on a real pen tablet.
 
-From the repository root, the current CLI editor spike can be launched with:
+From the repository root, the native Qt shell can be launched with:
 
 ```bash
 ./scripts/run-editor.sh
-./scripts/run-editor.sh --output /tmp/starter-terrain.mmterrain
+```
+
+The headless deterministic Rust editor-core CLI remains available explicitly:
+
+```bash
+./scripts/run-editor-core.sh --output /tmp/starter-terrain.mmterrain
 ```

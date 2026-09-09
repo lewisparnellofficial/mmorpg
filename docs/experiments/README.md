@@ -11,6 +11,7 @@ Current experiment records:
 - [EXP-003: Transparent overworld layer manager](EXP-003-layer-manager.md)
 - [EXP-004: Typed wire gameplay smoke test](EXP-004-wire-gameplay-smoke.md)
 - [EXP-006: Luau UI scripting sandbox](EXP-006-ui-scripting-sandbox.md)
+- [EXP-007: Qt Wayland tablet shell](EXP-007-qt-tablet-shell.md)
 
 ## Required experiment categories
 

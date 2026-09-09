@@ -245,6 +245,16 @@ cargo test --manifest-path experiments/client-presentation-replay/Cargo.toml
 cargo run --quiet --manifest-path experiments/client-presentation-replay/Cargo.toml
 ```
 
+Qt editor shell configure/build check (does not launch a window):
+
+```bash
+cmake -S tools/mmorpg-editor-qt -B /tmp/mmorpg-editor-qt-build \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build /tmp/mmorpg-editor-qt-build --parallel
+./scripts/run-editor.sh
+./scripts/run-editor-core.sh --output /tmp/starter-terrain.mmterrain
+```
+
 The Bevy client requires a Linux desktop session and a working graphics stack.
 The protocol, client-adapter, editor-core, and replay crates are standalone
 technology spikes and are intentionally not part of the root workspace yet.
