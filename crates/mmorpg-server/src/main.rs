@@ -38,36 +38,6 @@ const CHECKPOINT_INTERVAL_TICKS: u64 = 20;
 const DISCONNECT_GRACE_TICKS: u64 = 100;
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
-#[cfg(test)]
-#[derive(Debug)]
-struct Client {
-    id: u64,
-    stream: TcpStream,
-    input: String,
-    output: VecDeque<u8>,
-    player_id: Option<EntityId>,
-    closed: bool,
-}
-
-#[cfg(test)]
-impl Client {
-    fn new(id: u64, stream: TcpStream) -> Self {
-        Self {
-            id,
-            stream,
-            input: String::new(),
-            output: VecDeque::new(),
-            player_id: None,
-            closed: false,
-        }
-    }
-
-    fn queue_line(&mut self, line: impl AsRef<str>) {
-        self.output.extend(line.as_ref().as_bytes());
-        self.output.push_back(b'\n');
-    }
-}
-
 #[derive(Debug)]
 struct WireClient {
     id: u64,
@@ -185,8 +155,6 @@ struct DetachedCharacter {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ClientOrigin {
-    #[cfg(test)]
-    Line(u64),
     Wire(u64),
 }
 
@@ -224,8 +192,6 @@ struct StagedOperationBatch {
 
 struct Server {
     world: World,
-    #[cfg(test)]
-    clients: Vec<Client>,
     wire_clients: Vec<WireClient>,
     detached_characters: BTreeMap<(u64, u64), DetachedCharacter>,
     commands: VecDeque<PendingCommand>,
@@ -327,8 +293,6 @@ impl Server {
         }
         Self {
             world: World::new_starter_zone(),
-            #[cfg(test)]
-            clients: Vec::new(),
             wire_clients: Vec::new(),
             detached_characters: BTreeMap::new(),
             commands: VecDeque::new(),
@@ -972,207 +936,6 @@ impl Server {
             .find(|client| client.id == client_id)
         {
             client.queue_server_message(&message);
-        }
-    }
-
-    #[cfg(test)]
-    fn handle_line(&mut self, client_id: u64, line: &str) {
-        let Some(client_index) = self
-            .clients
-            .iter()
-            .position(|client| client.id == client_id)
-        else {
-            return;
-        };
-        match parse_line(line, self.clients[client_index].player_id) {
-            Ok(ParsedLine::Command(command)) => {
-                if matches!(command, Command::JoinPlayer { .. }) {
-                    let already_pending = self.commands.iter().any(|pending| {
-                        pending.origin == ClientOrigin::Line(client_id)
-                            && matches!(pending.command, Command::JoinPlayer { .. })
-                    });
-                    if self.clients[client_index].player_id.is_some() || already_pending {
-                        self.clients[client_index].queue_line("ERR already connected");
-                        return;
-                    }
-                }
-                self.commands.push_back(PendingCommand {
-                    origin: ClientOrigin::Line(client_id),
-                    command,
-                    operation: None,
-                });
-            }
-            Ok(ParsedLine::State) => self.send_state(client_id),
-            Ok(ParsedLine::Snapshot) => self.send_machine_snapshot(client_id),
-            Ok(ParsedLine::Inventory) => self.send_inventory(client_id),
-            Ok(ParsedLine::Help) => self.send_help(client_id),
-            Ok(ParsedLine::Quit) => {
-                self.clients[client_index].closed = true;
-                self.clients[client_index].queue_line("BYE");
-            }
-            Err(error) => self.clients[client_index].queue_line(format!("ERR {error}")),
-        }
-    }
-
-    #[cfg(test)]
-    fn send_help(&mut self, client_id: u64) {
-        let Some(client) = self
-            .clients
-            .iter_mut()
-            .find(|client| client.id == client_id)
-        else {
-            return;
-        };
-        client.queue_line("HELP connect <name> <tank|healer|damage>");
-        client.queue_line("HELP move <dx> <dy>");
-        client.queue_line("HELP target <entity-id>");
-        client.queue_line("HELP attack");
-        client.queue_line("HELP vendor <vendor-id>");
-        client.queue_line("HELP buy <vendor-id> <item-id> <quantity>");
-        client.queue_line("HELP loot <enemy-id>");
-        client.queue_line("HELP party-invite <player-id>");
-        client.queue_line("HELP party-accept <party-id>");
-        client.queue_line("HELP party-decline <party-id>");
-        client.queue_line("HELP party-leave");
-        client.queue_line("HELP party-remove <player-id>");
-        client.queue_line("HELP party-leader <player-id>");
-        client.queue_line("HELP party-disband");
-        client.queue_line("HELP inventory");
-        client.queue_line("HELP quest-offers <npc-id>");
-        client.queue_line("HELP accept-quest <npc-id> <quest-id>");
-        client.queue_line("HELP turn-in-quest <npc-id> <quest-id>");
-        client.queue_line("HELP state");
-        client.queue_line("HELP snapshot");
-        client.queue_line("HELP quit");
-    }
-
-    #[cfg(test)]
-    fn send_state(&mut self, client_id: u64) {
-        if !self.clients.iter().any(|client| client.id == client_id) {
-            return;
-        }
-        let mut lines = Vec::new();
-        let summary = self.world.summary();
-        lines.push(format!(
-            "WORLD tick={} players={} npcs={} enemies={} vendors={}",
-            summary.tick,
-            summary.player_count,
-            summary.npc_count,
-            summary.enemy_count,
-            summary.vendor_count
-        ));
-        for player in self.world.players() {
-            lines.push(format!(
-                "PLAYER id={} name={} role={} pos={:.2},{:.2} hp={}/{} gold={} target={}",
-                player.id,
-                player.name,
-                player.role.as_str(),
-                player.position.x,
-                player.position.y,
-                player.health,
-                player.max_health,
-                player.gold,
-                player
-                    .target
-                    .map_or_else(|| "none".to_owned(), |target| target.to_string())
-            ));
-            for stack in player.inventory.stacks() {
-                lines.push(format!(
-                    "ITEM player={} item={} quantity={}",
-                    player.id, stack.item_id, stack.quantity
-                ));
-            }
-            for quest in &player.quests {
-                lines.push(format!(
-                    "QUEST player={} quest={} progress={}/{} status={:?}",
-                    player.id, quest.quest_id, quest.progress, quest.required_count, quest.status
-                ));
-            }
-        }
-        for npc in self.world.npcs() {
-            lines.push(format!(
-                "NPC id={} name={} kind={:?} pos={:.2},{:.2} hp={}/{}",
-                npc.id,
-                npc.name,
-                npc.kind,
-                npc.position.x,
-                npc.position.y,
-                npc.health,
-                npc.max_health
-            ));
-        }
-        if let Some(client) = self
-            .clients
-            .iter_mut()
-            .find(|client| client.id == client_id)
-        {
-            for line in lines {
-                client.queue_line(line);
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn send_inventory(&mut self, client_id: u64) {
-        let Some(player_id) = self
-            .clients
-            .iter()
-            .find(|client| client.id == client_id)
-            .and_then(|client| client.player_id)
-        else {
-            if let Some(client) = self
-                .clients
-                .iter_mut()
-                .find(|client| client.id == client_id)
-            {
-                client.queue_line("ERR connect first");
-            }
-            return;
-        };
-
-        let Some(player) = self.world.players().find(|player| player.id == player_id) else {
-            return;
-        };
-        let lines: Vec<_> = std::iter::once(format!(
-            "INVENTORY player={} gold={} slots={}/{}",
-            player.id,
-            player.gold,
-            player.inventory.used_slots(),
-            player.inventory.capacity()
-        ))
-        .chain(player.inventory.stacks().map(|stack| {
-            format!(
-                "ITEM player={} item={} quantity={}",
-                player.id, stack.item_id, stack.quantity
-            )
-        }))
-        .collect();
-        if let Some(client) = self
-            .clients
-            .iter_mut()
-            .find(|client| client.id == client_id)
-        {
-            for line in lines {
-                client.queue_line(line);
-            }
-        }
-    }
-
-    /// Sends the temporary machine-readable bootstrap snapshot. This is kept
-    /// separate from `state` so existing terminal users retain the current
-    /// human-readable output while the graphical client has a deterministic
-    /// response to parse.
-    #[cfg(test)]
-    fn send_machine_snapshot(&mut self, client_id: u64) {
-        let lines = format_machine_snapshot(&self.world);
-        if let Some(client) = self
-            .clients
-            .iter_mut()
-            .find(|client| client.id == client_id)
-        {
-            for line in lines {
-                client.queue_line(line);
-            }
         }
     }
 
@@ -2893,8 +2656,6 @@ fn command_to_wire_payload(command: &Command) -> Result<Vec<u8>, String> {
 
 fn origin_client_id(origin: ClientOrigin) -> u64 {
     match origin {
-        #[cfg(test)]
-        ClientOrigin::Line(client_id) => client_id,
         ClientOrigin::Wire(client_id) => client_id,
     }
 }
