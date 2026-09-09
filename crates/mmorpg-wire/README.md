@@ -113,10 +113,16 @@ and typed server event/snapshot payloads. It has only a loopback-only
 development authentication message; it does not yet provide production
 authentication, encryption, compression,
 capability negotiation, replay protection, sequencing, acknowledgements,
-interest-managed replication, or socket ownership. A future network adapter
-should own buffering and I/O, call `decode_one` only after receiving bytes,
-and apply the resulting typed payload through the authoritative protocol
-boundary.
+interest-managed replication, acknowledgements, or socket ownership. The
+development listener now wraps server messages with per-session sequences;
+production replay protection and resumable sessions remain out of scope. A
+network adapter should own buffering and I/O, call `decode_one` only after
+receiving bytes, and apply the resulting typed payload through the
+authoritative protocol boundary.
+
+The frozen previous-client compatibility fixture and decoder harness live in
+`tests/compatibility_fixtures.rs`. Compatibility profile changes must preserve
+that fixture or add a new profile through an explicit migration decision.
 
 ## Local validation
 

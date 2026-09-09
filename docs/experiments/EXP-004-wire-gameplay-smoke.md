@@ -3,8 +3,14 @@
 The wire boundary also has deterministic codec tests for the Milestone 2
 compatibility gates: a version-independent `VersionRejected` control frame,
 unknown length-delimited additive-event skipping, and malformed event-length
-rejection. These tests are protocol evidence only; they do not yet prove a
-running old-client/server interoperability exchange.
+rejection. These tests are protocol evidence; the socket probe below adds
+running server-side interoperability evidence for the compatibility response.
+
+The server now also emits the compatibility frame on a real unsupported
+version receive. A localhost socket probe consumed the initial sequenced
+`Welcome`, sent a version-99 command envelope, and decoded the following
+version-independent `VersionRejected { supported_min: 1, supported_max: 1 }`
+frame before the server closed the incompatible session.
 
 ## Purpose
 

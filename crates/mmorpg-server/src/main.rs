@@ -109,6 +109,20 @@ impl WireClient {
             }
         }
     }
+
+    fn queue_compatibility_rejection(&mut self, supported_min: u16, supported_max: u16) {
+        let frame = mmorpg_wire::encode_compatibility_control(
+            &mmorpg_wire::CompatibilityControl::VersionRejected {
+                supported_min,
+                supported_max,
+            },
+        );
+        if self.output.len().saturating_add(frame.len()) > MAX_WIRE_OUTPUT_BYTES {
+            self.closed = true;
+            return;
+        }
+        self.output.extend(frame);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -233,6 +247,7 @@ impl Server {
     fn read_wire_clients(&mut self) {
         let mut commands = Vec::new();
         let mut errors = Vec::new();
+        let mut compatibility_rejections = Vec::new();
         for client in &mut self.wire_clients {
             if client.closed {
                 continue;
@@ -269,6 +284,16 @@ impl Server {
                 let decoded = match decode_one(&client.input) {
                     Ok(decoded) => decoded,
                     Err(WireDecodeError::Truncated { .. }) => break,
+                    Err(WireDecodeError::UnsupportedVersion { .. }) => {
+                        compatibility_rejections.push((
+                            client.id,
+                            mmorpg_wire::PROTOCOL_VERSION,
+                            mmorpg_wire::PROTOCOL_VERSION,
+                        ));
+                        client.input.clear();
+                        client.closed = true;
+                        break;
+                    }
                     Err(error) => {
                         errors.push((client.id, format!("invalid wire frame: {error}")));
                         client.input.clear();
@@ -296,6 +321,15 @@ impl Server {
 
         for (client_id, error) in errors {
             self.queue_wire_error(client_id, error);
+        }
+        for (client_id, supported_min, supported_max) in compatibility_rejections {
+            if let Some(client) = self
+                .wire_clients
+                .iter_mut()
+                .find(|client| client.id == client_id)
+            {
+                client.queue_compatibility_rejection(supported_min, supported_max);
+            }
         }
         for (client_id, command) in commands {
             self.handle_wire_command(client_id, command);
