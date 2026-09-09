@@ -73,6 +73,13 @@ grant authority or replace the server validation path; it exists to exercise
 the real Bevy process and presentation projection without depending on a
 compositor's virtual-keyboard protocol.
 
+The three-role graphical gate runs this mode for characters 1, 2, and 3. The
+damage character performs the starter purchase, quest, combat, loot, and
+turn-in loop; the tank submits movement, party invite, target, and taunt
+intents; and the healer accepts the invite and submits recovery. Those fixed
+character and entity IDs are local development-smoke assumptions, not a
+general client targeting contract.
+
 On Linux, the host needs a working desktop session and graphics stack. Bevy's
 window and renderer may require distribution-specific X11/Wayland, Vulkan,
 OpenGL, audio, or input development libraries. The exact package names are

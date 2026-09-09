@@ -24,7 +24,7 @@ use mmorpg_client_session::{Session as TypedSession, SessionInput, SessionOutput
 use mmorpg_content::{ItemId, QuestId, item_definition, starter_catalog};
 use mmorpg_wire::{
     CharacterSummary, ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope,
-    MessageKind, SequencedServerMessage, ServerMessage, decode_one,
+    MessageKind, RoleCode, SequencedServerMessage, ServerMessage, decode_one,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
@@ -70,6 +70,7 @@ struct ClientState {
     server_address: String,
     connection_status: String,
     player_id: Option<EntityId>,
+    connected_role: Option<RoleCode>,
     available_characters: Vec<CharacterSummary>,
     selected_character_id: Option<u64>,
     target_cursor: usize,
@@ -84,6 +85,7 @@ impl ClientState {
             server_address,
             connection_status: "connecting".to_owned(),
             player_id: None,
+            connected_role: None,
             available_characters: Vec::new(),
             selected_character_id: None,
             target_cursor: 0,
@@ -112,6 +114,7 @@ enum ClientCommand {
     },
     Target(EntityId),
     Attack,
+    Taunt,
     Heal(EntityId),
     ListVendor(EntityId),
     ListQuestOffers(EntityId),
@@ -129,6 +132,8 @@ enum ClientCommand {
         quest_id: QuestId,
     },
     Loot(EntityId),
+    InvitePartyMember(EntityId),
+    AcceptPartyInvite(u64),
 }
 
 #[derive(Debug)]
@@ -337,33 +342,55 @@ fn acceptance_smoke_input(
     {
         return;
     }
-    let command = match smoke.step {
-        0 => ClientCommand::ListVendor(EntityId(1)),
-        1 => ClientCommand::ListQuestOffers(EntityId(1)),
-        2 => ClientCommand::BuyItem {
-            vendor_id: EntityId(1),
-            item_id: ItemId::TOWN_RATION,
-            quantity: 1,
+    let role = state.connected_role;
+    let command = match role {
+        Some(RoleCode::Tank) => match smoke.step {
+            0 => ClientCommand::Move { dx: 10.0, dy: 0.0 },
+            8 => ClientCommand::InvitePartyMember(EntityId(7)),
+            9 => ClientCommand::Target(EntityId(2)),
+            10 => ClientCommand::Taunt,
+            _ => {
+                smoke.step = smoke.step.saturating_add(1);
+                return;
+            }
         },
-        3 => ClientCommand::AcceptQuest {
-            npc_id: EntityId(1),
-            quest_id: QuestId::CLEAR_THE_FIELD,
+        Some(RoleCode::Healer) => match smoke.step {
+            8 => ClientCommand::AcceptPartyInvite(1),
+            9 => ClientCommand::Heal(EntityId(6)),
+            _ => {
+                smoke.step = smoke.step.saturating_add(1);
+                return;
+            }
         },
-        4 => ClientCommand::Move { dx: 10.0, dy: 0.0 },
-        5 => ClientCommand::Target(EntityId(2)),
-        6..=14 => ClientCommand::Attack,
-        15 => ClientCommand::Loot(EntityId(2)),
-        16 => ClientCommand::Target(EntityId(3)),
-        17..=25 => ClientCommand::Attack,
-        26 => ClientCommand::Loot(EntityId(3)),
-        27 => ClientCommand::Target(EntityId(4)),
-        28..=36 => ClientCommand::Attack,
-        37 => ClientCommand::Loot(EntityId(4)),
-        38 => ClientCommand::TurnInQuest {
-            npc_id: EntityId(1),
-            quest_id: QuestId::CLEAR_THE_FIELD,
+        Some(RoleCode::DamageDealer) => match smoke.step {
+            0 => ClientCommand::ListVendor(EntityId(1)),
+            1 => ClientCommand::ListQuestOffers(EntityId(1)),
+            2 => ClientCommand::BuyItem {
+                vendor_id: EntityId(1),
+                item_id: ItemId::TOWN_RATION,
+                quantity: 1,
+            },
+            3 => ClientCommand::AcceptQuest {
+                npc_id: EntityId(1),
+                quest_id: QuestId::CLEAR_THE_FIELD,
+            },
+            4 => ClientCommand::Move { dx: 10.0, dy: 0.0 },
+            5 => ClientCommand::Target(EntityId(2)),
+            6..=14 => ClientCommand::Attack,
+            15 => ClientCommand::Loot(EntityId(2)),
+            16 => ClientCommand::Target(EntityId(3)),
+            17..=25 => ClientCommand::Attack,
+            26 => ClientCommand::Loot(EntityId(3)),
+            27 => ClientCommand::Target(EntityId(4)),
+            28..=36 => ClientCommand::Attack,
+            37 => ClientCommand::Loot(EntityId(4)),
+            38 => ClientCommand::TurnInQuest {
+                npc_id: EntityId(1),
+                quest_id: QuestId::CLEAR_THE_FIELD,
+            },
+            _ => return,
         },
-        _ => return,
+        None => return,
     };
     send_command(&bridge, &mut state, command);
     smoke.step = smoke.step.saturating_add(1);
@@ -795,6 +822,7 @@ fn client_command_to_wire(command: ClientCommand) -> WireCommand {
         ClientCommand::Move { dx, dy } => WireCommand::Move { dx, dy },
         ClientCommand::Target(EntityId(target_id)) => WireCommand::SelectTarget { target_id },
         ClientCommand::Attack => WireCommand::BasicAttack,
+        ClientCommand::Taunt => WireCommand::Taunt,
         ClientCommand::Heal(EntityId(target_id)) => WireCommand::Heal { target_id },
         ClientCommand::ListVendor(EntityId(vendor_id)) => WireCommand::ListVendor { vendor_id },
         ClientCommand::ListQuestOffers(EntityId(npc_id)) => WireCommand::ListQuestOffers { npc_id },
@@ -822,6 +850,10 @@ fn client_command_to_wire(command: ClientCommand) -> WireCommand {
             quest_id: quest_id.0,
         },
         ClientCommand::Loot(EntityId(enemy_id)) => WireCommand::LootEnemy { enemy_id },
+        ClientCommand::InvitePartyMember(EntityId(target_id)) => {
+            WireCommand::InvitePartyMember { target_id }
+        }
+        ClientCommand::AcceptPartyInvite(party_id) => WireCommand::AcceptPartyInvite { party_id },
     }
 }
 
@@ -869,6 +901,7 @@ fn queue_command_bounded(outgoing: &mut VecDeque<Vec<u8>>, command: ClientComman
             queue_command_line(outgoing, &format!("target {id}"));
         }
         ClientCommand::Attack => queue_command_line(outgoing, "attack"),
+        ClientCommand::Taunt => queue_command_line(outgoing, "taunt"),
         ClientCommand::Heal(EntityId(id)) => {
             queue_command_line(outgoing, &format!("heal {id}"));
         }
@@ -894,6 +927,7 @@ fn queue_command_bounded(outgoing: &mut VecDeque<Vec<u8>>, command: ClientComman
         ClientCommand::Loot(EntityId(enemy_id)) => {
             queue_command_line(outgoing, &format!("loot {enemy_id}"));
         }
+        ClientCommand::InvitePartyMember(_) | ClientCommand::AcceptPartyInvite(_) => {}
     }
 }
 
@@ -927,6 +961,7 @@ fn consume_network_events(bridge: Res<NetworkBridge>, mut state: ResMut<ClientSt
                 }
                 if status.starts_with("connecting to typed wire") {
                     state.player_id = None;
+                    state.connected_role = None;
                     state.available_characters.clear();
                     state.selected_character_id = None;
                     state.presentation = ClientWorld::default();
@@ -1446,8 +1481,11 @@ fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
             state.connection_status = "character selected; entering world".to_owned();
             state.log(format!("selected character {name} ({role:?})"));
         }
-        ServerMessage::Connected { player_id, .. } => {
+        ServerMessage::Connected {
+            player_id, role, ..
+        } => {
             state.player_id = Some(EntityId(*player_id));
+            state.connected_role = Some(*role);
             state.connection_status = "authenticated typed development session".to_owned();
             state.log(format!("connected as {player_id}"));
         }

@@ -77,6 +77,12 @@ or renderer-quality acceptance gate.
   worker and presentation adapter. Vulkan validation errors were still present
   on this host; this is gameplay/presentation evidence, not renderer-quality
   acceptance evidence.
+- **Measured renderer-active role result:** The graphical three-role smoke
+  launched three real Bevy clients concurrently and observed the damage
+  character's purchase, quest, combat, loot, and turn-in flow, plus the tank's
+  authoritative taunt and the healer's party-invite acceptance and recovery
+  event. The run passed on the same host, but it retains the Vulkan validation
+  limitation and uses fixed local smoke IDs.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,
@@ -87,10 +93,11 @@ or renderer-quality acceptance gate.
 
 ## Interpretation
 
-The client shell and renderer can start on this host, but this is not a passing
+The client shell and renderer can start on this host, and the bounded graphical
+role encounter now has repeatable local evidence, but this is not a passing
 Milestone 13 result. The Vulkan validation errors require investigation before
-using this environment for a repeatable graphical acceptance record. The
-graphical role encounter, retry client flow, slow-client graphical behavior,
-and physical renderer-quality gate remain unverified. The headless harness now
-covers the town/field role encounter and two loot generations; it does not
-substitute for those graphical scenarios.
+using this environment for a repeatable renderer-quality acceptance record.
+The retry client flow, slow-client graphical behavior, and physical
+renderer-quality gate remain unverified. The headless harness still provides
+the stronger privacy, retry, persistence, and respawn evidence; it does not
+substitute for those remaining graphical scenarios.
