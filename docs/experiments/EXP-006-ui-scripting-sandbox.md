@@ -166,13 +166,15 @@ mode, because sandbox mode makes the global table read-only.
 - Callback rollback covers host state, staged panel operations, and
   registrations made during callbacks; initial script-load registration still
   uses the adapter's direct setup path.
-- The adapter now consumes the contract event queue and operation validator,
+- The adapter consumes the contract event queue and operation validator,
   validates source-only manifests before VM creation, and exposes bounded
-  account/package/schema storage. It does not yet load packages from a
-  repository or provide a production storage backend.
-- The Bevy client currently constructs the two integration runners from
-  built-in source strings; package repository loading is tested in the
-  adapter, but is not yet the client package-discovery path.
+  account/package/schema storage. `PackageRepository::load_all` provides a
+  bounded local package-discovery path, but the storage backend remains a
+  development atomic-file proof rather than a production backend.
+- The Bevy client supports the bounded repository path through `--addon-root`
+  and requires at least the default and ordinary addon packages there. Built-in
+  source remains the fallback when no repository is supplied; package
+  signatures, remote repositories, and hot reload remain out of scope.
 
 Next work should add coverage-guided manifest/value-boundary fuzzing, calibrate
 quotas on the minimum supported Linux client, and compare the same
@@ -181,7 +183,7 @@ accepting an architecture decision.
 
 ## Evidence classification
 
-- **Measured local result:** commands and eight passing tests above.
+- **Measured local result:** commands and 22 passing tests above.
 - **Implementation evidence:** per-addon state, host quotas, native secure
   input boundary, and failure isolation in the standalone crate.
 - **Project inference:** Luau is suitable as the first runtime direction.
