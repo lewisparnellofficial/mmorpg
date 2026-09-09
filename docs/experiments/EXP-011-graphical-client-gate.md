@@ -54,13 +54,15 @@ encounter, privacy, persistence, or renderer-quality acceptance gate.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,
-  and stranger privacy. This does not substitute for the graphical run.
+  stranger privacy, tank taunt, damage defeat/loot, and two enemy respawn
+  generations. This does not substitute for the graphical run.
 
 ## Interpretation
 
 The client shell and renderer can start on this host, but this is not a passing
 Milestone 13 result. The Vulkan validation errors require investigation before
 using this environment for a repeatable graphical acceptance record. The
-three-client headless/graphical harness, role encounter, multiple loot
-generations, restart/retry, slow-client, and stranger-privacy scenarios remain
-unverified.
+The graphical role encounter, restart/retry client flow, slow-client graphical
+behavior, and physical renderer-quality gate remain unverified. The headless
+harness now covers the role encounter and two loot generations; it does not
+substitute for those graphical scenarios.

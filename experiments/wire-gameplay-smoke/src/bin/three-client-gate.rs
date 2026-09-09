@@ -76,10 +76,110 @@ fn main() {
     assert_private_snapshot(&healer_snapshot, healer.player_id, Some(party_id));
     assert_private_snapshot(&damage_snapshot, damage.player_id, None);
 
+    tank.connection
+        .send_typed_command(&ClientCommand::SelectTarget { target_id: 2 })
+        .expect("tank target command should send");
+    expect_event(&mut tank.connection, "tank target selection", |event| {
+        matches!(
+            event,
+            ServerEvent::TargetSelected {
+                player_id,
+                target_id: 2
+            } if *player_id == tank.player_id
+        )
+    });
+    tank.connection
+        .send_typed_command(&ClientCommand::Taunt)
+        .expect("tank taunt should send");
+    expect_event(&mut tank.connection, "tank taunt", |event| {
+        matches!(
+            event,
+            ServerEvent::TauntResolved {
+                player_id,
+                target_id: 2
+            } if *player_id == tank.player_id
+        )
+    });
+
+    defeat_and_loot(&mut damage, 2, 902);
+    expect_event(&mut tank.connection, "first enemy respawn", |event| {
+        matches!(event, ServerEvent::EnemyRespawned { enemy_id: 2, .. })
+    });
+    defeat_and_loot(&mut damage, 2, 903);
+
     println!(
-        "three-client gate: success (tank={}, healer={}, damage={}, party={})",
+        "three-client gate: success (tank={}, healer={}, damage={}, party={}, enemy_generations=2)",
         tank.player_id, healer.player_id, damage.player_id, party_id
     );
+}
+
+fn defeat_and_loot(client: &mut GateClient, enemy_id: u64, operation_id: u64) {
+    client
+        .connection
+        .send_typed_command(&ClientCommand::SelectTarget {
+            target_id: enemy_id,
+        })
+        .expect("damage target command should send");
+    expect_event(&mut client.connection, "damage target selection", |event| {
+        matches!(
+            event,
+            ServerEvent::TargetSelected {
+                player_id,
+                target_id
+            } if *player_id == client.player_id && *target_id == enemy_id
+        )
+    });
+
+    let mut defeated = false;
+    for _ in 0..16 {
+        client
+            .connection
+            .send_typed_command(&ClientCommand::BasicAttack)
+            .expect("damage attack should send");
+        let result = expect_event(&mut client.connection, "damage attack", |event| {
+            matches!(
+                event,
+                ServerEvent::AttackResolved {
+                    player_id,
+                    target_id,
+                    ..
+                } if *player_id == client.player_id && *target_id == enemy_id
+            ) || matches!(event, ServerEvent::CommandRejected { .. })
+        });
+        if matches!(
+            result,
+            ServerEvent::AttackResolved {
+                target_health: 0,
+                ..
+            }
+        ) {
+            defeated = true;
+            break;
+        }
+    }
+    assert!(defeated, "enemy {enemy_id} did not die within 16 attacks");
+    expect_event(
+        &mut client.connection,
+        "enemy defeat",
+        |event| matches!(event, ServerEvent::EnemyDefeated { enemy_id: defeated } if *defeated == enemy_id),
+    );
+    client
+        .connection
+        .send_typed_command(&ClientCommand::Retryable {
+            operation_id,
+            command: Box::new(ClientCommand::LootEnemy { enemy_id }),
+        })
+        .expect("generation loot command should send");
+    expect_event(&mut client.connection, "generation loot", |event| {
+        matches!(
+            event,
+            ServerEvent::LootRewarded {
+                player_id,
+                enemy_id: looted,
+                ..
+            } if *player_id == client.player_id && *looted == enemy_id
+        )
+    });
 }
 
 fn connect(address: &str, character_id: u64, role: RoleCode, digest: [u8; 32]) -> GateClient {
