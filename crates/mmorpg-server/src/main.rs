@@ -21,6 +21,9 @@ const DEFAULT_ADDRESS: &str = "127.0.0.1:4000";
 const DEFAULT_TICK_HZ: u64 = 20;
 const MAX_WIRE_INPUT_BYTES: usize = mmorpg_wire::MAX_FRAME_SIZE * 2;
 const MAX_WIRE_OUTPUT_BYTES: usize = 256 * 1024;
+const MAX_WIRE_COMMANDS_PER_CLIENT_POLL: usize = 32;
+const MAX_WIRE_COMMANDS_PER_POLL: usize = 256;
+const MAX_PENDING_COMMANDS: usize = 1024;
 
 #[cfg(test)]
 #[derive(Debug)]
@@ -205,6 +208,7 @@ impl Server {
         let mut commands = Vec::new();
         let mut errors = Vec::new();
         let mut compatibility_rejections = Vec::new();
+        let mut decoded_frames = 0;
         for client in &mut self.wire_clients {
             if client.closed {
                 continue;
@@ -237,7 +241,24 @@ impl Server {
                 }
             }
 
+            let mut client_frames = 0;
             loop {
+                if client_frames >= MAX_WIRE_COMMANDS_PER_CLIENT_POLL {
+                    errors.push((
+                        client.id,
+                        "typed command intake limit reached for this poll".to_owned(),
+                    ));
+                    client.input.clear();
+                    break;
+                }
+                if decoded_frames >= MAX_WIRE_COMMANDS_PER_POLL {
+                    errors.push((
+                        client.id,
+                        "global typed command intake limit reached for this poll".to_owned(),
+                    ));
+                    client.input.clear();
+                    break;
+                }
                 let decoded = match decode_one(&client.input) {
                     Ok(decoded) => decoded,
                     Err(WireDecodeError::Truncated { .. }) => break,
@@ -262,6 +283,8 @@ impl Server {
                 let kind = decoded.envelope.kind;
                 let payload = decoded.envelope.payload;
                 client.input.drain(..consumed);
+                client_frames += 1;
+                decoded_frames += 1;
                 if kind != MessageKind::Command {
                     errors.push((
                         client.id,
@@ -270,7 +293,9 @@ impl Server {
                     continue;
                 }
                 match WireCommand::decode_payload(&payload) {
-                    Ok(command) => commands.push((client.id, command)),
+                    Ok(command) => {
+                        commands.push((client.id, command));
+                    }
                     Err(error) => errors.push((client.id, format!("invalid command: {error}"))),
                 }
             }
@@ -471,10 +496,7 @@ impl Server {
                     return;
                 }
             };
-            self.commands.push_back(PendingCommand {
-                origin: ClientOrigin::Wire(client_id),
-                command,
-            });
+            self.enqueue_pending_wire_command(client_id, command);
             return;
         }
         if matches!(command, WireCommand::Snapshot) {
@@ -499,6 +521,14 @@ impl Server {
                 return;
             }
         };
+        self.enqueue_pending_wire_command(client_id, command);
+    }
+
+    fn enqueue_pending_wire_command(&mut self, client_id: u64, command: Command) {
+        if self.commands.len() >= MAX_PENDING_COMMANDS {
+            self.queue_wire_error(client_id, "typed command queue is full".to_owned());
+            return;
+        }
         self.commands.push_back(PendingCommand {
             origin: ClientOrigin::Wire(client_id),
             command,
@@ -1817,6 +1847,22 @@ mod tests {
             parse_line("snapshot", None),
             Ok(ParsedLine::Snapshot)
         ));
+    }
+
+    #[test]
+    fn typed_pending_command_queue_has_a_hard_bound() {
+        let mut server = Server::new(DEFAULT_TICK_HZ, false, None);
+        for _ in 0..(MAX_PENDING_COMMANDS + 1) {
+            server.enqueue_pending_wire_command(
+                99,
+                Command::Move {
+                    player_id: EntityId(5),
+                    dx: 1.0,
+                    dy: 0.0,
+                },
+            );
+        }
+        assert_eq!(server.commands.len(), MAX_PENDING_COMMANDS);
     }
 
     #[test]
