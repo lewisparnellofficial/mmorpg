@@ -37,7 +37,7 @@ bwrap \
     --tmpfs /tmp \
     --ro-bind "$binary" /opt/ui-wasm-comparison \
     -- /bin/sh -c \
-    'test ! -s /proc/net/route && /opt/ui-wasm-comparison >/tmp/ui-wasm-output && printf "render\nshutdown\n" | /opt/ui-wasm-comparison --process-host >/tmp/ui-wasm-process-output && grep -q "^PANEL[[:space:]]1[[:space:]]Town$" /tmp/ui-wasm-process-output && grep -q "^BYE$" /tmp/ui-wasm-process-output && printf isolated >"/tmp/$0"' \
+    'test ! -s /proc/net/route && /opt/ui-wasm-comparison >/tmp/ui-wasm-output && printf "render\nshutdown\n" | /opt/ui-wasm-comparison --process-host >/tmp/ui-wasm-process-output && grep -q "^PANEL[[:space:]]1[[:space:]]Town$" /tmp/ui-wasm-process-output && grep -q "^BYE$" /tmp/ui-wasm-process-output && printf "invalid-command\n" >/tmp/ui-wasm-failure-request && if /opt/ui-wasm-comparison --process-host </tmp/ui-wasm-failure-request >/tmp/ui-wasm-failure-output 2>/tmp/ui-wasm-failure-error; then exit 1; fi && printf "render\nshutdown\n" | /opt/ui-wasm-comparison --process-host >/tmp/ui-wasm-restart-output && grep -q "^PANEL[[:space:]]1[[:space:]]Town$" /tmp/ui-wasm-restart-output && grep -q "^BYE$" /tmp/ui-wasm-restart-output && printf isolated >"/tmp/$0"' \
     "$marker_name"
 
 if [[ -e "$host_marker" ]]; then
@@ -45,4 +45,4 @@ if [[ -e "$host_marker" ]]; then
     exit 1
 fi
 
-echo "ui process isolation smoke: Wasmi comparison and supervised process-host ABI ran with unshared namespaces, private /tmp, and an empty network route"
+echo "ui process isolation smoke: Wasmi comparison, failure/restart, and supervised process-host ABI ran with unshared namespaces, private /tmp, and an empty network route"
