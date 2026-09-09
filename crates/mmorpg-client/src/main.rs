@@ -7,7 +7,7 @@
 
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
-use bevy::window::WindowFocused;
+use bevy::window::{PrimaryWindow, WindowFocused};
 use mmorpg_client_adapter::apply_wire_message;
 #[cfg(test)]
 use mmorpg_client_adapter::{
@@ -154,6 +154,8 @@ struct SecureInputState {
     node_generation: Generation,
     attack_action: ActionId,
     next_physical_event_id: u64,
+    secure_attack_min: Vec2,
+    secure_attack_max: Vec2,
 }
 
 impl SecureInputState {
@@ -173,6 +175,8 @@ impl SecureInputState {
             node_generation,
             attack_action,
             next_physical_event_id: 0,
+            secure_attack_min: Vec2::new(12.0, 12.0),
+            secure_attack_max: Vec2::new(300.0, 68.0),
         }
     }
 
@@ -247,6 +251,7 @@ fn main() {
             (
                 consume_network_events,
                 secure_window_focus,
+                native_secure_pointer_input,
                 keyboard_input,
                 sync_authoritative_presentation,
                 update_status_text,
@@ -269,6 +274,51 @@ fn secure_window_focus(
         if event.focused {
             secure_input.refresh_default_binding();
         }
+    }
+}
+
+fn native_secure_pointer_input(
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    bridge: Res<NetworkBridge>,
+    mut state: ResMut<ClientState>,
+    mut secure_input: ResMut<SecureInputState>,
+) {
+    if !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    if cursor.x < secure_input.secure_attack_min.x
+        || cursor.x > secure_input.secure_attack_max.x
+        || cursor.y < secure_input.secure_attack_min.y
+        || cursor.y > secure_input.secure_attack_max.y
+    {
+        return;
+    }
+
+    let physical_event_id = secure_input.next_physical_event_id();
+    let default_addon = secure_input.default_addon;
+    let default_node = secure_input.default_node;
+    let node_generation = secure_input.node_generation;
+    let attack_action = secure_input.attack_action;
+    match secure_input.registry.dispatch(
+        default_addon,
+        default_node,
+        node_generation,
+        NativePress::PrimaryPointer { physical_event_id },
+    ) {
+        Ok(trusted) => {
+            let (action, _, _, _) = trusted.consume();
+            if action == attack_action {
+                send_command(&bridge, &mut state, ClientCommand::Attack);
+            }
+        }
+        Err(error) => state.log(error.to_string()),
     }
 }
 
@@ -383,6 +433,26 @@ fn setup_ui(mut commands: Commands) {
                 TextColor(Color::WHITE),
                 StatusText,
             ));
+            parent
+                .spawn((
+                    Node {
+                        width: px(260.0),
+                        height: px(32.0),
+                        margin: UiRect::top(px(8.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.12, 0.32, 0.58, 0.95)),
+                ))
+                .with_children(|button| {
+                    button.spawn((
+                        Text::new("Secure attack — click or Space"),
+                        TextFont {
+                            font_size: FontSize::Px(14.0),
+                            ..default()
+                        },
+                        TextColor(Color::WHITE),
+                    ));
+                });
         });
 }
 
