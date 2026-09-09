@@ -1131,6 +1131,13 @@ fn wire_event(event: &Event) -> Option<ServerEvent> {
             },
             health: *health,
         },
+        Event::EnemyCorpseExpired {
+            enemy_id,
+            spawn_generation,
+        } => ServerEvent::EnemyCorpseExpired {
+            enemy_id: enemy_id.0,
+            spawn_generation: *spawn_generation,
+        },
         Event::EnemyDefeated { enemy_id } => ServerEvent::EnemyDefeated {
             enemy_id: enemy_id.0,
         },
@@ -1365,6 +1372,13 @@ fn format_event(event: &Event) -> String {
         } => format!(
             "EVENT released_to_town player={} pos={:.2},{:.2} health={}",
             player_id, position.x, position.y, health
+        ),
+        Event::EnemyCorpseExpired {
+            enemy_id,
+            spawn_generation,
+        } => format!(
+            "EVENT enemy_corpse_expired id={} generation={}",
+            enemy_id, spawn_generation
         ),
         Event::EnemyDefeated { enemy_id } => format!("EVENT enemy_defeated id={enemy_id}"),
         Event::EnemyAttackResolved {

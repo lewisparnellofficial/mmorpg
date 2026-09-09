@@ -458,6 +458,13 @@ fn wire_event(event: &WireServerEvent) -> Result<Event, AdapterError> {
             position: mmorpg_core::Position::new(position.x, position.y),
             health: *health,
         },
+        WireServerEvent::EnemyCorpseExpired {
+            enemy_id,
+            spawn_generation,
+        } => Event::EnemyCorpseExpired {
+            enemy_id: CoreEntityId(*enemy_id),
+            spawn_generation: *spawn_generation,
+        },
         WireServerEvent::EnemyAttackResolved {
             enemy_id,
             target_id,

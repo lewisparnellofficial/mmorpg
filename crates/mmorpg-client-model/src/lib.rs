@@ -502,6 +502,12 @@ impl ClientWorld {
                 player.target = None;
                 ApplyEventResult::Applied
             }
+            Event::EnemyCorpseExpired { enemy_id, .. } => {
+                if !matches!(self.entities.get(enemy_id), Some(ClientEntity::Npc(_))) {
+                    return ApplyEventResult::Ignored;
+                }
+                ApplyEventResult::Applied
+            }
             Event::EnemyDefeated { enemy_id } => {
                 let Some(ClientEntity::Npc(npc)) = self.entities.get_mut(enemy_id) else {
                     return ApplyEventResult::Ignored;

@@ -28,6 +28,11 @@ defeat are carried as typed opcodes 20 and 21; taunt confirmation uses opcode
 22. Defeated players can issue `ReleaseToTown`, which restores health, clears
 target/cast state, and publishes the town-return transition as opcode 23.
 
+Corpses remain lootable for 20 simulation ticks. After that window the world
+clears the generation's threat and reward claimability, emits
+`EnemyCorpseExpired` as opcode 24, and continues to retain the stable entity
+until the scheduled respawn.
+
 This is intentionally narrower than the standalone AI experiment: patrol
 waypoints, corpse expiry, and
 deterministic loot selection across multiple eligible players are not yet
@@ -35,9 +40,11 @@ integrated.
 
 ## Measured local result
 
-The root workspace core suite completed with **25 passed, 0 failed**, including
+The root workspace core suite completed with **27 passed, 0 failed**, including
 `defeated_enemy_respawns_on_a_fixed_tick_and_advances_generation` and
-`enemy_threat_drives_attacks_and_leash_return`. Workspace
+`enemy_threat_drives_attacks_and_leash_return`,
+`defeated_player_can_release_to_town_and_clears_transient_combat`, and
+`enemy_corpse_expires_before_respawn_and_rejects_late_loot`. Workspace
 format/check/test validation and the aggregate validation script remain the
 authoritative regression gates.
 
@@ -46,10 +53,10 @@ authoritative regression gates.
 - **Measured local result:** deterministic core test and workspace/aggregate
   validation output.
 - **Implementation evidence:** fixed-tick respawn deadline, generation reset,
-  reward reset, threat/leash/attack state, typed opcodes, server mappings, and
-  client-model application.
+  corpse expiry and reward cleanup, threat/leash/attack state, typed opcodes,
+  server mappings, and client-model application.
 - **Project inference:** keeping the entity ID stable while advancing a spawn
   generation is a viable boundary for later threat/loot lifecycle work.
-- **Remaining uncertainty:** no proximity patrol/aggro, taunt semantics,
-  multi-player loot, corpse retention, or graphical respawn run has been
-  measured.
+- **Remaining uncertainty:** no patrol waypoints, multi-player loot selection,
+  or graphical respawn run has been measured. Stable corpse entity retention
+  is deliberate; physical entity deletion remains out of scope for this slice.

@@ -21,6 +21,7 @@ const VENDOR_INTERACTION_RANGE: f32 = 12.0;
 const STARTER_GOLD: u32 = 20;
 const STARTER_INVENTORY_CAPACITY: usize = 16;
 const ENEMY_RESPAWN_TICKS: u64 = 100;
+const ENEMY_CORPSE_TICKS: u64 = 20;
 const ENEMY_LEASH_RANGE: f32 = 45.0;
 const ENEMY_MOVE_PER_TICK: f32 = 1.0;
 const ENEMY_ATTACK_RANGE: f32 = 2.0;
@@ -537,6 +538,10 @@ pub enum Event {
         position: Position,
         health: u32,
     },
+    EnemyCorpseExpired {
+        enemy_id: EntityId,
+        spawn_generation: u64,
+    },
     EnemyDefeated {
         enemy_id: EntityId,
     },
@@ -654,6 +659,8 @@ pub struct World {
     enemy_lifecycle: BTreeMap<EntityId, EnemyLifecycle>,
     enemy_threat: BTreeMap<(EntityId, EntityId), u32>,
     enemy_attack_ready: BTreeMap<EntityId, u64>,
+    enemy_corpse_expires: BTreeMap<EntityId, u64>,
+    expired_enemy_rewards: BTreeMap<EntityId, u64>,
     combat_cooldowns: BTreeMap<EntityId, u64>,
     pending_attacks: BTreeMap<EntityId, PendingAttack>,
 }
@@ -672,6 +679,8 @@ impl World {
             enemy_lifecycle: BTreeMap::new(),
             enemy_threat: BTreeMap::new(),
             enemy_attack_ready: BTreeMap::new(),
+            enemy_corpse_expires: BTreeMap::new(),
+            expired_enemy_rewards: BTreeMap::new(),
             combat_cooldowns: BTreeMap::new(),
             pending_attacks: BTreeMap::new(),
         };
@@ -922,11 +931,37 @@ impl World {
             }
             self.enemy_lifecycle
                 .insert(target_id, EnemyLifecycle::Corpse);
+            self.enemy_corpse_expires
+                .insert(target_id, self.tick.saturating_add(ENEMY_CORPSE_TICKS));
+            self.expired_enemy_rewards.remove(&target_id);
             self.advance_kill_quests(player_id, target_template_id, events);
         }
     }
 
     fn advance_enemy_lifecycle(&mut self, events: &mut Vec<Event>) {
+        let expired: Vec<_> = self
+            .enemy_corpse_expires
+            .iter()
+            .filter_map(|(&enemy_id, &expires_at)| {
+                (expires_at <= self.tick && !self.expired_enemy_rewards.contains_key(&enemy_id))
+                    .then_some(enemy_id)
+            })
+            .collect();
+        for enemy_id in expired {
+            let Some(enemy) = self.npcs.get(&enemy_id) else {
+                continue;
+            };
+            if enemy.health > 0 {
+                continue;
+            }
+            self.enemy_threat.retain(|(id, _), _| *id != enemy_id);
+            self.expired_enemy_rewards
+                .insert(enemy_id, enemy.spawn_generation);
+            events.push(Event::EnemyCorpseExpired {
+                enemy_id,
+                spawn_generation: enemy.spawn_generation,
+            });
+        }
         let due: Vec<_> = self
             .npcs
             .values()
@@ -948,6 +983,8 @@ impl World {
             self.enemy_lifecycle.insert(enemy_id, EnemyLifecycle::Idle);
             self.enemy_threat.retain(|(id, _), _| *id != enemy_id);
             self.enemy_attack_ready.remove(&enemy_id);
+            self.enemy_corpse_expires.remove(&enemy_id);
+            self.expired_enemy_rewards.remove(&enemy_id);
             if let Some(reward) = self.enemy_rewards.get_mut(&enemy_id) {
                 reward.owner = None;
                 reward.claimed = false;
@@ -1389,6 +1426,9 @@ impl World {
                     }
                     self.enemy_lifecycle
                         .insert(target_id, EnemyLifecycle::Corpse);
+                    self.enemy_corpse_expires
+                        .insert(target_id, self.tick.saturating_add(ENEMY_CORPSE_TICKS));
+                    self.expired_enemy_rewards.remove(&target_id);
                     self.advance_kill_quests(player_id, target_template_id, events);
                 }
             }
@@ -1651,6 +1691,10 @@ impl World {
                 }
                 if enemy.health > 0 {
                     Self::reject_transaction(events, player_id, "enemy is not defeated");
+                    return;
+                }
+                if self.expired_enemy_rewards.contains_key(&enemy_id) {
+                    Self::reject_transaction(events, player_id, "enemy corpse has expired");
                     return;
                 }
                 let Some(reward) = self.enemy_rewards.get(&enemy_id).copied() else {
@@ -2075,6 +2119,34 @@ mod tests {
         assert_eq!(enemy.position, enemy.spawn_position);
         assert_eq!(enemy.spawn_generation, 2);
         assert_eq!(enemy.respawn_at_tick, None);
+    }
+
+    #[test]
+    fn enemy_corpse_expires_before_respawn_and_rejects_late_loot() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Aria", Role::DamageDealer);
+        let enemy_id = first_enemy(&world);
+        defeat_enemy(&mut world, player_id, enemy_id);
+
+        let generation = world.npc(enemy_id).unwrap().spawn_generation;
+        let mut expiry_events = Vec::new();
+        for _ in 0..20 {
+            expiry_events.extend(world.step([]));
+        }
+        assert!(expiry_events.contains(&Event::EnemyCorpseExpired {
+            enemy_id,
+            spawn_generation: generation,
+        }));
+        assert_eq!(
+            world.step([Command::LootEnemy {
+                player_id,
+                enemy_id,
+            }]),
+            vec![Event::TransactionRejected {
+                player_id,
+                reason: "enemy corpse has expired".to_owned(),
+            }]
+        );
     }
 
     #[test]

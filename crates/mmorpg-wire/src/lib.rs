@@ -762,6 +762,10 @@ pub enum ServerEvent {
         position: PositionState,
         health: u32,
     },
+    EnemyCorpseExpired {
+        enemy_id: u64,
+        spawn_generation: u64,
+    },
     EnemyAttackResolved {
         enemy_id: u64,
         target_id: u64,
@@ -1611,6 +1615,14 @@ fn encode_server_event(
             encode_position(encoder, *position)?;
             encoder.put_u32(*health);
         }
+        ServerEvent::EnemyCorpseExpired {
+            enemy_id,
+            spawn_generation,
+        } => {
+            encoder.put_u8(24);
+            encoder.put_u64(*enemy_id, "enemy_id")?;
+            encoder.put_u64(*spawn_generation, "spawn_generation")?;
+        }
         ServerEvent::PlayerDefeated { player_id } => {
             encoder.put_u8(21);
             encoder.put_u64(*player_id, "player_id")?;
@@ -1806,6 +1818,10 @@ fn decode_server_event(decoder: &mut ServerDecoder<'_>) -> Result<ServerEvent, S
             position: decode_position(decoder)?,
             health: decoder.take_nonzero_u32("health")?,
         }),
+        24 => Ok(ServerEvent::EnemyCorpseExpired {
+            enemy_id: decoder.take_nonzero_u64("enemy_id")?,
+            spawn_generation: decoder.take_nonzero_u64("spawn_generation")?,
+        }),
         21 => Ok(ServerEvent::PlayerDefeated {
             player_id: decoder.take_nonzero_u64("player_id")?,
         }),
@@ -1937,7 +1953,7 @@ pub fn decode_framed_server_event(input: &[u8]) -> Result<FramedServerEvent, Ser
             available: input.len() - 5,
         });
     }
-    let known = (1..=23).contains(&opcode);
+    let known = (1..=24).contains(&opcode);
     if !known {
         return Ok(FramedServerEvent::SkippedUnknown { opcode, length });
     }

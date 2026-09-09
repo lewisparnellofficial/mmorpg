@@ -107,9 +107,10 @@ carried over typed wire. A bounded threat/leash slice also runs in the world
 owner: authoritative damage/healing creates threat, enemies can attack on a
 fixed cooldown, and they return after a leash violation. Proximity patrol and
 aggro and explicit tank taunt are now authoritative as well; defeated players
-can release to town through a typed recovery transition. Patrol waypoints,
-corpse expiry, and multi-player loot selection remain standalone or provisional
-until their full ownership boundaries are integrated.
+can release to town through a typed recovery transition, and corpse loot
+claimability expires before the stable enemy ID respawns. Patrol waypoints and
+multi-player loot selection remain standalone or provisional until their full
+ownership boundaries are integrated.
 
 The current server is intentionally a development process. It does not yet
 provide production authentication, durable persistence, interest-managed
