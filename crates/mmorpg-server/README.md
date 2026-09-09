@@ -98,9 +98,10 @@ use the reliable ordered queue. This is a minimum-interest development
 boundary, not production spatial replication or backpressure.
 
 Purchase, loot, and quest-turn-in commands may use the additive retryable
-wrapper with a nonzero operation ID. The server caches up to 256 completed
-results per instance, scoped by account and character, and returns the cached
-event on a duplicate instead of reapplying the command. When
+wrapper with a nonzero operation ID. The server retains up to 256 completed or
+failed operation outcomes per instance, scoped by account and character, and
+returns the cached event or rejection on a duplicate instead of reapplying the
+command. When
 `--character-store` is enabled, completed result payloads are also appended by
 the off-thread operation journal and reloaded on the next process start. The
 journal records the typed intent before the command enters the authoritative

@@ -25,9 +25,9 @@ durable operation journal.
 - Linux development server with the typed wire listener on loopback.
 - `experiments/wire-gameplay-smoke` sends wrapped purchase, loot, and quest
   turn-in commands with distinct operation identifiers.
-- The server retains at most 256 completed operation results in process memory;
-  with `--character-store`, result payloads are also appended to an operation
-  journal and loaded on restart.
+- The server retains at most 256 completed or failed operation outcomes in
+  process memory; with `--character-store`, result payloads and failed reasons
+  are also appended to an operation journal and loaded on restart.
 - The focused server tests submit the same purchase operation twice and check
   that the second submission returns the cached event without changing gold or
   queueing another authoritative command. They also submit a retryable wrapper

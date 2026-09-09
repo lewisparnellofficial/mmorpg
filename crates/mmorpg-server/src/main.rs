@@ -270,6 +270,7 @@ impl Server {
                 }
             }
         }
+        trim_operation_maps(&mut completed_operations, &mut failed_operations);
         Self {
             world: World::new_starter_zone(),
             #[cfg(test)]
@@ -1240,6 +1241,7 @@ impl Server {
                     self.pending_failed_operations.remove(&result.key)
                 {
                     self.failed_operations.insert(result.key, reason.clone());
+                    self.trim_operation_results();
                     self.queue_wire_error(client_id, reason);
                 }
             } else if !result.prepared
@@ -1309,6 +1311,11 @@ impl Server {
             }
         }
         self.completed_operations.insert(key, result);
+        self.trim_operation_results();
+    }
+
+    fn trim_operation_results(&mut self) {
+        trim_operation_maps(&mut self.completed_operations, &mut self.failed_operations);
     }
 
     fn checkpoint_wire_players(&self) {
@@ -1501,6 +1508,28 @@ impl Server {
                     client.queue_server_message(&ServerMessage::Event(wire_event.clone()));
                 }
             }
+        }
+    }
+}
+
+fn trim_operation_maps(
+    completed: &mut BTreeMap<OperationKey, Vec<ServerMessage>>,
+    failed: &mut BTreeMap<OperationKey, String>,
+) {
+    while completed.len() + failed.len() > MAX_COMPLETED_OPERATIONS {
+        let completed_key = completed.keys().next().copied();
+        let failed_key = failed.keys().next().copied();
+        match (completed_key, failed_key) {
+            (Some(completed_key), Some(failed_key)) if failed_key < completed_key => {
+                failed.remove(&failed_key);
+            }
+            (Some(completed_key), _) => {
+                completed.remove(&completed_key);
+            }
+            (None, Some(failed_key)) => {
+                failed.remove(&failed_key);
+            }
+            (None, None) => break,
         }
     }
 }
@@ -3047,6 +3076,31 @@ mod tests {
         assert_eq!(server.wire_clients.len(), MAX_WIRE_CLIENTS);
         drop(rejected_peer);
         drop(peers);
+    }
+
+    #[test]
+    fn operation_outcome_retention_is_bounded_across_success_and_failure() {
+        let mut server = Server::new(DEFAULT_TICK_HZ, false, None);
+        for operation_id in 1..=(MAX_COMPLETED_OPERATIONS as u64 + 32) {
+            server.failed_operations.insert(
+                OperationKey {
+                    account_id: 1,
+                    character_id: 1,
+                    operation_id,
+                },
+                "rejected".to_owned(),
+            );
+        }
+        server.trim_operation_results();
+        assert_eq!(
+            server.completed_operations.len() + server.failed_operations.len(),
+            MAX_COMPLETED_OPERATIONS
+        );
+        assert!(!server.failed_operations.contains_key(&OperationKey {
+            account_id: 1,
+            character_id: 1,
+            operation_id: 1,
+        }));
     }
 
     #[test]
