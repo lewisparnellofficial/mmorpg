@@ -39,8 +39,11 @@ manifest/source loading from a numeric package directory, rejects path escapes
 and directory/manifest ID mismatches, and verifies the declared source hash
 before VM creation. `StorageWorker` provides bounded off-thread set/delete
 operations for one account/package/schema namespace and atomically replaces a
-validated TOML state file. It is a local persistence proof, not a production
-database or journal. The
+validated TOML state file. It accepts at most ten successful commits per
+rolling 60-second window (sets and deletes share the budget); once exhausted,
+it returns a bounded error without touching the last committed file. It is a
+local persistence proof, not a production database, journal, or multi-process
+rate limiter. The
 `load_from_manifest` entry point validates the manifest, capability set,
 dependency IDs, source entry path, and SHA-256 source integrity before VM
 construction. `PackageRepository::resolve_order` validates a complete package
@@ -53,8 +56,8 @@ presentation transaction.
 
 This is evidence for a Luau embedding direction, not a security certification.
 The remaining production questions include package/signature policy, exact
-runtime pinning and upgrade policy, OS/process isolation, a real secure-input
-provenance implementation, and fuzzing the manifest/value/host-call boundary.
+runtime pinning and upgrade policy, OS/process isolation, and fuzzing the
+manifest/value/host-call boundary.
 
 Run from the repository root:
 

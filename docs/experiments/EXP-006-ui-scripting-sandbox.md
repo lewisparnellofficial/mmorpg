@@ -99,6 +99,11 @@ covered:
 The demo process also completed and reported one created panel, one registered
 event, zero secure intents, and zero errors after a normal event dispatch.
 
+The storage worker regression now also proves that the eleventh successful
+set/delete request in one rolling minute is rejected without changing the
+last committed file. The commit budget is shared by sets and deletes and is
+enforced on the off-thread persistence owner.
+
 These are local test observations, not production capacity measurements or a
 security proof.
 

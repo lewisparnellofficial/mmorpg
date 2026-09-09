@@ -8,7 +8,7 @@
 //! native host operation and is never exposed as a script function.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
@@ -18,6 +18,7 @@ use std::sync::{
     mpsc::{self, Receiver, SyncSender, TrySendError},
 };
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use mlua::{Function, Lua, Result as LuaResult, VmState};
 pub use mmorpg_ui_contract::ViewRecord;
@@ -291,6 +292,8 @@ impl PackageRepository {
 
 const STORAGE_QUEUE_CAPACITY: usize = 32;
 const MAX_STORAGE_FILE_BYTES: usize = mmorpg_ui_contract::MAX_STORAGE_BYTES + 16 * 1024;
+pub const MAX_STORAGE_COMMITS_PER_MINUTE: usize = 10;
+const STORAGE_RATE_WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StorageFile {
@@ -347,6 +350,7 @@ impl StorageWorker {
             .name("mmorpg-addon-storage".to_owned())
             .spawn(move || {
                 let mut storage = initial;
+                let mut committed_at = VecDeque::new();
                 while let Ok(job) = receiver.recv() {
                     match job {
                         StorageJob::Set {
@@ -354,23 +358,45 @@ impl StorageWorker {
                             key,
                             value,
                         } => {
-                            let mut candidate = storage.clone();
-                            let result = candidate
-                                .set(namespace.clone(), key, value)
-                                .map_err(|error| error.to_string())
-                                .and_then(|()| persist_namespace(&path, &candidate, &namespace));
-                            if result.is_ok() {
-                                storage = candidate;
-                            }
+                            let now = Instant::now();
+                            committed_at.retain(|committed| {
+                                now.duration_since(*committed) < STORAGE_RATE_WINDOW
+                            });
+                            let result = if committed_at.len() >= MAX_STORAGE_COMMITS_PER_MINUTE {
+                                Err("storage commit rate limit exceeded".to_owned())
+                            } else {
+                                let mut candidate = storage.clone();
+                                let result = candidate
+                                    .set(namespace.clone(), key, value)
+                                    .map_err(|error| error.to_string())
+                                    .and_then(|()| {
+                                        persist_namespace(&path, &candidate, &namespace)
+                                    });
+                                if result.is_ok() {
+                                    storage = candidate;
+                                    committed_at.push_back(now);
+                                }
+                                result
+                            };
                             let _ = result_sender.send(StorageResult { request_id, result });
                         }
                         StorageJob::Delete { request_id, key } => {
-                            let mut candidate = storage.clone();
-                            candidate.delete(&namespace, &key);
-                            let result = persist_namespace(&path, &candidate, &namespace);
-                            if result.is_ok() {
-                                storage = candidate;
-                            }
+                            let now = Instant::now();
+                            committed_at.retain(|committed| {
+                                now.duration_since(*committed) < STORAGE_RATE_WINDOW
+                            });
+                            let result = if committed_at.len() >= MAX_STORAGE_COMMITS_PER_MINUTE {
+                                Err("storage commit rate limit exceeded".to_owned())
+                            } else {
+                                let mut candidate = storage.clone();
+                                candidate.delete(&namespace, &key);
+                                let result = persist_namespace(&path, &candidate, &namespace);
+                                if result.is_ok() {
+                                    storage = candidate;
+                                    committed_at.push_back(now);
+                                }
+                                result
+                            };
                             let _ = result_sender.send(StorageResult { request_id, result });
                         }
                         StorageJob::Stop => break,
@@ -1696,6 +1722,48 @@ mod tests {
         assert!(deleted.result.is_ok());
         drop(worker);
         assert!(!std::fs::read_to_string(&path).unwrap().contains("Aria"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn storage_worker_rejects_the_eleventh_commit_in_one_minute() {
+        let path = std::env::temp_dir().join(format!(
+            "mmorpg-ui-storage-rate-{}.state",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let namespace = StorageNamespace {
+            account_id: AccountId::new(43).unwrap(),
+            package_id: PackageId::new(9008).unwrap(),
+            schema_version: 1,
+        };
+        let worker = StorageWorker::open(path.clone(), namespace).unwrap();
+        for request_id in 1..=MAX_STORAGE_COMMITS_PER_MINUTE as u64 + 1 {
+            worker
+                .set(
+                    request_id,
+                    format!("key-{request_id}"),
+                    StoredValue::Bool(true),
+                )
+                .unwrap();
+        }
+
+        let mut results = Vec::new();
+        for _ in 0..=MAX_STORAGE_COMMITS_PER_MINUTE {
+            results.push(wait_for_storage_result(&worker));
+        }
+        results.sort_by_key(|result| result.request_id);
+        assert_eq!(results.len(), MAX_STORAGE_COMMITS_PER_MINUTE + 1);
+        assert!(
+            results[..MAX_STORAGE_COMMITS_PER_MINUTE]
+                .iter()
+                .all(|result| result.result.is_ok())
+        );
+        assert_eq!(
+            results[MAX_STORAGE_COMMITS_PER_MINUTE].result,
+            Err("storage commit rate limit exceeded".to_owned())
+        );
+        drop(worker);
         std::fs::remove_file(path).unwrap();
     }
 
