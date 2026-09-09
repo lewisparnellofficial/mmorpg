@@ -63,4 +63,19 @@ if rg -q "VALIDATION|Failed to find|Skipping layer" "$client_log"; then
 fi
 
 frame_time_report=$(rg "frame_time_stats samples=" "$client_log" | tail -n 1)
+if [[ -z "$frame_time_report" ]]; then
+    echo "release graphical smoke did not produce a frame-time report" >&2
+    exit 1
+fi
+p95_ms=$(printf '%s\n' "$frame_time_report" | sed -n 's/.*p95_ms=\([0-9.][0-9.]*\).*/\1/p')
+max_ms=$(printf '%s\n' "$frame_time_report" | sed -n 's/.*max_ms=\([0-9.][0-9.]*\).*/\1/p')
+if [[ -z "$p95_ms" || -z "$max_ms" ]]; then
+    echo "release graphical smoke could not parse frame-time bounds: $frame_time_report" >&2
+    exit 1
+fi
+if ! awk -v p95="$p95_ms" -v max="$max_ms" \
+    'BEGIN { exit !(p95 <= 16.7 && max < 50.0) }'; then
+    echo "release graphical smoke exceeded frame-time bounds: $frame_time_report" >&2
+    exit 1
+fi
 echo "release graphical smoke: optimized Wayland Vulkan startup had no validation or loader diagnostics; $frame_time_report"

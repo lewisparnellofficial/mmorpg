@@ -150,6 +150,10 @@ or renderer-quality acceptance gate.
   bounds with substantial margin. These are release-path observations, not
   universal performance guarantees; debug-path Vulkan validation warnings and
   the physical-input gate remain unresolved.
+- **Bound enforcement:** `smoke-graphical-release.sh` now parses the measured
+  p95 and maximum values and fails aggregate validation if p95 exceeds 16.7 ms
+  or maximum reaches 50 ms. A report is no longer treated as passing merely
+  because sampling succeeded.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,
