@@ -132,6 +132,15 @@ or renderer-quality acceptance gate.
   is evidence that the optimized path is operational on this host, but it is
   not a frame-time distribution and does not establish correctness for the
   debug validation path; the fixed renderer-quality gates remain open.
+- **Release frame-time capture (2026-09-09):** The optimized smoke now accepts
+  `--frame-time-stats` and samples the real Bevy frame delta for the bounded
+  five-second observation. The sampler is capped at 6,000 records and reports
+  p50, p95, p99, and maximum values, so it cannot grow without bound. The
+  measured report was `samples=711 p50_ms=6.829 p95_ms=16.634
+  p99_ms=17.580 max_ms=48.413`. This run is within the fixed 16.7 ms p95 and
+  50 ms maximum thresholds on the documented host. It is a release-path
+  observation, not a universal performance guarantee; debug-path Vulkan
+  validation warnings and the physical-input gate remain unresolved.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,

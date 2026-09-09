@@ -101,6 +101,10 @@ The renderer backend can be requested explicitly for a controlled diagnostic:
 is reported as `render_backend_request=...`; a backend that has no usable
 adapter fails at startup rather than silently being reported as validated.
 
+Pass `--frame-time-stats` to collect a bounded five-second real Bevy frame-time
+distribution. The client reports p50, p95, p99, and maximum milliseconds; this
+is diagnostic instrumentation and does not claim that the PLAN thresholds pass.
+
 On Linux, the host needs a working desktop session and graphics stack. Bevy's
 window and renderer may require distribution-specific X11/Wayland, Vulkan,
 OpenGL, audio, or input development libraries. The exact package names are

@@ -50,6 +50,7 @@ const MAX_OUTGOING_LINES: usize = 64;
 const MAX_WIRE_INPUT_BYTES: usize = mmorpg_wire::MAX_FRAME_SIZE * 2;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const RECONNECT_DELAY: Duration = Duration::from_millis(500);
+const FRAME_TIME_SAMPLE_CAPACITY: usize = 6000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RenderBackendChoice {
@@ -282,6 +283,44 @@ struct AcceptanceSmoke {
     timer: Timer,
 }
 
+#[derive(Resource)]
+struct FrameTimeStats {
+    enabled: bool,
+    samples_ms: Vec<f64>,
+    report_timer: Timer,
+}
+
+impl FrameTimeStats {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            samples_ms: Vec::with_capacity(FRAME_TIME_SAMPLE_CAPACITY),
+            report_timer: Timer::from_seconds(5.0, TimerMode::Once),
+        }
+    }
+
+    fn report(&mut self) {
+        if self.samples_ms.is_empty() {
+            println!("frame_time_stats samples=0");
+            return;
+        }
+        self.samples_ms.sort_by(f64::total_cmp);
+        let percentile = |fraction: f64| {
+            let index = ((self.samples_ms.len() - 1) as f64 * fraction).round() as usize;
+            self.samples_ms[index]
+        };
+        let max = *self.samples_ms.last().expect("non-empty frame samples");
+        println!(
+            "frame_time_stats samples={} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3}",
+            self.samples_ms.len(),
+            percentile(0.50),
+            percentile(0.95),
+            percentile(0.99),
+            max,
+        );
+    }
+}
+
 impl AcceptanceSmoke {
     fn new(enabled: bool) -> Self {
         Self {
@@ -360,6 +399,7 @@ fn main() {
     let mut preferred_character_id = None;
     let mut addon_root = None;
     let mut acceptance_smoke = false;
+    let mut frame_time_stats = false;
     let mut render_backend = RenderBackendChoice::Automatic;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -392,6 +432,7 @@ fn main() {
                 }
             }
             "--acceptance-smoke" => acceptance_smoke = true,
+            "--frame-time-stats" => frame_time_stats = true,
             "--addon-root" => {
                 if addon_root.is_some() {
                     eprintln!("--addon-root may only be specified once");
@@ -466,6 +507,7 @@ fn main() {
             TimerMode::Repeating,
         )))
         .insert_resource(AcceptanceSmoke::new(acceptance_smoke))
+        .insert_resource(FrameTimeStats::new(frame_time_stats))
         .insert_resource(SecureInputState::new(&scripted_ui))
         .add_systems(Startup, setup_scene)
         .add_systems(Startup, setup_ui)
@@ -473,6 +515,7 @@ fn main() {
             Update,
             (
                 consume_network_events,
+                sample_frame_time,
                 acceptance_smoke_input,
                 secure_window_focus,
                 native_secure_pointer_input,
@@ -483,6 +526,18 @@ fn main() {
                 .chain(),
         )
         .run();
+}
+
+fn sample_frame_time(time: Res<Time>, mut stats: ResMut<FrameTimeStats>) {
+    if !stats.enabled {
+        return;
+    }
+    if stats.samples_ms.len() < FRAME_TIME_SAMPLE_CAPACITY {
+        stats.samples_ms.push(time.delta_secs_f64() * 1000.0);
+    }
+    if stats.report_timer.tick(time.delta()).just_finished() {
+        stats.report();
+    }
 }
 
 fn secure_window_focus(

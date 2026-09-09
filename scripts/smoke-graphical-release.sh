@@ -32,6 +32,7 @@ VK_LOADER_LAYERS_DISABLE=VK_LAYER_LSFGVK_frame_generation \
 WINIT_UNIX_BACKEND=wayland timeout 8s \
     "$repo_root/crates/mmorpg-client/target/release/mmorpg-client" \
     127.0.0.1:4830 --wire-address 127.0.0.1:4831 --character-id 1 \
+    --frame-time-stats \
     >"$client_log" 2>&1
 client_status=$?
 set -e
@@ -50,10 +51,16 @@ if ! rg -q "loaded zone 'Greenfield'" "$client_log"; then
     sed -n '1,220p' "$client_log" >&2
     exit 1
 fi
+if ! rg -q "frame_time_stats samples=[1-9][0-9]* " "$client_log"; then
+    echo "release client did not report frame-time samples" >&2
+    sed -n '1,220p' "$client_log" >&2
+    exit 1
+fi
 if rg -q "VALIDATION|Failed to find|Skipping layer" "$client_log"; then
     echo "release graphical smoke reported renderer diagnostics" >&2
     rg -n "VALIDATION|Failed to find|Skipping layer" "$client_log" >&2
     exit 1
 fi
 
-echo "release graphical smoke: optimized Wayland Vulkan startup had no validation or loader diagnostics"
+frame_time_report=$(rg "frame_time_stats samples=" "$client_log" | tail -n 1)
+echo "release graphical smoke: optimized Wayland Vulkan startup had no validation or loader diagnostics; $frame_time_report"
