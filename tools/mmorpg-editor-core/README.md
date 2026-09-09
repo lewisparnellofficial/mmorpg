@@ -109,7 +109,7 @@ printf '%s\n' \
   'state' 'quit' | cargo run -- --bridge
 ```
 
-Bridge commands include native lifecycle events, `brush`, `undo`, `redo`,
+Bridge commands include native lifecycle events, `brush`, `brush-settings`, `undo`, `redo`,
 `save`, `open`, `capture`, `replay`, `state`, and `quit`. `replay` parses a
 captured stroke, reconstructs native-shaped lifecycle events, and routes them
 through the same `TabletEventBridge` before applying terrain. The process owns the same

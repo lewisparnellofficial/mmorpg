@@ -110,6 +110,13 @@ public:
         sendCommand(QStringLiteral("brush %1").arg(operation));
     }
 
+    Q_INVOKABLE void setBrushSettings(double radius, double strength)
+    {
+        sendCommand(QStringLiteral("brush-settings %1 %2")
+                        .arg(radius, 0, 'f', 3)
+                        .arg(strength, 0, 'f', 3));
+    }
+
     Q_INVOKABLE void setViewport(double x, double y, double width, double height)
     {
         viewportX_ = x;

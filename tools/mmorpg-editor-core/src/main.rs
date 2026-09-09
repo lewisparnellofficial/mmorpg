@@ -111,6 +111,24 @@ fn run_bridge() -> Result<(), String> {
                     .map_err(|error| format!("invalid brush: {error}"))?;
                 format!("brush {:?}", operation)
             }
+            "brush-settings" => {
+                let radius = fields
+                    .next()
+                    .ok_or("brush-settings requires radius and strength")?
+                    .parse::<f32>()
+                    .map_err(|error| format!("invalid brush radius: {error}"))?;
+                let strength = fields
+                    .next()
+                    .ok_or("brush-settings requires radius and strength")?
+                    .parse::<f32>()
+                    .map_err(|error| format!("invalid brush strength: {error}"))?;
+                brush = BrushSettings::new(radius, strength, brush.operation)
+                    .map_err(|error| format!("invalid brush settings: {error}"))?;
+                format!(
+                    "brush-settings radius={} strength={}",
+                    brush.radius, brush.strength
+                )
+            }
             "undo" => {
                 let result = format!("undo {}", editor.undo());
                 print_preview(&editor);

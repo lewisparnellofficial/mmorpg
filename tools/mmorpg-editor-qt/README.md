@@ -14,6 +14,7 @@ The shell currently provides:
 - mouse fallback with pressure `1.0`;
 - suppression of compatibility mouse input after a handled tablet press;
 - a visible input-diagnostics panel;
+- raise/lower/smooth selection plus bounded radius and strength controls;
 - a `QProcess` bridge to the Rust `mmorpg-editor-core` command protocol for
   native stroke application, brush selection, undo/redo, validated atomic
   save/reload, captured-stroke export, and captured-stroke replay.

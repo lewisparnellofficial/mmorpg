@@ -126,6 +126,20 @@ ApplicationWindow {
                         text: "Smooth"; Layout.fillWidth: true
                         onClicked: tabletBridge.selectBrush("smooth")
                     }
+                    Label { text: "Radius" }
+                    Slider {
+                        id: radiusSlider
+                        Layout.fillWidth: true
+                        from: 1; to: 12; value: 5; stepSize: 0.5
+                        onValueChanged: tabletBridge.setBrushSettings(value, strengthSlider.value)
+                    }
+                    Label { text: "Strength" }
+                    Slider {
+                        id: strengthSlider
+                        Layout.fillWidth: true
+                        from: 0.1; to: 1; value: 0.8; stepSize: 0.05
+                        onValueChanged: tabletBridge.setBrushSettings(radiusSlider.value, value)
+                    }
                     RowLayout {
                         Layout.fillWidth: true
                         Button {
