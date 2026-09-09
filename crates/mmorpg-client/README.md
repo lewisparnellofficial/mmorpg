@@ -48,8 +48,10 @@ repository or signature privilege.
 For the Wasmi isolation comparison, `--addon-process-host PATH` starts an
 explicit supervised process host, waits for its `READY` record, requests a
 contract-backed panel, and retains the child until client shutdown. The host
-executable is launched as `PATH --process-host`. This is lifecycle and
-failure-boundary evidence for the alternative runtime, not the production
+executable is launched as `PATH --process-host`. Add
+`--addon-process-package-root PATH` to make that host load a manifest-declared,
+SHA-256-verified WAT entry instead of its built-in fixture. This is lifecycle
+and failure-boundary evidence for the alternative runtime, not the production
 addon decision; the default client still uses the embedded Luau adapter.
 
 The background worker sends the loopback-only development token,

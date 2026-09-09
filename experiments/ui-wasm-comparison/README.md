@@ -16,6 +16,7 @@ cargo fmt --manifest-path experiments/ui-wasm-comparison/Cargo.toml -- --check
 cargo test --manifest-path experiments/ui-wasm-comparison/Cargo.toml
 cargo run --quiet --manifest-path experiments/ui-wasm-comparison/Cargo.toml
 printf 'render\nshutdown\n' | cargo run --quiet --manifest-path experiments/ui-wasm-comparison/Cargo.toml -- --process-host
+printf 'render\nshutdown\n' | cargo run --quiet --manifest-path experiments/ui-wasm-comparison/Cargo.toml -- --process-host --package-root /path/to/validated-wat-package
 ./scripts/smoke-ui-process-isolation.sh
 ```
 
@@ -25,4 +26,6 @@ requirements. The optional process smoke uses bubblewrap when available to
 prove that this comparison can run behind an unshared namespace/private-temp
 wrapper. The `--process-host` mode exercises a supervised stdin/stdout
 boundary with explicit `READY`, `PANEL`, and `BYE` lifecycle records; it is
-still not integrated into the graphical client.
+still not a production package/runtime policy. `--package-root` loads a
+manifest-declared WAT entry only after path containment and SHA-256 integrity
+validation, and the graphical client smoke exercises that packaged path.

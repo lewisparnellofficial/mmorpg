@@ -39,9 +39,10 @@ future acceptance decision must choose one of these explicit boundaries:
    operations, the process or OS wrapper is integrated with the graphical
    client lifecycle, fuel/memory/host quotas are measured on supported minimum
    hardware, and failure/restart semantics are fixture-tested. The repository
-   now has an opt-in comparison-host lifecycle, a graphical startup smoke, and
-   a namespace failure/restart fixture; package-driven guest loading and
-   minimum-hardware calibration remain open.
+   now has an opt-in comparison-host lifecycle, manifest/hash-checked guest
+   loading, a graphical startup smoke, and a namespace failure/restart
+   fixture; production package/runtime policy and minimum-hardware calibration
+   remain open.
 
 The process wrapper is an isolation proof for the alternative, not a claim
 that the current graphical client already executes addons out of process.
@@ -101,7 +102,7 @@ outside the player-addon threat model.
 
 ## Conditions for acceptance or revision
 
-Accept one runtime only after package-driven adapter behavior, minimum-hardware,
+Accept one runtime only after production package/runtime behavior, minimum-hardware,
 and production failure-isolation/restart evidence is recorded. Revise this ADR
 if the physical/client gate exposes a host cost that invalidates the current
 quotas, if a runtime escapes the contract, if process supervision cannot meet

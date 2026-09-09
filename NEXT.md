@@ -23,9 +23,9 @@ adversarial gate, extended fuzz corpus, Wasmi guest-memory adapter, and
 opt-in graphical process-host lifecycle are implemented. The proposed
 boundary and explicit acceptance criteria are recorded in
 [ADR-010](docs/decisions/ADR-010-addon-runtime-boundary.md). The decision
-remains provisional because the process host is still a comparison adapter,
-not a package-driven production runtime, and minimum-hardware evidence is
-not available.
+remains provisional because the process host's package loader is still a
+comparison adapter rather than a production package/runtime policy, and
+minimum-hardware evidence is not available.
 
 ## 4. Finish the first vertical-slice acceptance record
 

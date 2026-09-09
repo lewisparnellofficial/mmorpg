@@ -244,10 +244,15 @@ impl Drop for AddonProcessSupervisor {
 
 fn build_process_scripted_ui_presentation(
     host_path: &Path,
+    package_root: Option<&Path>,
 ) -> Result<(ScriptedUiPresentation, AddonProcessSupervisor), String> {
+    let mut command = Command::new(host_path);
+    command.arg("--process-host");
+    if let Some(package_root) = package_root {
+        command.args(["--package-root", package_root.to_string_lossy().as_ref()]);
+    }
     let mut child_guard = ChildGuard(Some(
-        Command::new(host_path)
-            .arg("--process-host")
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -301,7 +306,7 @@ fn build_process_scripted_ui_presentation(
         .take()
         .expect("addon process child guard must contain the child");
     println!(
-        "SCRIPTED_UI source=wasmi-process host={} node={node_id}",
+        "SCRIPTED_UI source=wasmi-process host={} node={node_id} label={label}",
         host_path.display()
     );
     let presentation = ScriptedUiPresentation {
@@ -515,6 +520,7 @@ fn main() {
     let mut preferred_character_id = None;
     let mut addon_root = None;
     let mut addon_process_host = None;
+    let mut addon_process_package_root = None;
     let mut acceptance_smoke = false;
     let mut frame_time_stats = false;
     let mut render_backend = RenderBackendChoice::Automatic;
@@ -572,6 +578,17 @@ fn main() {
                     return;
                 }
             }
+            "--addon-process-package-root" => {
+                if addon_process_package_root.is_some() {
+                    eprintln!("--addon-process-package-root may only be specified once");
+                    return;
+                }
+                addon_process_package_root = arguments.next();
+                if addon_process_package_root.is_none() {
+                    eprintln!("--addon-process-package-root requires a package directory");
+                    return;
+                }
+            }
             "--render-backend" => {
                 let Some(value) = arguments.next() else {
                     eprintln!("--render-backend requires auto, vulkan, or gl");
@@ -595,8 +612,15 @@ fn main() {
         eprintln!("--addon-root and --addon-process-host are mutually exclusive");
         return;
     }
+    if addon_process_package_root.is_some() && addon_process_host.is_none() {
+        eprintln!("--addon-process-package-root requires --addon-process-host");
+        return;
+    }
     let (scripted_ui, addon_process_supervisor) = if let Some(host_path) = addon_process_host {
-        match build_process_scripted_ui_presentation(Path::new(&host_path)) {
+        match build_process_scripted_ui_presentation(
+            Path::new(&host_path),
+            addon_process_package_root.as_deref().map(Path::new),
+        ) {
             Ok(result) => (result.0, Some(result.1)),
             Err(error) => {
                 eprintln!("{error}");

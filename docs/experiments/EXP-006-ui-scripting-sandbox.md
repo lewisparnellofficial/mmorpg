@@ -231,8 +231,10 @@ client still uses the embedded Luau adapter; its opt-in
 `--addon-process-host` path now starts this comparison host, consumes its
 `READY` and contract-backed `PANEL` records, reaches the typed world, and
 retains the child until shutdown. The namespace process smoke also forces a
-host failure and replaces it with a fresh successful host. Package-driven
-Wasmi loading and minimum-hardware calibration remain open.
+host failure and replaces it with a fresh successful host. The comparison host
+now loads a manifest-declared WAT entry after path and SHA-256 validation;
+production package/runtime policy and minimum-hardware calibration remain
+open.
 
 ## Result
 

@@ -1,10 +1,14 @@
+use std::fs;
 use std::io::{self, BufRead, Write};
+use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 use mmorpg_ui_contract::{
     Generation, Handle, MAX_TEXT_BYTES, NodeId, PackageId, UiLimits, UiOperation,
     validate_operations,
 };
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use wasmi::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, TrapCode};
 
 const FUEL_BUDGET: u64 = 100_000;
@@ -14,15 +18,30 @@ const ABI_OK: i32 = 0;
 const ABI_INVALID_MEMORY: i32 = -1;
 const ABI_INVALID_UTF8: i32 = -2;
 const ABI_TEXT_TOO_LARGE: i32 = -3;
+const MAX_PACKAGE_SOURCE_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Debug)]
+struct GuestPackage {
+    package_id: PackageId,
+    source: String,
+}
+
+#[derive(Deserialize)]
+struct PackageManifest {
+    package_id: u64,
+    entry: String,
+    integrity_sha256: String,
+}
 
 struct HostState {
     limits: StoreLimits,
     operations: Vec<UiOperation>,
     next_node: u64,
+    package_id: PackageId,
 }
 
 impl HostState {
-    fn new() -> Self {
+    fn new(package_id: PackageId) -> Self {
         Self {
             limits: StoreLimitsBuilder::new()
                 .memory_size(MAX_LINEAR_MEMORY_PAGES as usize * WASM_PAGE_BYTES)
@@ -33,6 +52,7 @@ impl HostState {
                 .build(),
             operations: Vec::new(),
             next_node: 1,
+            package_id,
         }
     }
 }
@@ -57,7 +77,14 @@ fn compile(engine: &Engine, source: &str) -> Module {
 }
 
 fn bounded_store(engine: &Engine) -> Store<HostState> {
-    let mut store = Store::new(engine, HostState::new());
+    bounded_store_for_package(
+        engine,
+        PackageId::new(7).expect("fixed package ID is non-zero"),
+    )
+}
+
+fn bounded_store_for_package(engine: &Engine, package_id: PackageId) -> Store<HostState> {
+    let mut store = Store::new(engine, HostState::new(package_id));
     store.limiter(|state| &mut state.limits);
     store
 }
@@ -87,7 +114,7 @@ fn define_ui_imports(linker: &mut Linker<HostState>) {
                 caller.data_mut().next_node += 1;
                 let handle = Handle {
                     node,
-                    owner: PackageId::new(7).expect("fixed package ID is non-zero"),
+                    owner: caller.data().package_id,
                     generation: Generation::new(1).expect("fixed generation is non-zero"),
                 };
                 caller
@@ -112,12 +139,12 @@ const PANEL_MODULE: &str = r#"
         drop))
 "#;
 
-fn render_panel() -> Result<String, String> {
+fn render_panel(source: &str, package_id: PackageId) -> Result<String, String> {
     let engine = engine();
-    let module = compile(&engine, PANEL_MODULE);
+    let module = compile(&engine, source);
     let mut linker = Linker::new(&engine);
     define_ui_imports(&mut linker);
-    let mut store = bounded_store(&engine);
+    let mut store = bounded_store_for_package(&engine, package_id);
     store
         .set_fuel(FUEL_BUDGET)
         .map_err(|error| format!("fuel setup failed: {error}"))?;
@@ -131,7 +158,7 @@ fn render_panel() -> Result<String, String> {
         .map_err(|error| format!("guest execution failed: {error}"))?;
     validate_operations(
         &store.data().operations,
-        PackageId::new(7).expect("fixed package ID is non-zero"),
+        package_id,
         Generation::new(1).expect("fixed generation is non-zero"),
         &UiLimits::default(),
     )
@@ -144,7 +171,50 @@ fn render_panel() -> Result<String, String> {
     }
 }
 
-fn process_host() -> Result<(), String> {
+fn load_package(root: &Path) -> Result<GuestPackage, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("cannot canonicalize package root: {error}"))?;
+    let manifest_path = root.join("manifest.toml");
+    let manifest_source = fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("cannot read package manifest: {error}"))?;
+    let manifest: PackageManifest = toml::from_str(&manifest_source)
+        .map_err(|error| format!("cannot parse package manifest: {error}"))?;
+    let package_id = PackageId::new(manifest.package_id)
+        .ok_or_else(|| "package manifest ID must be non-zero".to_owned())?;
+    let entry = PathBuf::from(&manifest.entry);
+    if entry.is_absolute()
+        || entry
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("package entry must remain inside the package root".to_owned());
+    }
+    let entry_path = root.join(entry);
+    let entry_path = entry_path
+        .canonicalize()
+        .map_err(|error| format!("cannot canonicalize package entry: {error}"))?;
+    if !entry_path.starts_with(&root) {
+        return Err("package entry escaped the package root".to_owned());
+    }
+    let source_bytes =
+        fs::read(&entry_path).map_err(|error| format!("cannot read package entry: {error}"))?;
+    if source_bytes.len() > MAX_PACKAGE_SOURCE_BYTES {
+        return Err("package entry exceeds the source limit".to_owned());
+    }
+    let actual_hash = format!("{:x}", Sha256::digest(&source_bytes));
+    if manifest.integrity_sha256 != actual_hash {
+        return Err(format!(
+            "package integrity mismatch: expected {}, got {actual_hash}",
+            manifest.integrity_sha256
+        ));
+    }
+    let source = String::from_utf8(source_bytes)
+        .map_err(|_| "package entry must be valid UTF-8 WAT".to_owned())?;
+    Ok(GuestPackage { package_id, source })
+}
+
+fn process_host(package: GuestPackage) -> Result<(), String> {
     let stdin = io::stdin();
     let mut stdout = io::BufWriter::new(io::stdout().lock());
     writeln!(stdout, "READY").map_err(|error| error.to_string())?;
@@ -152,7 +222,7 @@ fn process_host() -> Result<(), String> {
     for line in stdin.lock().lines() {
         match line.map_err(|error| error.to_string())?.trim() {
             "render" => {
-                let result = render_panel()?;
+                let result = render_panel(&package.source, package.package_id)?;
                 writeln!(stdout, "{result}").map_err(|error| error.to_string())?;
                 stdout.flush().map_err(|error| error.to_string())?;
             }
@@ -170,7 +240,30 @@ fn process_host() -> Result<(), String> {
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--process-host") {
-        if let Err(error) = process_host() {
+        let arguments: Vec<String> = std::env::args().skip(2).collect();
+        let mut package_root = None;
+        let mut index = 0;
+        while index < arguments.len() {
+            if arguments[index] == "--package-root" {
+                if package_root.is_some() || index + 1 >= arguments.len() {
+                    eprintln!("--package-root requires exactly one directory");
+                    std::process::exit(2);
+                }
+                package_root = Some(PathBuf::from(&arguments[index + 1]));
+                index += 2;
+            } else {
+                eprintln!("unknown process-host argument '{}'", arguments[index]);
+                std::process::exit(2);
+            }
+        }
+        let package = match package_root {
+            Some(root) => load_package(&root),
+            None => Ok(GuestPackage {
+                package_id: PackageId::new(7).expect("fixed package ID is non-zero"),
+                source: PANEL_MODULE.to_owned(),
+            }),
+        };
+        if let Err(error) = package.and_then(process_host) {
             eprintln!("process-host error: {error}");
             std::process::exit(1);
         }

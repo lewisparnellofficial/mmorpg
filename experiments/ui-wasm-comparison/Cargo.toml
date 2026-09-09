@@ -8,6 +8,9 @@ publish = false
 
 [dependencies]
 mmorpg-ui-contract = { path = "../../crates/mmorpg-ui-contract" }
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+toml = "0.8"
 wasmi = "2.0"
 wat = "1.258"
 
