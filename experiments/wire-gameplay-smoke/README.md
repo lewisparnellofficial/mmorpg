@@ -17,6 +17,21 @@ development server process and does not measure capacity, latency, persistence,
 production authentication, or production backpressure. The development auth
 token is intentionally not a deployable credential mechanism.
 
+The crate also provides a deterministic three-role shared-zone gate. It opens
+three typed connections for the tank, healer, and damage characters, verifies
+that each receives only its own detailed player snapshot, forms a two-member
+party, and verifies that only the party members receive the private party
+summary:
+
+```bash
+cargo run --quiet --manifest-path experiments/wire-gameplay-smoke/Cargo.toml \
+  --bin three-client-gate -- 127.0.0.1:4001
+```
+
+The three-client gate is a headless protocol/authority check, not the graphical
+Milestone 13 acceptance run. It does not yet exercise the full encounter,
+multiple loot generations, restart/retry, or slow-client scenarios.
+
 ## Run
 
 Start the server with its optional wire listener:

@@ -34,6 +34,10 @@ typed wire path.
   layout and acquire-semaphore errors, and the run did not provide evidence of
   three simultaneous graphical clients, role interaction, stranger privacy,
   restart/retry, or the full encounter loop.
+- **Headless companion result:** The typed three-role gate subsequently passed
+  with tank player 5, healer player 6, damage player 7, and party 1. It
+  verified own-player-only detailed snapshots, member-only party summaries,
+  and stranger privacy. This does not substitute for the graphical run.
 
 ## Interpretation
 
