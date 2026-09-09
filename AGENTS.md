@@ -258,6 +258,7 @@ cargo test --manifest-path crates/mmorpg-wire/Cargo.toml
 cargo test --manifest-path experiments/ai-respawn/Cargo.toml
 cargo run --quiet --manifest-path experiments/ai-respawn/Cargo.toml
 cargo test --manifest-path tools/mmorpg-editor-core/Cargo.toml
+./scripts/smoke-editor-bridge.sh
 cargo test --manifest-path experiments/client-presentation-replay/Cargo.toml
 cargo run --quiet --manifest-path experiments/client-presentation-replay/Cargo.toml
 ```

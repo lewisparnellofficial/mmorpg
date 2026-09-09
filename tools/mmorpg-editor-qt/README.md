@@ -12,12 +12,17 @@ The shell currently provides:
 - native `QTabletEvent` press/move/release handling;
 - mouse fallback with pressure `1.0`;
 - suppression of compatibility mouse input after a handled tablet press;
-- a visible input-diagnostics panel.
+- a visible input-diagnostics panel;
+- a `QProcess` bridge to the Rust `mmorpg-editor-core` command protocol for
+  native stroke application, brush selection, undo/redo, validated atomic
+  save/reload, and captured-stroke export.
 
-This is a build and event-routing proof, not the completed editor milestone.
-Cancellation, conversion into `NativeTabletEvent`, persistence, replay,
-undo/redo commands, and physical pen measurements remain to be wired and
-recorded in `EXP-007`.
+The C++ shell remains free of terrain rules: it formats native samples into a
+small process boundary, while `TabletEventBridge`, `TerrainEditor`,
+`CapturedStroke`, and the source parser remain Rust-owned. This is still not
+the completed editor milestone because the Quick3D surface is a visual proof,
+not a heightmap mesh, and physical pen measurements remain to be recorded in
+`EXP-007`.
 
 ## Headless configure and build
 
@@ -28,5 +33,8 @@ cmake --build /tmp/mmorpg-editor-qt-build --parallel
 ```
 
 The build does not launch a window and therefore belongs in aggregate
-validation. Run the shell with `./scripts/run-editor.sh` from a Linux desktop
-session.
+validation. Build the Rust bridge before launching the shell; the convenience
+launcher does this automatically. Run the shell with `./scripts/run-editor.sh`
+from a Linux desktop session. Override the bridge and output paths with
+`MMORPG_EDITOR_CORE_BRIDGE`, `MMORPG_EDITOR_TERRAIN_OUTPUT`, and
+`MMORPG_EDITOR_CAPTURE_OUTPUT` when needed.

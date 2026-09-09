@@ -100,6 +100,21 @@ deterministic source document so the format can be inspected or loaded by
 another tool. A future Qt or SDL desktop shell will feed real tablet events
 into the same `TerrainEditor` API.
 
+The Qt shell uses the same core through a bounded local process bridge:
+
+```bash
+printf '%s\n' \
+  'event press 16 16 0.75 pen 0 0 0 1' \
+  'event release 16 16 0.75 pen 0 0 0 2' \
+  'state' 'quit' | cargo run -- --bridge
+```
+
+Bridge commands include native lifecycle events, `brush`, `undo`, `redo`,
+`save`, `open`, `capture`, `state`, and `quit`. The process owns the same
+`TabletEventBridge`, `TerrainEditor`, and `CapturedStroke` boundaries used by
+the library tests; the Qt shell only serializes native samples and displays
+the returned status.
+
 The crate has no third-party dependencies and is not part of the repository's
 main workspace yet; that keeps this isolated spike independently buildable
 until the editor application boundary is selected.

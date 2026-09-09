@@ -1,13 +1,22 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
 
 use mmorpg_editor_core::{
-    BrushOperation, BrushSettings, HeightMap, NormalizedTabletSample, TabletPoint, TerrainDocument,
+    BrushOperation, BrushSettings, CapturedStroke, HeightMap, InputSource, NativeTabletEvent,
+    NativeTabletPhase, NormalizedTabletSample, TabletEventBridge, TabletPoint, TerrainDocument,
     TerrainEditor,
 };
 
 fn main() {
+    if env::args().nth(1).as_deref() == Some("--bridge") {
+        if let Err(message) = run_bridge() {
+            eprintln!("editor bridge: {message}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let output = match parse_output_path() {
         Ok(output) => output,
         Err(message) => {
@@ -48,6 +57,175 @@ fn main() {
         );
         println!("use --output <path> to write the deterministic terrain source");
     }
+}
+
+fn run_bridge() -> Result<(), String> {
+    let map = HeightMap::new(32, 32, 0.0, 1.0, 0.0)
+        .map_err(|error| format!("cannot create bridge document: {error}"))?;
+    let mut editor = TerrainEditor::new(TerrainDocument::new(map));
+    let mut bridge = TabletEventBridge::new();
+    let mut brush = BrushSettings::new(5.0, 0.8, BrushOperation::Raise)
+        .map_err(|error| format!("cannot create bridge brush: {error}"))?;
+    let mut last_capture: Option<CapturedStroke> = None;
+    println!("ready");
+    io::stdout().flush().map_err(|error| error.to_string())?;
+
+    for line in io::stdin().lock().lines() {
+        let line = line.map_err(|error| error.to_string())?;
+        let mut fields = line.split_whitespace();
+        let command = fields.next().unwrap_or_default();
+        let result = match command {
+            "event" => {
+                let event = parse_native_event(&mut fields)?;
+                match bridge
+                    .push(event)
+                    .map_err(|error| format!("bridge rejected event: {error}"))?
+                {
+                    mmorpg_editor_core::TabletBridgeOutput::StrokeFinished(points) => {
+                        let capture = CapturedStroke::from_points(points.clone())
+                            .map_err(|error| format!("capture rejected stroke: {error}"))?;
+                        let outcome = editor
+                            .apply_stroke(&points, brush)
+                            .map_err(|error| format!("terrain rejected stroke: {error}"))?;
+                        last_capture = Some(capture);
+                        format!(
+                            "stroke-finished changed_samples={} undo={}",
+                            outcome.changed_samples,
+                            editor.can_undo()
+                        )
+                    }
+                    output => format!("event {:?}", output),
+                }
+            }
+            "brush" => {
+                let operation = match fields.next() {
+                    Some("raise") => BrushOperation::Raise,
+                    Some("lower") => BrushOperation::Lower,
+                    Some("smooth") => BrushOperation::Smooth,
+                    Some(value) => return Err(format!("unknown brush operation '{value}'")),
+                    None => return Err("brush requires raise, lower, or smooth".into()),
+                };
+                brush = BrushSettings::new(brush.radius, brush.strength, operation)
+                    .map_err(|error| format!("invalid brush: {error}"))?;
+                format!("brush {:?}", operation)
+            }
+            "undo" => format!("undo {}", editor.undo()),
+            "redo" => format!("redo {}", editor.redo()),
+            "save" => {
+                let path = remaining_path(&mut fields, "save")?;
+                atomic_write(Path::new(&path), editor.document().to_source().as_bytes())?;
+                format!("saved {path}")
+            }
+            "open" => {
+                let path = remaining_path(&mut fields, "open")?;
+                let source = fs::read_to_string(&path)
+                    .map_err(|error| format!("could not read {path}: {error}"))?;
+                let document = TerrainDocument::from_source(&source)
+                    .map_err(|error| format!("could not parse {path}: {error}"))?;
+                editor = TerrainEditor::new(document);
+                bridge = TabletEventBridge::new();
+                last_capture = None;
+                format!("opened {path}")
+            }
+            "capture" => {
+                let path = remaining_path(&mut fields, "capture")?;
+                let capture = last_capture
+                    .as_ref()
+                    .ok_or_else(|| "no completed stroke is available".to_owned())?;
+                atomic_write(Path::new(&path), capture.to_source().as_bytes())?;
+                format!("captured {path}")
+            }
+            "state" => format!(
+                "state undo={} redo={} source_bytes={}",
+                editor.can_undo(),
+                editor.can_redo(),
+                editor.document().to_source().len()
+            ),
+            "quit" => break,
+            "" => continue,
+            value => return Err(format!("unknown bridge command '{value}'")),
+        };
+        println!("{result}");
+        io::stdout().flush().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn parse_native_event<'a>(
+    fields: &mut impl Iterator<Item = &'a str>,
+) -> Result<NativeTabletEvent, String> {
+    let phase = match fields.next().ok_or("event requires a phase")? {
+        "proximity-enter" => NativeTabletPhase::ProximityEnter,
+        "press" => NativeTabletPhase::Press,
+        "move" => NativeTabletPhase::Move,
+        "release" => NativeTabletPhase::Release,
+        "cancel" => NativeTabletPhase::Cancel,
+        "proximity-leave" => NativeTabletPhase::ProximityLeave,
+        value => return Err(format!("unknown event phase '{value}'")),
+    };
+    let x = parse_f32(fields.next(), "x")?;
+    let y = parse_f32(fields.next(), "y")?;
+    let pressure = parse_f32(fields.next(), "pressure")?;
+    let source = match fields.next().ok_or("event requires a source")? {
+        "pen" => InputSource::Pen,
+        "eraser" => InputSource::Eraser,
+        "mouse" => InputSource::Mouse,
+        value => return Err(format!("unknown event source '{value}'")),
+    };
+    let tilt_x = parse_f32(fields.next(), "tilt_x")?;
+    let tilt_y = parse_f32(fields.next(), "tilt_y")?;
+    let rotation = parse_f32(fields.next(), "rotation")?;
+    let timestamp_ns = fields
+        .next()
+        .ok_or("event requires a timestamp")?
+        .parse::<u64>()
+        .map_err(|_| "timestamp must be an unsigned integer".to_owned())?;
+    let mut event = match source {
+        InputSource::Mouse => NativeTabletEvent::from_mouse(phase, x, y, timestamp_ns),
+        InputSource::Pen | InputSource::Eraser => NativeTabletEvent::from_qt(
+            phase,
+            x,
+            y,
+            pressure,
+            tilt_x,
+            tilt_y,
+            rotation,
+            source == InputSource::Eraser,
+        ),
+    }
+    .map_err(|error| format!("invalid native event: {error}"))?;
+    event.source = source;
+    Ok(event.with_timestamp(timestamp_ns))
+}
+
+fn parse_f32(value: Option<&str>, field: &str) -> Result<f32, String> {
+    value
+        .ok_or_else(|| format!("event requires {field}"))?
+        .parse::<f32>()
+        .map_err(|_| format!("{field} must be a number"))
+}
+
+fn remaining_path<'a>(
+    fields: &mut impl Iterator<Item = &'a str>,
+    command: &str,
+) -> Result<String, String> {
+    let path = fields.collect::<Vec<_>>().join(" ");
+    if path.is_empty() {
+        Err(format!("{command} requires a path"))
+    } else {
+        Ok(path)
+    }
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, bytes)
+        .map_err(|error| format!("could not write temporary file: {error}"))?;
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("could not replace destination: {error}"));
+    }
+    Ok(())
 }
 
 fn parse_output_path() -> Result<Option<PathBuf>, String> {

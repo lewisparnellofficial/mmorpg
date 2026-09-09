@@ -92,6 +92,7 @@ run_manifest_checks crates/mmorpg-client-adapter/Cargo.toml "client adapter"
 run_manifest_checks crates/mmorpg-client-transport/Cargo.toml "client transport"
 
 run_manifest_checks tools/mmorpg-editor-core/Cargo.toml "editor core"
+run_step "editor bridge smoke" "$repo_root/scripts/smoke-editor-bridge.sh"
 qt_editor_build_dir=${MMORPG_EDITOR_QT_VALIDATE_BUILD_DIR:-/tmp/mmorpg-editor-qt-validation}
 run_step "Qt editor shell: configure" cmake -S "$repo_root/tools/mmorpg-editor-qt" \
     -B "$qt_editor_build_dir" -DCMAKE_BUILD_TYPE=Release

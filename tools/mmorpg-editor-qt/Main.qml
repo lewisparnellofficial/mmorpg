@@ -95,17 +95,53 @@ ApplicationWindow {
                     Label {
                         Layout.fillWidth: true
                         wrapMode: Text.Wrap
+                        text: "Rust core: " + tabletBridge.coreStatus
+                        color: "#53718f"
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
                         text: "Draw with a pen or mouse over the preview. Tablet-generated compatibility mouse events are suppressed."
                         color: "#596579"
                     }
                     Item { Layout.fillHeight: true }
-                    Button { text: "Raise"; Layout.fillWidth: true }
-                    Button { text: "Lower"; Layout.fillWidth: true }
-                    Button { text: "Smooth"; Layout.fillWidth: true }
+                    Button {
+                        text: "Raise"; Layout.fillWidth: true
+                        onClicked: tabletBridge.selectBrush("raise")
+                    }
+                    Button {
+                        text: "Lower"; Layout.fillWidth: true
+                        onClicked: tabletBridge.selectBrush("lower")
+                    }
+                    Button {
+                        text: "Smooth"; Layout.fillWidth: true
+                        onClicked: tabletBridge.selectBrush("smooth")
+                    }
                     RowLayout {
                         Layout.fillWidth: true
-                        Button { text: "Undo"; Layout.fillWidth: true }
-                        Button { text: "Redo"; Layout.fillWidth: true }
+                        Button {
+                            text: "Undo"; Layout.fillWidth: true
+                            onClicked: tabletBridge.undoTerrain()
+                        }
+                        Button {
+                            text: "Redo"; Layout.fillWidth: true
+                            onClicked: tabletBridge.redoTerrain()
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Button {
+                            text: "Save"; Layout.fillWidth: true
+                            onClicked: tabletBridge.saveTerrain()
+                        }
+                        Button {
+                            text: "Reload"; Layout.fillWidth: true
+                            onClicked: tabletBridge.reloadTerrain()
+                        }
+                        Button {
+                            text: "Capture"; Layout.fillWidth: true
+                            onClicked: tabletBridge.captureStroke()
+                        }
                     }
                 }
             }
@@ -113,7 +149,7 @@ ApplicationWindow {
 
         Label {
             Layout.fillWidth: true
-            text: "Native lifecycle: proximity / press / move / release / focus-loss cancellation; Rust terrain persistence wiring remains next."
+            text: "Native lifecycle: proximity / press / move / release / focus-loss cancellation; events route into the Rust TerrainEditor bridge."
             color: "#9aa8bb"
         }
     }

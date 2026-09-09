@@ -26,21 +26,25 @@ against Qt 6.11.2 with Qt Quick, Qt Quick3D, and Qt Quick Controls. Its native
 loss, and focus-loss lifecycle events, exposes input diagnostics to QML,
 accepts mouse input as pressure `1.0`, adds monotonic nanosecond diagnostics,
 and suppresses compatibility mouse handling after a tablet press. The QML
-shell includes a Quick3D preview placeholder and editing controls. The
-device-neutral Rust bridge now preserves `Pen`, `Eraser`, and `Mouse` source
-and rejects backward timestamps.
+shell includes a Quick3D preview placeholder and editing controls. The shell
+now starts the Rust `mmorpg-editor-core --bridge` process and sends native
+samples through a bounded line protocol; the Rust process owns
+`NativeTabletEvent`, `TabletEventBridge`, `TerrainEditor`, `CapturedStroke`,
+atomic save/reload, and undo/redo. The device-neutral Rust bridge preserves
+`Pen`, `Eraser`, and `Mouse` source and rejects backward timestamps.
 
 The editor core also provides a bounded `CapturedStroke` text format with
-round-trip validation and bridge-mediated replay tests. This establishes the
-deterministic replay boundary, but the Qt shell does not yet write captured
-physical events into it.
+round-trip validation and bridge-mediated replay tests. The headless editor
+bridge smoke now proves native-lifecycle input, terrain mutation, capture
+export, save/reload, and undo/redo through that process boundary. This is
+still not physical tablet evidence.
 
 This is a directly measured local build result, not hardware evidence. The
 current host has a Wayland session and `/dev/input` devices, but no physical
-tablet run, event capture, latency distribution, replay equivalence, or
-save/reload result has been recorded yet. Cancellation, conversion into
-`NativeTabletEvent` construction in the Qt shell and Rust `TerrainEditor`
-command wiring remain open.
+tablet run, event capture, latency distribution, or replay equivalence has
+been recorded yet. The Quick3D surface remains a visual placeholder rather
+than a heightmap mesh, and the process bridge is a local proof rather than a
+production editor IPC protocol.
 
 ## Reproduction
 
@@ -62,6 +66,12 @@ The deterministic core-only path remains separate:
 
 ```bash
 ./scripts/run-editor-core.sh --output /tmp/starter-terrain.mmterrain
+```
+
+The headless Qt-to-Rust process-boundary regression is:
+
+```bash
+./scripts/smoke-editor-bridge.sh
 ```
 
 ## Required measurement record
