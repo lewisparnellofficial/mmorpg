@@ -6,15 +6,18 @@
 //! model.
 
 use bevy::prelude::*;
+use mmorpg_client_adapter::apply_wire_message;
+#[cfg(test)]
 use mmorpg_client_adapter::{
     apply_event as apply_presentation_event, apply_snapshot as apply_presentation_snapshot,
-    apply_wire_message,
 };
 use mmorpg_client_model::{ClientEntity, ClientWorld};
 use mmorpg_client_session::{Session as TypedSession, SessionInput, SessionOutput, SessionState};
 use mmorpg_client_protocol::{
-    EntityId, NpcKind, ServerEvent, ServerLine, Snapshot, SnapshotAssembler, decode_server_line,
+    EntityId, NpcKind, SnapshotAssembler,
 };
+#[cfg(test)]
+use mmorpg_client_protocol::{ServerEvent, ServerLine, Snapshot, decode_server_line};
 use mmorpg_content::{ItemId, QuestId, item_definition, starter_catalog};
 use mmorpg_wire::{
     CharacterSummary, ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope,
@@ -31,8 +34,6 @@ use std::time::Duration;
 const FIELD_SIZE: Vec2 = Vec2::new(40.0, 30.0);
 const DEFAULT_SERVER_ADDRESS: &str = "127.0.0.1:4000";
 const DEV_AUTH_TOKEN: &str = "dev-local";
-const PLAYER_NAME: &str = "Aria";
-const PLAYER_ROLE: &str = "damage";
 const MOVEMENT_STEP: f32 = 2.0;
 const MOVEMENT_REPEAT_SECONDS: f32 = 0.12;
 const MAX_LOG_LINES: usize = 6;
@@ -129,7 +130,6 @@ enum ClientCommand {
 #[derive(Debug)]
 enum NetworkEvent {
     Status(String),
-    ServerLine(String),
     ServerMessage(ServerMessage),
 }
 
@@ -316,114 +316,10 @@ fn setup_ui(mut commands: Commands) {
         });
 }
 
-fn spawn_network_worker(
-    server_address: String,
-    command_rx: Receiver<ClientCommand>,
-    event_tx: Sender<NetworkEvent>,
-) {
-    thread::spawn(move || {
-        let _ = event_tx.send(NetworkEvent::Status(format!(
-            "connecting to {server_address}"
-        )));
-        let Some(address) = server_address
-            .to_socket_addrs()
-            .ok()
-            .and_then(|mut addresses| addresses.next())
-        else {
-            let _ = event_tx.send(NetworkEvent::Status(
-                "connection address could not be resolved".to_owned(),
-            ));
-            return;
-        };
-        let mut stream = match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
-            Ok(stream) => stream,
-            Err(error) => {
-                let _ = event_tx.send(NetworkEvent::Status(format!("connection failed: {error}")));
-                return;
-            }
-        };
-        if let Err(error) = stream.set_nonblocking(true) {
-            let _ = event_tx.send(NetworkEvent::Status(format!(
-                "cannot configure socket: {error}"
-            )));
-            return;
-        }
-
-        let _ = event_tx.send(NetworkEvent::Status("socket connected".to_owned()));
-        let mut outgoing = VecDeque::<Vec<u8>>::new();
-        queue_command_line(
-            &mut outgoing,
-            &format!("connect {PLAYER_NAME} {PLAYER_ROLE}"),
-        );
-        let mut incoming = Vec::new();
-        let mut state_requested = false;
-        let mut session_ready = false;
-        let mut deferred_commands = VecDeque::new();
-
-        loop {
-            match command_rx.try_recv() {
-                Err(TryRecvError::Disconnected) => break,
-                Ok(command) if session_ready => queue_command_bounded(&mut outgoing, command),
-                Ok(command) if deferred_commands.len() < MAX_DEFERRED_COMMANDS => {
-                    deferred_commands.push_back(command)
-                }
-                Ok(_) => {}
-                Err(TryRecvError::Empty) => {}
-            }
-
-            if !flush_outgoing(&mut stream, &mut outgoing) {
-                let _ = event_tx.send(NetworkEvent::Status("connection write failed".to_owned()));
-                break;
-            }
-
-            let mut buffer = [0_u8; 4096];
-            loop {
-                match stream.read(&mut buffer) {
-                    Ok(0) => {
-                        let _ = event_tx.send(NetworkEvent::Status(
-                            "server closed the connection".to_owned(),
-                        ));
-                        return;
-                    }
-                    Ok(bytes_read) => {
-                        incoming.extend_from_slice(&buffer[..bytes_read]);
-                        while let Some(newline) = incoming.iter().position(|byte| *byte == b'\n') {
-                            let line = incoming.drain(..=newline).collect::<Vec<_>>();
-                            let line = String::from_utf8_lossy(&line[..line.len() - 1])
-                                .trim_end_matches('\r')
-                                .to_owned();
-                            if line.starts_with("CONNECTED ") && !state_requested {
-                                session_ready = true;
-                                queue_command_line(&mut outgoing, "snapshot");
-                                state_requested = true;
-                                while let Some(command) = deferred_commands.pop_front() {
-                                    queue_command_bounded(&mut outgoing, command);
-                                }
-                            }
-                            if event_tx.send(NetworkEvent::ServerLine(line)).is_err() {
-                                return;
-                            }
-                        }
-                    }
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => break,
-                    Err(error) => {
-                        let _ = event_tx.send(NetworkEvent::Status(format!(
-                            "connection read failed: {error}"
-                        )));
-                        return;
-                    }
-                }
-            }
-
-            thread::sleep(Duration::from_millis(5));
-        }
-    });
-}
-
-/// Runs the typed wire transport on the same dedicated worker used by the
-/// legacy line path. Socket ownership remains outside Bevy's render and input
-/// systems, and the bounded frame buffer rejects malformed or oversized data
-/// before it reaches the presentation adapter.
+/// Runs the typed wire transport on a dedicated worker. Socket ownership
+/// remains outside Bevy's render and input systems, and the bounded frame
+/// buffer rejects malformed or oversized data before it reaches the
+/// presentation adapter.
 fn spawn_wire_network_worker(
     server_address: String,
     command_rx: Receiver<ClientCommand>,
@@ -685,12 +581,14 @@ fn queue_session_outputs(outgoing: &mut VecDeque<Vec<u8>>, outputs: Vec<SessionO
     }
 }
 
+#[cfg(test)]
 fn queue_command_line(outgoing: &mut VecDeque<Vec<u8>>, command: &str) {
     let mut line = command.as_bytes().to_vec();
     line.push(b'\n');
     outgoing.push_back(line);
 }
 
+#[cfg(test)]
 fn queue_command_bounded(outgoing: &mut VecDeque<Vec<u8>>, command: ClientCommand) {
     if outgoing.len() >= MAX_OUTGOING_LINES {
         return;
@@ -766,7 +664,6 @@ fn consume_network_events(bridge: Res<NetworkBridge>, mut state: ResMut<ClientSt
                 state.connection_status = status.clone();
                 state.log(status);
             }
-            NetworkEvent::ServerLine(line) => apply_server_line(&mut state, &line),
             NetworkEvent::ServerMessage(message) => apply_server_message(&mut state, &message),
         }
     }
@@ -1166,6 +1063,7 @@ fn format_hud_text(state: &ClientState) -> String {
     )
 }
 
+#[cfg(test)]
 fn apply_server_line(state: &mut ClientState, line: &str) {
     // TEMPORARY ADAPTER: the development protocol is not production-ready,
     // but all gameplay state changes still pass through its strict decoder.
@@ -1241,6 +1139,7 @@ fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
     }
 }
 
+#[cfg(test)]
 fn apply_snapshot(state: &mut ClientState, snapshot: Snapshot) {
     if let Err(error) = apply_presentation_snapshot(&mut state.presentation, &snapshot) {
         state.log(format!("authoritative presentation rejected: {error}"));
@@ -1248,6 +1147,7 @@ fn apply_snapshot(state: &mut ClientState, snapshot: Snapshot) {
     }
 }
 
+#[cfg(test)]
 fn apply_event(state: &mut ClientState, event: ServerEvent) {
     match apply_presentation_event(&mut state.presentation, &event) {
         Ok(_) => {}
@@ -1535,6 +1435,11 @@ mod tests {
                 role: mmorpg_wire::RoleCode::DamageDealer,
             },
         );
+        let digest = match read_test_wire_command(stream) {
+            WireCommand::ContentDigest { digest } => digest,
+            command => panic!("expected content digest, received {command:?}"),
+        };
+        send_test_wire_message(stream, &ServerMessage::ContentAccepted { digest });
         assert!(matches!(
             read_test_wire_command(stream),
             WireCommand::EnterWorld
