@@ -193,8 +193,8 @@ python3 experiments/replication-model/model.py \
   --budget-kib 64
 ```
 
-Typed wire gameplay smoke test (requires a server started with
-`--wire-address`):
+Typed wire gameplay smoke test (the primary server address is typed; the
+optional `--wire-address` opens a second typed listener):
 
 ```bash
 cargo fmt --manifest-path experiments/wire-gameplay-smoke/Cargo.toml -- --check

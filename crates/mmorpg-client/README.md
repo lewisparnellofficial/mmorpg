@@ -95,9 +95,8 @@ distributions; consult the Bevy setup documentation for the selected host.
   current content schema; it is not a performance, compatibility, or
   production-readiness result.
 
-The client uses the shared bounded development decoder and the
-protocol-to-presentation adapter for line-mode records. Its opt-in wire mode
-uses the typed server-message adapter for snapshot and event records, and the
+The client uses the typed server-message adapter for snapshot and event
+records, and the
 renderer reads player/NPC state directly from `ClientWorld`. The compact HUD
 now displays inventory, vendor listings, quest offers, quest progress, and
 authoritative notifications. `V` lists vendor stock, `B` buys one unit of the

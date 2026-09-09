@@ -76,16 +76,16 @@ The repository now contains the first implementation of this shape:
 - `crates/mmorpg-client-protocol` — standalone typed command-line encoder and
   bounded decoder for the temporary development server adapter; it deliberately
   rejects unrelated human-readable diagnostics.
-- `crates/mmorpg-client-transport` — standalone bounded blocking TCP adapters
-  for the temporary line connection and a versioned-wire bridge that carries
-  validated command/event payloads.
+- `crates/mmorpg-client-transport` — standalone bounded blocking TCP adapter
+  for the versioned wire connection that carries validated command/event
+  payloads; line records remain fixture-only.
 - `crates/mmorpg-wire` — standalone versioned length-prefixed envelope
   prototype with explicit message kinds and payload boundaries.
 - `crates/mmorpg-core` — dependency-free authoritative starter-zone simulation.
-- `crates/mmorpg-server` — Linux headless development server with a temporary
-  nonblocking versioned typed-wire listener (with line data retained only as
-  inert compatibility fixtures) that
-  routes typed commands into the same authoritative world.
+- `crates/mmorpg-server` — Linux headless development server with a nonblocking
+  versioned typed-wire listener (with line data retained only as inert
+  compatibility fixtures) that routes typed commands into the same
+  authoritative world.
 
 The current development tooling also includes `tools/mmorpg-content-check`, a
 standalone catalog validation command. It validates the same typed content
