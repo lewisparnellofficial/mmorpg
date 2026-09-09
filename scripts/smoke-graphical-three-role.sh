@@ -87,6 +87,11 @@ if ! rg -q "GRAPHICAL_EVENT HealResolved" "$healer_log"; then
     sed -n '1,320p' "$healer_log" >&2
     exit 1
 fi
+if rg -q "GRAPHICAL_EVENT PartyInvite" "$damage_log"; then
+    echo "stranger damage graphical client observed a private party event" >&2
+    rg -n "GRAPHICAL_EVENT PartyInvite" "$damage_log" >&2
+    exit 1
+fi
 
-echo "graphical three-role smoke: purchase, quest, tank, healer, combat, loot, and recovery passed"
+echo "graphical three-role smoke: purchase, quest, tank, healer, combat, loot, recovery, and stranger privacy passed"
 smoke_status=0

@@ -81,8 +81,10 @@ or renderer-quality acceptance gate.
   launched three real Bevy clients concurrently and observed the damage
   character's purchase, quest, combat, loot, and turn-in flow, plus the tank's
   authoritative taunt and the healer's party-invite acceptance and recovery
-  event. The run passed on the same host, but it retains the Vulkan validation
-  limitation and uses fixed local smoke IDs.
+  event. It also verified that the damage client, which remained outside the
+  tank/healer party, received no private party event. The run passed on the
+  same host, but it retains the Vulkan validation limitation and uses fixed
+  local smoke IDs.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,
