@@ -136,7 +136,7 @@ impl std::error::Error for Denial {}
 pub struct SecureInputRegistry {
     bindings: BTreeMap<BindingKey, Binding>,
     focus_generation: u64,
-    consumed_events: BTreeMap<u64, ()>,
+    last_dispatched_event_id: u64,
 }
 
 impl SecureInputRegistry {
@@ -190,7 +190,7 @@ impl SecureInputRegistry {
         if press.is_repeat() {
             return Err(Denial::Repeat);
         }
-        if self.consumed_events.contains_key(&press.id()) {
+        if press.id() <= self.last_dispatched_event_id {
             return Err(Denial::ReplayedEvent);
         }
         let binding = *self
@@ -203,7 +203,7 @@ impl SecureInputRegistry {
         if binding.focus_generation.get() != self.focus_generation {
             return Err(Denial::StaleFocus);
         }
-        self.consumed_events.insert(press.id(), ());
+        self.last_dispatched_event_id = press.id();
         Ok(TrustedIntent {
             action: binding.action,
             addon,
@@ -253,6 +253,17 @@ mod tests {
                 generation,
                 NativePress::PrimaryPointer {
                     physical_event_id: 9,
+                },
+            ),
+            Err(Denial::ReplayedEvent)
+        );
+        assert_eq!(
+            registry.dispatch(
+                addon,
+                node,
+                generation,
+                NativePress::PrimaryPointer {
+                    physical_event_id: 8,
                 },
             ),
             Err(Denial::ReplayedEvent)

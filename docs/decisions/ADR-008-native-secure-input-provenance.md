@@ -33,6 +33,11 @@ the token is never represented in Luau values and cannot be constructed by an
 addon, callback, timer, overlay, or replay adapter. Addon unload removes its
 bindings, and focus changes invalidate the prior focus generation.
 
+The registry treats physical event IDs as monotonic and retains only the
+highest successfully dispatched ID. Duplicate or older IDs are rejected as
+replays using this constant-size watermark; it does not accumulate an
+unbounded per-event replay set over the lifetime of a client.
+
 The Bevy host owns hit testing and translates a consumed allowlisted action
 into a bounded `ClientCommand` intent. The native HUD and ordinary addon use
 the same host binding mechanism. The server still validates the resulting
@@ -84,8 +89,8 @@ The decision is accepted for the current development slice based on:
 
 - `mmorpg-client-secure-input` tests for fresh dispatch, single-use
   consumption, repeat/replay rejection, stale focus and node rejection,
-  cross-addon denial, reload invalidation, forged identifiers, and safe
-  unload behavior.
+  cross-addon denial, reload invalidation, forged identifiers, safe unload
+  behavior, and older-than-watermark rejection.
 - Graphical-client secure binding tests covering replay rejection and binding
   refresh after focus changes.
 - UI-scripting tests proving protected actions are absent from the script
