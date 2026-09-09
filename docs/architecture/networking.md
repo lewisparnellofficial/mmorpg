@@ -139,12 +139,14 @@ before `Ready` are rejected, and command output is bounded by count and encoded
 payload bytes.
 
 This is an implementation step toward the session policy in `PLAN.md`; the
-live development wire path does not yet carry sequence numbers or gap-recovery
-metadata, and it does not provide production session resume.
+live development wire path now carries sequence numbers and the client
+session applies gap-recovery policy, but it does not provide production session
+resume.
 
 The session boundary now also exposes a sequenced-message policy for the
 schema migration: complete snapshots establish the baseline atomically,
 contiguous events advance it, duplicates are ignored, and gaps or bounded
-bootstrap-buffer overflow request a fresh snapshot. The live development
-listener remains unsequenced until the wire schema and retained fixtures are
-migrated together.
+bootstrap-buffer overflow request a fresh snapshot. The typed development
+listener carries the sequence wrapper; retained previous-client fixtures and
+full old-client interoperability evidence are still required before a
+gameplay protocol-version bump.

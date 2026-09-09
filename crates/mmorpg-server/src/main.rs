@@ -6,7 +6,8 @@ use mmorpg_core::{Command, EntityId, Event, ItemId, QuestId, Role, World};
 use mmorpg_wire::{
     ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope, ItemStackState,
     MessageKind, NpcKindCode, NpcState, PlayerState, QuestOfferState, QuestState, QuestStatusCode,
-    ServerEvent, ServerMessage, VendorListingState, WorldSnapshot, ZoneAreaCode, decode_one,
+    SequencedServerMessage, ServerEvent, ServerMessage, VendorListingState, WorldSnapshot,
+    ZoneAreaCode, decode_one,
 };
 use std::collections::VecDeque;
 use std::env;
@@ -58,6 +59,7 @@ struct WireClient {
     authenticated: Option<AuthenticatedSession>,
     selected_character_id: Option<u64>,
     content_compatible: bool,
+    next_sequence: u64,
     player_id: Option<EntityId>,
     closed: bool,
 }
@@ -72,6 +74,7 @@ impl WireClient {
             authenticated: None,
             selected_character_id: None,
             content_compatible: false,
+            next_sequence: 1,
             player_id: None,
             closed: false,
         }
@@ -94,7 +97,11 @@ impl WireClient {
     }
 
     fn queue_server_message(&mut self, message: &ServerMessage) {
-        match message.encode_payload() {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1).max(1);
+        let payload = SequencedServerMessage::new(sequence, message.clone())
+            .and_then(|message| message.encode_payload());
+        match payload {
             Ok(payload) => self.queue_event_payload(&payload),
             Err(error) => {
                 eprintln!("wire_message_encode_error id={} error={error}", self.id);

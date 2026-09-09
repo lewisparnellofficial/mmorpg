@@ -946,6 +946,49 @@ impl ServerMessage {
     }
 }
 
+/// A server message with an explicit per-session delivery sequence. The
+/// wrapped message keeps its existing schema, allowing the sequence migration
+/// to be tested independently from the message variant table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SequencedServerMessage {
+    pub sequence: u64,
+    pub message: ServerMessage,
+}
+
+impl SequencedServerMessage {
+    pub fn new(sequence: u64, message: ServerMessage) -> Result<Self, ServerCodecError> {
+        if sequence == 0 {
+            return Err(ServerCodecError::InvalidZero { field: "sequence" });
+        }
+        Ok(Self { sequence, message })
+    }
+
+    /// Encodes a sequence followed by one complete server-message payload.
+    pub fn encode_payload(&self) -> Result<Vec<u8>, ServerCodecError> {
+        if self.sequence == 0 {
+            return Err(ServerCodecError::InvalidZero { field: "sequence" });
+        }
+        let message = self.message.encode_payload()?;
+        let mut payload = Vec::with_capacity(8 + message.len());
+        payload.extend_from_slice(&self.sequence.to_be_bytes());
+        payload.extend_from_slice(&message);
+        Ok(payload)
+    }
+
+    /// Decodes exactly one sequenced server-message payload.
+    pub fn decode_payload(payload: &[u8]) -> Result<Self, ServerCodecError> {
+        if payload.len() < 8 {
+            return Err(ServerCodecError::Truncated { field: "sequence" });
+        }
+        let sequence = u64::from_be_bytes(payload[..8].try_into().unwrap());
+        if sequence == 0 {
+            return Err(ServerCodecError::InvalidZero { field: "sequence" });
+        }
+        let message = ServerMessage::decode_payload(&payload[8..])?;
+        Ok(Self { sequence, message })
+    }
+}
+
 #[derive(Default)]
 struct ServerEncoder {
     bytes: Vec<u8>,
@@ -2453,6 +2496,29 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn sequenced_server_messages_round_trip_and_reject_zero_or_truncated_sequences() {
+        let message = ServerMessage::Event(ServerEvent::EnemyDefeated { enemy_id: 9 });
+        let sequenced = SequencedServerMessage::new(42, message.clone()).unwrap();
+        let payload = sequenced.encode_payload().unwrap();
+        assert_eq!(
+            SequencedServerMessage::decode_payload(&payload),
+            Ok(sequenced)
+        );
+        assert_eq!(
+            SequencedServerMessage::new(0, message.clone()),
+            Err(ServerCodecError::InvalidZero { field: "sequence" })
+        );
+        assert_eq!(
+            SequencedServerMessage::decode_payload(&[0; 7]),
+            Err(ServerCodecError::Truncated { field: "sequence" })
+        );
+        assert_eq!(
+            SequencedServerMessage::decode_payload(&[0; 8]),
+            Err(ServerCodecError::InvalidZero { field: "sequence" })
+        );
     }
 
     #[test]

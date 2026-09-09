@@ -252,6 +252,17 @@ impl Session {
             output.push(SessionOutput::RequestBootstrap);
             return;
         }
+        if self.state != SessionState::AwaitingBootstrap && self.state != SessionState::Ready {
+            output.extend(self.handle(SessionInput::Server(message)));
+            return;
+        }
+        if !matches!(
+            message,
+            ServerMessage::Snapshot(_) | ServerMessage::Event(_)
+        ) {
+            output.extend(self.handle(SessionInput::Server(message)));
+            return;
+        }
         if let ServerMessage::Snapshot(snapshot) = message {
             if self.state != SessionState::AwaitingBootstrap && self.state != SessionState::Ready {
                 output.push(SessionOutput::Rejected {
@@ -568,18 +579,18 @@ mod tests {
                 session
                     .handle(SessionInput::Sequenced {
                         sequence: sequence as u64,
-                        message: ServerMessage::Error {
-                            message: "queued".into()
-                        },
+                        message: ServerMessage::Event(ServerEvent::EnemyDefeated {
+                            enemy_id: sequence as u64,
+                        }),
                     })
                     .is_empty()
             );
         }
         let overflow = session.handle(SessionInput::Sequenced {
             sequence: (MAX_BOOTSTRAP_BUFFERED_EVENTS + 1) as u64,
-            message: ServerMessage::Error {
-                message: "overflow".into(),
-            },
+            message: ServerMessage::Event(ServerEvent::EnemyDefeated {
+                enemy_id: (MAX_BOOTSTRAP_BUFFERED_EVENTS + 1) as u64,
+            }),
         });
         assert!(
             overflow

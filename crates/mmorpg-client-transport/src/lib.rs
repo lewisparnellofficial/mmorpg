@@ -361,7 +361,29 @@ impl WireConnection {
                 decoded.envelope.kind,
             ));
         }
-        Ok(ServerMessage::decode_payload(&decoded.envelope.payload)?)
+        match mmorpg_wire::SequencedServerMessage::decode_payload(&decoded.envelope.payload) {
+            Ok(message) => Ok(message.message),
+            Err(_) => Ok(ServerMessage::decode_payload(&decoded.envelope.payload)?),
+        }
+    }
+
+    /// Reads one event envelope and preserves its delivery sequence when the
+    /// server uses the migrated sequenced-message profile. Legacy unsequenced
+    /// fixtures are returned with sequence `None`.
+    pub fn read_sequenced_server_message(
+        &mut self,
+    ) -> Result<(Option<u64>, ServerMessage), WireTransportError> {
+        let frame = self.read_frame()?;
+        let decoded = decode_one(&frame)?;
+        if decoded.envelope.kind != MessageKind::Event {
+            return Err(WireTransportError::UnexpectedMessageKind(
+                decoded.envelope.kind,
+            ));
+        }
+        match mmorpg_wire::SequencedServerMessage::decode_payload(&decoded.envelope.payload) {
+            Ok(message) => Ok((Some(message.sequence), message.message)),
+            Err(_) => Ok((None, ServerMessage::decode_payload(&decoded.envelope.payload)?)),
+        }
     }
 
     fn write_envelope(&mut self, envelope: &Envelope) -> Result<(), WireTransportError> {

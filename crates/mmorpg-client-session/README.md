@@ -14,8 +14,9 @@ Sequenced inputs provide the bootstrap/event boundary: a complete snapshot
 installs a baseline sequence atomically; later events apply only when their
 sequence is contiguous. Older or duplicate messages are ignored, while a gap
 or bounded-buffer overflow emits `RequestBootstrap` and waits for a fresh
-snapshot. The current development wire listener still uses the legacy
-unsequenced message path until the schema migration is completed.
+snapshot. The typed development listener now carries per-session sequences
+into this policy; legacy transport callers may still unwrap them for
+compatibility.
 
 This is a policy boundary, not a socket implementation. Production
 authentication, reconnect resume, sequencing, and interest management remain

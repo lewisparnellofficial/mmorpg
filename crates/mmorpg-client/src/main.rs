@@ -19,7 +19,7 @@ use mmorpg_client_protocol::{
 use mmorpg_content::{ItemId, QuestId, item_definition, starter_catalog};
 use mmorpg_wire::{
     CharacterSummary, ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope,
-    MessageKind, ServerMessage, decode_one,
+    MessageKind, SequencedServerMessage, ServerMessage, decode_one,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
@@ -577,16 +577,23 @@ fn spawn_wire_network_worker(
                         ));
                         break 'connection;
                     }
-                    let message = match ServerMessage::decode_payload(&payload) {
-                        Ok(message) => message,
-                        Err(error) => {
-                            let _ = event_tx.send(NetworkEvent::Status(format!(
-                                "typed wire server message rejected: {error}; reconnecting"
-                            )));
-                            break 'connection;
-                        }
+                    let (sequence, message) = match SequencedServerMessage::decode_payload(&payload) {
+                        Ok(message) => (Some(message.sequence), message.message),
+                        Err(_) => match ServerMessage::decode_payload(&payload) {
+                            Ok(message) => (None, message),
+                            Err(error) => {
+                                let _ = event_tx.send(NetworkEvent::Status(format!(
+                                    "typed wire server message rejected: {error}; reconnecting"
+                                )));
+                                break 'connection;
+                            }
+                        },
                     };
-                    let session_outputs = session.handle(SessionInput::Server(message.clone()));
+                    let session_input = match sequence {
+                        Some(sequence) => SessionInput::Sequenced { sequence, message: message.clone() },
+                        None => SessionInput::Server(message.clone()),
+                    };
+                    let session_outputs = session.handle(session_input);
                     if session_outputs.iter().any(|output| {
                         matches!(output, SessionOutput::Rejected { .. })
                     }) {

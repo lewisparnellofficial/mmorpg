@@ -64,6 +64,12 @@ rejected. The server session adapter now consumes these commands on its
 optional wire listener; the opcode table remains an explicitly versioned Rust
 contract until a stable external compatibility document is accepted.
 
+Typed server messages sent by the development listener are wrapped in
+`SequencedServerMessage`, which carries a nonzero per-session `u64` sequence
+before the existing message payload. `decode_payload` remains available for
+legacy unsequenced fixtures; `SequencedServerMessage::decode_payload` is the
+path used by sequence-aware clients.
+
 ## Typed server messages
 
 `ServerMessage` encodes welcome, development-authentication,
