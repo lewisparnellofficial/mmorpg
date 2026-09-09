@@ -236,7 +236,10 @@ enum StorageJob {
         key: String,
         value: StoredValue,
     },
-    Delete { request_id: u64, key: String },
+    Delete {
+        request_id: u64,
+        key: String,
+    },
     Stop,
 }
 
@@ -306,7 +309,9 @@ impl StorageWorker {
                     }
                 }
             })
-            .map_err(|error| AddonError::PackageIo(format!("cannot start storage worker: {error}")))?;
+            .map_err(|error| {
+                AddonError::PackageIo(format!("cannot start storage worker: {error}"))
+            })?;
         Ok(Self {
             sender: Some(sender),
             results,
@@ -314,13 +319,11 @@ impl StorageWorker {
         })
     }
 
-    pub fn set(
-        &self,
-        request_id: u64,
-        key: String,
-        value: StoredValue,
-    ) -> Result<(), String> {
-        let sender = self.sender.as_ref().ok_or_else(|| "worker stopped".to_owned())?;
+    pub fn set(&self, request_id: u64, key: String, value: StoredValue) -> Result<(), String> {
+        let sender = self
+            .sender
+            .as_ref()
+            .ok_or_else(|| "worker stopped".to_owned())?;
         sender
             .try_send(StorageJob::Set {
                 request_id,
@@ -334,7 +337,10 @@ impl StorageWorker {
     }
 
     pub fn delete(&self, request_id: u64, key: String) -> Result<(), String> {
-        let sender = self.sender.as_ref().ok_or_else(|| "worker stopped".to_owned())?;
+        let sender = self
+            .sender
+            .as_ref()
+            .ok_or_else(|| "worker stopped".to_owned())?;
         sender
             .try_send(StorageJob::Delete { request_id, key })
             .map_err(|error| match error {

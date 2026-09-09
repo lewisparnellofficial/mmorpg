@@ -3603,6 +3603,9 @@ dependencies = [
 [[package]]
 name = "mmorpg-ui-contract"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "mmorpg-wire"
