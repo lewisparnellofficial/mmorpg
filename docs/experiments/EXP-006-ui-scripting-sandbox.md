@@ -151,6 +151,15 @@ RSS is an operating-system observation that includes allocator and runtime
 behavior; it is evidence of this process run, not proof that every allocation
 was returned to the OS.
 
+A repeat 1,000-run campaign on 2026-09-09 completed both fuzz targets without
+creating a new crash artifact. The `ui-boundaries` target retained 827 coverage
+features from 952 seeded inputs; the `luau-source` target retained 1,414
+coverage features and 1,509 feature combinations from 25 seeded inputs. The
+campaign generated additional minimized corpus candidates, which were kept
+outside the repository after the run rather than silently staging generated
+files. The earlier `[0a, 02]` parser artifact was replayed directly and now
+exits cleanly through the control-byte rejection regression.
+
 The storage sample performs ten successful bounded commits, respecting the
 per-minute quota, then measures reopening the persisted namespace. The
 callback measurement is the average of ten dispatches within each sample; the
