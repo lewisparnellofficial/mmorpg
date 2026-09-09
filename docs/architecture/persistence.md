@@ -99,6 +99,14 @@ attempts have an explicit journal state. The
 repeatable evidence is recorded in
 [`EXP-005`](../experiments/EXP-005-durable-character-checkpoint.md).
 
+The development server also exposes `--shutdown-after-ticks <n>` for a
+deterministic shutdown proof. Once the tick is reached, it stops accepting
+new connections, drains prepared and staged operations within a bounded
+deadline, applies queued commands, enqueues final checkpoints, applies final
+leave events, and then lets the bounded persistence workers drain during
+shutdown. This is a local ordering proof, not a process-signal coordinator or
+production failover protocol.
+
 ## Transactional operations
 
 The following must have clear atomicity and retry behavior:

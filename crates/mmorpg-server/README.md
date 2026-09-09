@@ -68,6 +68,14 @@ cargo run -p mmorpg-server -- 127.0.0.1:4400 \
   --character-store /tmp/mmorpg-dev/aria.state
 ```
 
+For a deterministic local shutdown smoke, stop intake at a fixed world tick;
+the server drains pending operations and commands, checkpoints live players,
+and releases runtime entities before exiting:
+
+```bash
+cargo run -p mmorpg-server -- 127.0.0.1:0 --shutdown-after-ticks 2
+```
+
 When a client disconnects, the server first applies and checkpoints any
 commands already read during that loop iteration, then detaches the selected
 character for a bounded five-second grace window. A reconnect for the same

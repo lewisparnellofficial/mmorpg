@@ -104,6 +104,8 @@ roadmap, including post-gate editor and UI-scripting work.
   a bounded result cache and an opt-in off-thread restart-readable operation
   journal. Commit-before-live-apply ordering and crash reconciliation remain
   open.
+- Deterministic bounded shutdown drain for prepared/staged commands, final
+  checkpoints, and runtime entity release.
 
 ## Completed batch: town/field gameplay loop
 

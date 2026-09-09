@@ -33,6 +33,7 @@ const MAX_PENDING_COMMANDS: usize = 1024;
 const MAX_COMPLETED_OPERATIONS: usize = 256;
 const CHECKPOINT_INTERVAL_TICKS: u64 = 20;
 const DISCONNECT_GRACE_TICKS: u64 = 100;
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[cfg(test)]
 #[derive(Debug)]
@@ -1250,6 +1251,54 @@ impl Server {
             if self.checkpoint_worker.try_enqueue(job).is_err() {
                 eprintln!("checkpoint_queue_full player={player_id} revision={revision}");
             }
+        }
+    }
+
+    /// Stops accepting gameplay work, drains the bounded operation/command
+    /// pipeline, checkpoints live characters, and applies final leave events.
+    /// A production signal coordinator can call this same ordering boundary.
+    fn shutdown(&mut self) {
+        let deadline = Instant::now() + SHUTDOWN_DRAIN_TIMEOUT;
+        while (!self.commands.is_empty()
+            || !self.prepared_operations.is_empty()
+            || self.staged_operation_batch.is_some())
+            && Instant::now() < deadline
+        {
+            self.next_tick = Instant::now() - Duration::from_millis(1);
+            self.advance_if_due();
+            thread::sleep(Duration::from_millis(1));
+        }
+        if !self.commands.is_empty()
+            || !self.prepared_operations.is_empty()
+            || self.staged_operation_batch.is_some()
+        {
+            eprintln!(
+                "shutdown_drain_timeout commands={} prepared={} staged={}",
+                self.commands.len(),
+                self.prepared_operations.len(),
+                self.staged_operation_batch.is_some()
+            );
+            self.commands.clear();
+            self.prepared_operations.clear();
+            self.staged_operation_batch = None;
+        }
+
+        self.checkpoint_wire_players();
+        let leaving: Vec<_> = self
+            .wire_clients
+            .iter()
+            .filter_map(|client| client.player_id)
+            .collect();
+        for player_id in leaving {
+            self.commands.push_back(PendingCommand {
+                origin: ClientOrigin::Wire(0),
+                command: Command::LeavePlayer { player_id },
+                operation: None,
+            });
+        }
+        if !self.commands.is_empty() {
+            self.next_tick = Instant::now() - Duration::from_millis(1);
+            self.advance_if_due();
         }
     }
 
@@ -2615,13 +2664,15 @@ fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Com
     })
 }
 
-fn parse_server_addresses() -> Result<(String, Option<String>, Option<PathBuf>), String> {
+fn parse_server_addresses() -> Result<(String, Option<String>, Option<PathBuf>, Option<u64>), String>
+{
     let mut arguments = env::args().skip(1);
     let address = arguments
         .next()
         .unwrap_or_else(|| DEFAULT_ADDRESS.to_owned());
     let mut wire_address = None;
     let mut checkpoint_path = None;
+    let mut shutdown_after_ticks = None;
     while let Some(argument) = arguments.next() {
         if argument == "--wire-address" {
             if wire_address.is_some() {
@@ -2640,16 +2691,27 @@ fn parse_server_addresses() -> Result<(String, Option<String>, Option<PathBuf>),
                 Some(PathBuf::from(arguments.next().ok_or_else(|| {
                     "--character-store requires a file path".to_owned()
                 })?));
+        } else if argument == "--shutdown-after-ticks" {
+            if shutdown_after_ticks.is_some() {
+                return Err("--shutdown-after-ticks may only be specified once".to_owned());
+            }
+            let ticks = arguments
+                .next()
+                .ok_or_else(|| "--shutdown-after-ticks requires a tick count".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "--shutdown-after-ticks requires an integer".to_owned())?;
+            shutdown_after_ticks = Some(ticks);
         } else {
             return Err(format!("unknown argument '{argument}'"));
         }
     }
-    Ok((address, wire_address, checkpoint_path))
+    Ok((address, wire_address, checkpoint_path, shutdown_after_ticks))
 }
 
 fn main() -> io::Result<()> {
-    let (address, additional_wire_address, checkpoint_path) = parse_server_addresses()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let (address, additional_wire_address, checkpoint_path, shutdown_after_ticks) =
+        parse_server_addresses()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     // The primary listener is typed gameplay. The retained optional address
     // is a second typed listener for staged smoke tooling, not a line server.
     let listener = TcpListener::bind(&address)?;
@@ -2674,32 +2736,45 @@ fn main() -> io::Result<()> {
     if let Some(path) = checkpoint_path {
         println!("character_checkpoint_store={}", path.display());
     }
+    if let Some(ticks) = shutdown_after_ticks {
+        println!("shutdown_after_ticks={ticks}");
+    }
 
     loop {
-        loop {
-            match listener.accept() {
-                Ok((stream, peer)) => {
-                    stream.set_nonblocking(true)?;
-                    println!("accepted_typed_peer={peer}");
-                    server.add_wire_client(stream);
-                }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                Err(error) => return Err(error),
-            }
-        }
-
-        if let Some(listener) = &additional_listener {
+        if shutdown_after_ticks.is_none_or(|limit| server.world.tick() < limit) {
             loop {
                 match listener.accept() {
                     Ok((stream, peer)) => {
                         stream.set_nonblocking(true)?;
-                        println!("accepted_typed_additional_peer={peer}");
+                        println!("accepted_typed_peer={peer}");
                         server.add_wire_client(stream);
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                     Err(error) => return Err(error),
                 }
             }
+
+            if let Some(listener) = &additional_listener {
+                loop {
+                    match listener.accept() {
+                        Ok((stream, peer)) => {
+                            stream.set_nonblocking(true)?;
+                            println!("accepted_typed_additional_peer={peer}");
+                            server.add_wire_client(stream);
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+        }
+
+        if shutdown_after_ticks.is_some_and(|limit| server.world.tick() >= limit) {
+            println!("graceful_shutdown_begin tick={}", server.world.tick());
+            server.shutdown();
+            server.flush_clients();
+            println!("graceful_shutdown_complete tick={}", server.world.tick());
+            break Ok(());
         }
 
         server.read_wire_clients();
@@ -3089,6 +3164,68 @@ mod tests {
         let _ = std::fs::remove_file(checkpoint_path);
         let _ = std::fs::remove_file(
             std::env::temp_dir().join(format!("mmorpg-staged-{unique}.operations")),
+        );
+    }
+
+    #[test]
+    fn shutdown_drains_commands_and_checkpoints_before_releasing_players() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let checkpoint_path = std::env::temp_dir().join(format!("mmorpg-shutdown-{unique}.state"));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let _peer = TcpStream::connect(address).expect("connect test peer");
+        let (stream, _) = listener.accept().expect("accept test peer");
+        let mut server = Server::new(DEFAULT_TICK_HZ, false, Some(checkpoint_path.clone()));
+        let player_id = server
+            .world
+            .step([Command::JoinPlayer {
+                name: "Aria".to_owned(),
+                role: Role::DamageDealer,
+            }])
+            .into_iter()
+            .find_map(|event| match event {
+                Event::PlayerJoined { player } => Some(player.id),
+                _ => None,
+            })
+            .expect("test player should join");
+        let mut client = WireClient::new(1, stream);
+        client.authenticated = Some(AuthenticatedSession {
+            account_id: 1,
+            session_id: 1,
+        });
+        client.selected_character_id = Some(1);
+        client.content_compatible = true;
+        client.player_id = Some(player_id);
+        server.wire_clients.push(client);
+        server.commands.push_back(PendingCommand {
+            origin: ClientOrigin::Wire(1),
+            command: Command::Move {
+                player_id,
+                dx: 2.0,
+                dy: 0.0,
+            },
+            operation: None,
+        });
+
+        server.shutdown();
+        assert!(server.commands.is_empty());
+        assert!(server.world.player(player_id).is_none());
+        drop(server);
+
+        let repository =
+            DevelopmentAccountRepository::with_checkpoint_store(true, checkpoint_path.clone());
+        assert!(
+            repository
+                .load_checkpoint(1, 1)
+                .expect("shutdown checkpoint should load")
+                .is_some()
+        );
+        let _ = std::fs::remove_file(checkpoint_path);
+        let _ = std::fs::remove_file(
+            std::env::temp_dir().join(format!("mmorpg-shutdown-{unique}.operations")),
         );
     }
 

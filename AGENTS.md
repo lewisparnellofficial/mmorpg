@@ -114,6 +114,13 @@ cargo run -p mmorpg-server -- 127.0.0.1:4400
 cargo run -p mmorpg-server -- 127.0.0.1:4400
 ```
 
+For a deterministic graceful-shutdown smoke, stop at a fixed world tick;
+the server drains pending work and checkpoints before exiting:
+
+```bash
+cargo run -p mmorpg-server -- 127.0.0.1:0 --shutdown-after-ticks 2
+```
+
 The default server address is now the typed `MMOW` listener. The temporary
 line protocol remains only as inert parser/fixture code for equivalence tests;
 it is not bound by the server.

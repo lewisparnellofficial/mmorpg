@@ -43,6 +43,8 @@ durable operation journal.
 - Three-client gate: passed; the tank and healer shared one party summary while
   the unrelated damage client received no private party summary.
 - `./scripts/validate-all.sh`: passed with `aggregate validation: PASS`.
+- `--shutdown-after-ticks 2`: passed; the server reported a graceful drain
+  and completion at the requested tick.
 
 ## Result
 
@@ -68,8 +70,9 @@ cache without reapplying the core command.
   reapplying those operations. Completion-store failure recovery remains an
   explicitly unproven cross-process path; within one live process the
   staged world batch is discarded and the affected clients receive an error.
-- The prototype does not provide pending/failed journal states, cross-process
-  fencing, or recovery of in-flight operations.
+- The prototype does not provide cross-process fencing or recovery of in-flight
+  operations after an external process crash. The deterministic shutdown path
+  covers orderly local exit only.
 - Rejected operations do not yet carry a durable typed result record suitable
   for replay; this slice is primarily a successful-operation duplicate fence.
 - The graphical client runtime gate remains partial because Vulkan validation
