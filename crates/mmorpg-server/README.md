@@ -74,6 +74,12 @@ It emits typed server-message payloads for welcome/connect/error responses,
 gameplay events, and the bootstrap snapshot. The line parser remains only as
 inert compatibility data for equivalence tests.
 
+Typed intake is bounded before commands reach the simulation owner: each
+session contributes at most 32 decoded frames per poll, the server accepts at
+most 256 decoded frames per poll, and the pending authoritative command queue
+is capped at 1024 entries. Excess input is discarded with a typed error rather
+than becoming hidden simulation debt.
+
 Wire clients must authenticate before sending gameplay commands:
 
 ```text
