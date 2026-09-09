@@ -3,8 +3,8 @@ set -euo pipefail
 
 # Opt-in Linux desktop smoke test. It opens three real Bevy windows, selects
 # the three development characters without keyboard input, and checks startup,
-# role selection, and reconnect after one typed-server restart. It is not part
-# of validate-all.sh because it requires a working graphical session.
+# role selection, and reconnect after one typed-server restart. The aggregate
+# validation invokes it on hosts with a working graphical session.
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 server_pid=''
