@@ -693,7 +693,10 @@ impl LocalCheckpointStore {
         file.sync_all()
             .map_err(|error| format!("cannot sync checkpoint: {error}"))?;
         fs::rename(&temporary, &self.path)
-            .map_err(|error| format!("cannot replace checkpoint: {error}"))
+            .map_err(|error| format!("cannot replace checkpoint: {error}"))?;
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("cannot sync checkpoint directory: {error}"))
     }
 }
 

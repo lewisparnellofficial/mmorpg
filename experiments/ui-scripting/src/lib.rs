@@ -505,6 +505,10 @@ fn persist_namespace(
         let _ = fs::remove_file(&temporary);
         return Err(format!("storage atomic replace failed: {error}"));
     }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if let Err(error) = File::open(parent).and_then(|directory| directory.sync_all()) {
+        return Err(format!("storage directory sync failed: {error}"));
+    }
     Ok(())
 }
 

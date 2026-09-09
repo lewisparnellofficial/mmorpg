@@ -38,8 +38,8 @@ TOML manifest and source entry before VM creation, with path containment and
 integrity checks. `StorageWorker` provides bounded queued set/delete operations
 for one account/package/schema namespace and atomically replaces a validated
 TOML state file on its own thread. It syncs the temporary state file before
-replacement so a successful worker result reflects a completed local file
-write.
+replacement and syncs the parent directory after the rename, so a successful
+worker result reflects a completed local file and directory-entry write.
 
 The implementation is in
 [`experiments/ui-scripting`](../../experiments/ui-scripting/README.md). It uses

@@ -91,7 +91,8 @@ policy is bounded periodic checkpointing (20 simulation ticks at the default
 Checkpoint startup reads are capped at 64 KiB, and item/quest collections are
 bounded before parsing; oversized or malformed files are rejected without
 replacing a prior valid checkpoint. Writes apply the same serialized-size
-bound before creating the temporary replacement, so an oversized state cannot
+bound before creating the temporary replacement, sync the replacement and its
+parent directory, and only then report success; an oversized state cannot
 replace the last valid checkpoint.
 The local operation journal now persists retryable operation IDs, revisions,
 original command payloads, and result payloads off the simulation owner, and
