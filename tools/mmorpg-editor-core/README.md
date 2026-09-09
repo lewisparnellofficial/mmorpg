@@ -19,6 +19,8 @@ The crate currently provides:
 - `TabletPoint`, pairing a document-space coordinate with a normalized sample.
 - `InputSource` and monotonic nanosecond timestamps on native events and
   bridged points, distinguishing pen, eraser, and mouse input.
+- `CapturedStroke`, a bounded deterministic text record that round-trips
+  completed points and replays through `TabletEventBridge`.
 - `HeightMap`, a row-major grid of finite `f32` values with a configured
   inclusive minimum and maximum. Every constructor and mutation clamps sample
   values to those bounds.

@@ -30,6 +30,11 @@ shell includes a Quick3D preview placeholder and editing controls. The
 device-neutral Rust bridge now preserves `Pen`, `Eraser`, and `Mouse` source
 and rejects backward timestamps.
 
+The editor core also provides a bounded `CapturedStroke` text format with
+round-trip validation and bridge-mediated replay tests. This establishes the
+deterministic replay boundary, but the Qt shell does not yet write captured
+physical events into it.
+
 This is a directly measured local build result, not hardware evidence. The
 current host has a Wayland session and `/dev/input` devices, but no physical
 tablet run, event capture, latency distribution, replay equivalence, or

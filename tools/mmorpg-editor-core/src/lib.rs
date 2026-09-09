@@ -321,6 +321,7 @@ impl std::error::Error for TabletBridgeError {}
 
 /// Maximum native points retained for one in-progress stroke in this spike.
 pub const MAX_STROKE_POINTS: usize = 8192;
+pub const MAX_CAPTURED_STROKE_POINTS: usize = MAX_STROKE_POINTS;
 
 /// Converts native tablet lifecycle events into bounded, device-neutral
 /// points. It owns no GUI handles and does not apply gameplay or terrain
@@ -461,6 +462,215 @@ impl TabletEventBridge {
         let point = self.point(event);
         self.points.push(point);
         Ok(TabletBridgeOutput::StrokePoint(point))
+    }
+}
+
+/// A bounded, deterministic record of one completed stroke. Replay converts
+/// the points back into native-shaped events and enters through
+/// [`TabletEventBridge`], so captured input cannot bypass lifecycle validation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CapturedStroke {
+    points: Vec<TabletPoint>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CaptureError {
+    Empty,
+    TooManyPoints { maximum: usize },
+    InvalidPoint,
+    InvalidSource(&'static str),
+    InvalidNumber(&'static str),
+    InvalidFormat(&'static str),
+    Bridge(TabletBridgeError),
+}
+
+impl fmt::Display for CaptureError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl std::error::Error for CaptureError {}
+
+impl From<TabletBridgeError> for CaptureError {
+    fn from(error: TabletBridgeError) -> Self {
+        Self::Bridge(error)
+    }
+}
+
+impl CapturedStroke {
+    pub fn from_points(points: Vec<TabletPoint>) -> Result<Self, CaptureError> {
+        if points.is_empty() {
+            return Err(CaptureError::Empty);
+        }
+        if points.len() < 2 {
+            return Err(CaptureError::InvalidFormat(
+                "stroke needs press and release",
+            ));
+        }
+        if points.len() > MAX_CAPTURED_STROKE_POINTS {
+            return Err(CaptureError::TooManyPoints {
+                maximum: MAX_CAPTURED_STROKE_POINTS,
+            });
+        }
+        let mut previous_timestamp = None;
+        for point in &points {
+            if !point.x.is_finite()
+                || !point.y.is_finite()
+                || !point.sample.pressure.is_finite()
+                || !point.sample.tilt_x.is_finite()
+                || !point.sample.tilt_y.is_finite()
+                || !point.sample.rotation.is_finite()
+            {
+                return Err(CaptureError::InvalidPoint);
+            }
+            if previous_timestamp.is_some_and(|previous| point.timestamp_ns < previous) {
+                return Err(CaptureError::InvalidPoint);
+            }
+            previous_timestamp = Some(point.timestamp_ns);
+        }
+        Ok(Self { points })
+    }
+
+    pub fn points(&self) -> &[TabletPoint] {
+        &self.points
+    }
+
+    pub fn to_source(&self) -> String {
+        let mut source = format!("MMORPG_EDITOR_CAPTURE 1\npoints {}\n", self.points.len());
+        for point in &self.points {
+            let source_name = match point.source {
+                InputSource::Pen => "pen",
+                InputSource::Eraser => "eraser",
+                InputSource::Mouse => "mouse",
+            };
+            source.push_str(&format!(
+                "point {} {} {} {} {} {} {} {} {}\n",
+                point.x,
+                point.y,
+                point.sample.pressure,
+                point.sample.tilt_x,
+                point.sample.tilt_y,
+                point.sample.rotation,
+                u8::from(point.sample.proximity),
+                source_name,
+                point.timestamp_ns
+            ));
+        }
+        source.push_str("end\n");
+        source
+    }
+
+    pub fn from_source(source: &str) -> Result<Self, CaptureError> {
+        let mut lines = source.lines();
+        if lines.next() != Some("MMORPG_EDITOR_CAPTURE 1") {
+            return Err(CaptureError::InvalidFormat("header"));
+        }
+        let count = lines
+            .next()
+            .and_then(|line| line.strip_prefix("points "))
+            .ok_or(CaptureError::InvalidFormat("point count"))?
+            .parse::<usize>()
+            .map_err(|_| CaptureError::InvalidNumber("point count"))?;
+        if count == 0 || count > MAX_CAPTURED_STROKE_POINTS {
+            return Err(CaptureError::TooManyPoints {
+                maximum: MAX_CAPTURED_STROKE_POINTS,
+            });
+        }
+        let mut points = Vec::with_capacity(count);
+        for _ in 0..count {
+            let line = lines.next().ok_or(CaptureError::InvalidFormat("point"))?;
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.len() != 10 || fields[0] != "point" {
+                return Err(CaptureError::InvalidFormat("point fields"));
+            }
+            let parse_f32 = |field: &'static str, value: &str| {
+                value
+                    .parse::<f32>()
+                    .map_err(|_| CaptureError::InvalidNumber(field))
+            };
+            let x = parse_f32("x", fields[1])?;
+            let y = parse_f32("y", fields[2])?;
+            let pressure = parse_f32("pressure", fields[3])?;
+            let tilt_x = parse_f32("tilt_x", fields[4])?;
+            let tilt_y = parse_f32("tilt_y", fields[5])?;
+            let rotation = parse_f32("rotation", fields[6])?;
+            let proximity = match fields[7] {
+                "0" => false,
+                "1" => true,
+                _ => return Err(CaptureError::InvalidFormat("proximity")),
+            };
+            let source = match fields[8] {
+                "pen" => InputSource::Pen,
+                "eraser" => InputSource::Eraser,
+                "mouse" => InputSource::Mouse,
+                _ => return Err(CaptureError::InvalidSource("source")),
+            };
+            let timestamp_ns = fields[9]
+                .parse::<u64>()
+                .map_err(|_| CaptureError::InvalidNumber("timestamp"))?;
+            points.push(TabletPoint::with_metadata(
+                x,
+                y,
+                NormalizedTabletSample::new(
+                    pressure,
+                    tilt_x,
+                    tilt_y,
+                    rotation,
+                    source == InputSource::Eraser,
+                    proximity,
+                ),
+                source,
+                timestamp_ns,
+            ));
+        }
+        if lines.next() != Some("end") || lines.next().is_some() {
+            return Err(CaptureError::InvalidFormat("end"));
+        }
+        Self::from_points(points)
+    }
+
+    pub fn replay(&self, bridge: &mut TabletEventBridge) -> Result<Vec<TabletPoint>, CaptureError> {
+        let first = self.points.first().expect("captured stroke is non-empty");
+        bridge.push(NativeTabletPhase::ProximityEnter.into_event(first)?)?;
+        for (index, point) in self.points.iter().enumerate() {
+            let phase = if index == 0 {
+                NativeTabletPhase::Press
+            } else if index + 1 == self.points.len() {
+                NativeTabletPhase::Release
+            } else {
+                NativeTabletPhase::Move
+            };
+            let output = bridge.push(phase.into_event(point)?)?;
+            if let TabletBridgeOutput::StrokeFinished(points) = output {
+                return Ok(points);
+            }
+        }
+        Err(CaptureError::InvalidFormat("replay did not release"))
+    }
+}
+
+impl NativeTabletPhase {
+    fn into_event(self, point: &TabletPoint) -> Result<NativeTabletEvent, CaptureError> {
+        let mut event = match point.source {
+            InputSource::Mouse => {
+                NativeTabletEvent::from_mouse(self, point.x, point.y, point.timestamp_ns)
+            }
+            InputSource::Pen | InputSource::Eraser => NativeTabletEvent::from_qt(
+                self,
+                point.x,
+                point.y,
+                point.sample.pressure,
+                point.sample.tilt_x * 60.0,
+                point.sample.tilt_y * 60.0,
+                point.sample.rotation * 360.0,
+                point.source == InputSource::Eraser,
+            ),
+        }
+        .map_err(|_| CaptureError::InvalidPoint)?;
+        event.timestamp_ns = point.timestamp_ns;
+        event.source = point.source;
+        Ok(event)
     }
 }
 
@@ -1087,6 +1297,47 @@ mod tests {
         let loaded = TerrainDocument::from_source(&source).unwrap();
         assert_eq!(loaded, document);
         assert_eq!(loaded.to_source(), source);
+    }
+
+    #[test]
+    fn captured_stroke_round_trips_and_replays_through_the_bridge() {
+        let captured = CapturedStroke::from_points(vec![
+            TabletPoint::with_metadata(
+                1.0,
+                2.0,
+                NormalizedTabletSample::new(0.25, 0.5, -0.25, 0.25, false, true),
+                InputSource::Pen,
+                100,
+            ),
+            TabletPoint::with_metadata(
+                2.0,
+                3.0,
+                NormalizedTabletSample::new(0.75, 0.25, 0.0, 0.5, false, true),
+                InputSource::Pen,
+                110,
+            ),
+        ])
+        .unwrap();
+        let source = captured.to_source();
+        assert_eq!(CapturedStroke::from_source(&source).unwrap(), captured);
+
+        let mut bridge = TabletEventBridge::new();
+        assert_eq!(captured.replay(&mut bridge).unwrap(), captured.points);
+        assert!(!bridge.is_stroke_active());
+    }
+
+    #[test]
+    fn captured_strokes_reject_unbounded_or_malformed_records() {
+        assert_eq!(
+            CapturedStroke::from_source("MMORPG_EDITOR_CAPTURE 1\npoints 0\nend\n"),
+            Err(CaptureError::TooManyPoints {
+                maximum: MAX_CAPTURED_STROKE_POINTS,
+            })
+        );
+        assert!(matches!(
+            CapturedStroke::from_source("MMORPG_EDITOR_CAPTURE 1\npoints 2\npoint bad\n"),
+            Err(CaptureError::InvalidFormat("point fields"))
+        ));
     }
 
     #[test]
