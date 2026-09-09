@@ -653,10 +653,14 @@ impl LocalCheckpointStore {
                 return Err("checkpoint revision reused with a different operation".to_owned());
             }
         }
+        let serialized = format_checkpoint(revision, operation_id, state);
+        if serialized.len() > MAX_CHECKPOINT_BYTES as usize {
+            return Err("checkpoint exceeds its size limit".to_owned());
+        }
         let temporary = self.path.with_extension("tmp");
         let mut file = File::create(&temporary)
             .map_err(|error| format!("cannot create checkpoint: {error}"))?;
-        file.write_all(format_checkpoint(revision, operation_id, state).as_bytes())
+        file.write_all(serialized.as_bytes())
             .map_err(|error| format!("cannot write checkpoint: {error}"))?;
         file.sync_all()
             .map_err(|error| format!("cannot sync checkpoint: {error}"))?;
@@ -1224,6 +1228,27 @@ mod tests {
                 .load_checkpoint(DEV_ACCOUNT_ID, DEV_CHARACTER_ID)
                 .expect("first character checkpoint should remain")
                 .expect("first character checkpoint should exist")
+                .name,
+            "Aria"
+        );
+        let mut oversized_state = state.clone();
+        oversized_state.name = "x".repeat(MAX_CHECKPOINT_BYTES as usize + 1);
+        assert!(
+            repository
+                .save_checkpoint_revisioned(
+                    DEV_ACCOUNT_ID,
+                    DEV_CHARACTER_ID,
+                    1,
+                    1,
+                    &oversized_state,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            repository
+                .load_checkpoint(DEV_ACCOUNT_ID, DEV_CHARACTER_ID)
+                .expect("prior checkpoint should remain readable")
+                .expect("prior checkpoint should remain present")
                 .name,
             "Aria"
         );

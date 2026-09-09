@@ -90,7 +90,9 @@ policy is bounded periodic checkpointing (20 simulation ticks at the default
 20 Hz) plus a safe-logout checkpoint; it is not a per-tick durability claim.
 Checkpoint startup reads are capped at 64 KiB, and item/quest collections are
 bounded before parsing; oversized or malformed files are rejected without
-replacing a prior valid checkpoint.
+replacing a prior valid checkpoint. Writes apply the same serialized-size
+bound before creating the temporary replacement, so an oversized state cannot
+replace the last valid checkpoint.
 The local operation journal now persists retryable operation IDs, revisions,
 original command payloads, and result payloads off the simulation owner, and
 reconciles a completed command against an older checkpoint on restart. It does
