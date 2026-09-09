@@ -212,9 +212,12 @@ impl CharacterFenceStore {
         for _ in 0..2 {
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut file) => {
-                    writeln!(file, "pid={}", std::process::id())
-                        .and_then(|()| file.sync_all())
-                        .map_err(|error| format!("cannot initialize character fence: {error}"))?;
+                    if let Err(error) =
+                        writeln!(file, "pid={}", std::process::id()).and_then(|()| file.sync_all())
+                    {
+                        let _ = fs::remove_file(&path);
+                        return Err(format!("cannot initialize character fence: {error}"));
+                    }
                     return Ok(CharacterFence { path });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
