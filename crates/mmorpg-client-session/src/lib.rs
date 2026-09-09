@@ -147,6 +147,9 @@ impl Session {
                 self.transition(SessionState::AwaitingCharacterList, &mut output);
                 self.enqueue(ClientCommand::ListCharacters, &mut output);
             }
+            SessionInput::Server(ServerMessage::Response { message, .. }) => {
+                output.extend(self.handle(SessionInput::Server(*message)));
+            }
             SessionInput::Sequenced { sequence, message } => {
                 self.handle_sequenced(sequence, message, &mut output);
             }
@@ -440,6 +443,34 @@ mod tests {
                 .any(|item| matches!(item, SessionOutput::Bootstrap(_)))
         );
         assert_eq!(session.state(), SessionState::Ready);
+    }
+
+    #[test]
+    fn correlated_server_responses_feed_the_same_handshake_state_machine() {
+        let mut session = Session::new("dev-local");
+        session.handle(SessionInput::Connect);
+        session.handle(SessionInput::Server(ServerMessage::Response {
+            request_id: 19,
+            message: Box::new(ServerMessage::Authenticated {
+                account_id: 1,
+                session_id: 1,
+            }),
+        }));
+
+        assert_eq!(session.state(), SessionState::AwaitingCharacterList);
+        assert!(
+            session
+                .handle(SessionInput::Server(ServerMessage::Response {
+                    request_id: 20,
+                    message: Box::new(ServerMessage::CharacterList {
+                        account_id: 1,
+                        characters: vec![],
+                    }),
+                }))
+                .iter()
+                .any(|output| matches!(output, SessionOutput::CharacterList { .. }))
+        );
+        assert_eq!(session.state(), SessionState::AwaitingCharacterSelection);
     }
 
     #[test]

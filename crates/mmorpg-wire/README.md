@@ -58,9 +58,10 @@ covers development authentication, character listing/selection, world entry,
 join compatibility decoding, movement, target selection, attack, vendor
 listing and purchase, loot, quest offers/acceptance/turn-in, party
 invite/accept/decline, leave/remove/leader-transfer/disband, snapshot request,
-pre-entry content digest exchange, and an additive retryable wrapper carrying
-a nonzero operation ID. The current development server accepts that wrapper
-for purchase, loot, and quest turn-in. Numeric IDs are
+pre-entry content digest exchange, and additive request-correlation and
+retryable wrappers carrying nonzero IDs. The current development server
+accepts the retryable wrapper for purchase, loot, and quest turn-in. Numeric
+IDs are
 big-endian, movement values are IEEE-754 `f32` bit patterns, names are bounded
 UTF-8 strings, and zero IDs/quantities or non-finite movement values are
 rejected. The server session adapter now consumes these commands on its
@@ -69,7 +70,14 @@ contract until a stable external compatibility document is accepted.
 
 Typed server messages sent by the development listener are wrapped in
 `SequencedServerMessage`, which carries a nonzero per-session `u64` sequence
-before the existing message payload. `decode_payload` remains available for
+before the existing message payload. `ClientCommand::Request` (opcode 29) and
+`ServerMessage::Response` (opcode 11) provide an additive request/response
+correlation wrapper with a nonzero session-local `u64` request ID. The server
+uses it for immediate session/bootstrap responses, including deferred world
+connection completion; existing unwrapped forms remain valid. Correlation does
+not replace the delivery sequence, and asynchronous gameplay events still use
+the sequence plus their authoritative event fields. Nested request, response,
+and retryable wrappers are rejected. `decode_payload` remains available for
 legacy unsequenced fixtures; `SequencedServerMessage::decode_payload` is the
 path used by sequence-aware clients.
 
@@ -119,11 +127,12 @@ debugging, but it is not a safe or stable production protocol:
   rather than stable IDs and typed fields.
 
 This prototype addresses framing, envelope metadata, typed command payloads,
-and typed server event/snapshot payloads. It has only a loopback-only
+typed server event/snapshot payloads, and an additive bootstrap request
+correlation contract. It has only a loopback-only
 development authentication message; it does not yet provide production
 authentication, encryption, compression,
-capability negotiation, replay protection, sequencing, acknowledgements,
-interest-managed replication, acknowledgements, or socket ownership. The
+capability negotiation, replay protection, resumable request state,
+interest-managed replication, or socket ownership. The
 development listener now wraps server messages with per-session sequences;
 production replay protection and resumable sessions remain out of scope. A
 network adapter should own buffering and I/O, call `decode_one` only after

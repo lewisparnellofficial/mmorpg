@@ -80,6 +80,7 @@ struct WireClient {
     content_compatible: bool,
     next_sequence: u64,
     player_id: Option<EntityId>,
+    pending_request_id: Option<u64>,
     closed: bool,
 }
 
@@ -96,6 +97,7 @@ impl WireClient {
             content_compatible: false,
             next_sequence: 1,
             player_id: None,
+            pending_request_id: None,
             closed: false,
         }
     }
@@ -240,6 +242,7 @@ struct Server {
     checkpoint_worker: CheckpointWorker,
     next_client_id: u64,
     next_session_id: u64,
+    active_request_ids: BTreeMap<u64, u64>,
     combat_timing: CombatTiming,
     tick_interval: Duration,
     next_tick: Instant,
@@ -342,6 +345,7 @@ impl Server {
             account_repository,
             next_client_id: 1,
             next_session_id: 1,
+            active_request_ids: BTreeMap::new(),
             combat_timing,
             tick_interval,
             next_tick: Instant::now() + tick_interval,
@@ -491,6 +495,21 @@ impl Server {
     }
 
     fn handle_wire_command(&mut self, client_id: u64, command: WireCommand) {
+        let (request_id, command) = match command {
+            WireCommand::Request {
+                request_id,
+                command,
+            } => (Some(request_id), *command),
+            command => (None, command),
+        };
+        if let Some(request_id) = request_id {
+            self.active_request_ids.insert(client_id, request_id);
+        }
+        self.handle_wire_command_inner(client_id, command);
+        self.active_request_ids.remove(&client_id);
+    }
+
+    fn handle_wire_command_inner(&mut self, client_id: u64, command: WireCommand) {
         let Some(client_index) = self
             .wire_clients
             .iter()
@@ -519,10 +538,13 @@ impl Server {
                 account_id,
                 session_id,
             });
-            self.wire_clients[client_index].queue_server_message(&ServerMessage::Authenticated {
-                account_id,
-                session_id,
-            });
+            self.queue_wire_message(
+                client_id,
+                ServerMessage::Authenticated {
+                    account_id,
+                    session_id,
+                },
+            );
             return;
         }
         if self.wire_clients[client_index].authenticated.is_none() {
@@ -562,10 +584,13 @@ impl Server {
                 .into_iter()
                 .map(|character| character.summary())
                 .collect();
-            self.wire_clients[client_index].queue_server_message(&ServerMessage::CharacterList {
-                account_id,
-                characters,
-            });
+            self.queue_wire_message(
+                client_id,
+                ServerMessage::CharacterList {
+                    account_id,
+                    characters,
+                },
+            );
             return;
         }
         if let WireCommand::SelectCharacter { character_id } = command {
@@ -590,8 +615,9 @@ impl Server {
             }
             self.wire_clients[client_index].selected_character_id = Some(character_id);
             let summary = character.summary();
-            self.wire_clients[client_index].queue_server_message(
-                &ServerMessage::CharacterSelected {
+            self.queue_wire_message(
+                client_id,
+                ServerMessage::CharacterSelected {
                     character_id: summary.character_id,
                     name: summary.name,
                     role: summary.role,
@@ -613,11 +639,11 @@ impl Server {
             let expected = starter_catalog().content_digest();
             if digest == expected {
                 self.wire_clients[client_index].content_compatible = true;
-                self.wire_clients[client_index]
-                    .queue_server_message(&ServerMessage::ContentAccepted { digest });
+                self.queue_wire_message(client_id, ServerMessage::ContentAccepted { digest });
             } else {
-                self.wire_clients[client_index].queue_server_message(
-                    &ServerMessage::ContentMismatch {
+                self.queue_wire_message(
+                    client_id,
+                    ServerMessage::ContentMismatch {
                         expected,
                         received: digest,
                     },
@@ -670,15 +696,24 @@ impl Server {
                 if self.world.player(detached.player_id).is_some()
                     && detached.expires_at_tick > self.world.tick()
                 {
-                    let client = &mut self.wire_clients[client_index];
-                    client.player_id = Some(detached.player_id);
-                    client.queue_server_message(&ServerMessage::Connected {
-                        player_id: detached.player_id.0,
-                        role: wire_role(character.role),
-                    });
-                    client.queue_server_message(&ServerMessage::Snapshot(
-                        wire_snapshot_for_player(&self.world, detached.player_id),
-                    ));
+                    self.wire_clients[client_index].player_id = Some(detached.player_id);
+                    let request_id = self.active_request_ids.get(&client_id).copied();
+                    self.queue_wire_message_with_request(
+                        client_id,
+                        request_id,
+                        ServerMessage::Connected {
+                            player_id: detached.player_id.0,
+                            role: wire_role(character.role),
+                        },
+                    );
+                    self.queue_wire_message_with_request(
+                        client_id,
+                        request_id,
+                        ServerMessage::Snapshot(wire_snapshot_for_player(
+                            &self.world,
+                            detached.player_id,
+                        )),
+                    );
                     return;
                 }
             }
@@ -702,6 +737,9 @@ impl Server {
                     return;
                 }
             };
+            if let Some(request_id) = self.active_request_ids.get(&client_id).copied() {
+                self.wire_clients[client_index].pending_request_id = Some(request_id);
+            }
             self.enqueue_pending_wire_command(client_id, command);
             let recoveries: Vec<_> = self
                 .recovery_operations
@@ -906,22 +944,34 @@ impl Server {
             return;
         };
         let snapshot = wire_snapshot_for_player(&self.world, player_id);
-        if let Some(client) = self
-            .wire_clients
-            .iter_mut()
-            .find(|client| client.id == client_id)
-        {
-            client.queue_server_message(&ServerMessage::Snapshot(snapshot));
-        }
+        self.queue_wire_message(client_id, ServerMessage::Snapshot(snapshot));
     }
 
     fn queue_wire_error(&mut self, client_id: u64, error: String) {
+        self.queue_wire_message(client_id, ServerMessage::Error { message: error });
+    }
+
+    fn queue_wire_message(&mut self, client_id: u64, message: ServerMessage) {
+        let request_id = self.active_request_ids.get(&client_id).copied();
+        self.queue_wire_message_with_request(client_id, request_id, message);
+    }
+
+    fn queue_wire_message_with_request(
+        &mut self,
+        client_id: u64,
+        request_id: Option<u64>,
+        message: ServerMessage,
+    ) {
+        let message = request_id.map_or(message.clone(), |request_id| ServerMessage::Response {
+            request_id,
+            message: Box::new(message),
+        });
         if let Some(client) = self
             .wire_clients
             .iter_mut()
             .find(|client| client.id == client_id)
         {
-            client.queue_server_message(&ServerMessage::Error { message: error });
+            client.queue_server_message(&message);
         }
     }
 
@@ -1290,12 +1340,17 @@ impl Server {
                         .authenticated
                         .zip(client.selected_character_id)
                         .map(|(session, character_id)| (session.account_id, character_id));
+                    let request_id = client.pending_request_id.take();
                     client.player_id = Some(player.id);
-                    client.queue_server_message(&ServerMessage::Connected {
-                        player_id: player.id.0,
-                        role: wire_role(player.role),
-                    });
                     let _ = client;
+                    self.queue_wire_message_with_request(
+                        origin,
+                        request_id,
+                        ServerMessage::Connected {
+                            player_id: player.id.0,
+                            role: wire_role(player.role),
+                        },
+                    );
                     if let Some(identity) = identity
                         && let Some(recoveries) = self.pending_recovery_operations.remove(&identity)
                     {
@@ -2928,6 +2983,7 @@ fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Com
         | WireCommand::SelectCharacter { .. }
         | WireCommand::ContentDigest { .. }
         | WireCommand::Retryable { .. }
+        | WireCommand::Request { .. }
         | WireCommand::Snapshot => {
             return Err("command is not valid in a bound session".to_owned());
         }
@@ -3203,6 +3259,42 @@ mod tests {
         assert_eq!(
             server.combat_timing.cooldown_ticks(),
             DEFAULT_COMBAT_COOLDOWN_TICKS
+        );
+    }
+
+    #[test]
+    fn request_wrapper_correlates_an_immediate_session_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let _peer = TcpStream::connect(address).expect("connect test peer");
+        let (stream, _) = listener.accept().expect("accept test peer");
+        let mut server = Server::new(DEFAULT_TICK_HZ, true, None);
+        server.wire_clients.push(WireClient::new(1, stream));
+
+        server.handle_wire_command(
+            1,
+            WireCommand::Request {
+                request_id: 19,
+                command: Box::new(WireCommand::Authenticate {
+                    token: "dev-local".to_owned(),
+                }),
+            },
+        );
+
+        let frame: Vec<_> = server.wire_clients[0].output.drain(..).collect();
+        let decoded = decode_one(&frame).expect("correlated response should decode");
+        let sequenced = SequencedServerMessage::decode_payload(&decoded.envelope.payload)
+            .expect("server response should carry a sequence");
+        assert_eq!(sequenced.sequence, 1);
+        assert_eq!(
+            sequenced.message,
+            ServerMessage::Response {
+                request_id: 19,
+                message: Box::new(ServerMessage::Authenticated {
+                    account_id: 1,
+                    session_id: 1,
+                }),
+            }
         );
     }
 

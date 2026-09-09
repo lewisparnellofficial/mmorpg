@@ -1590,6 +1590,7 @@ fn apply_server_line(state: &mut ClientState, line: &str) {
 
 fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
     match message {
+        ServerMessage::Response { message, .. } => return apply_server_message(state, message),
         ServerMessage::Welcome { server } => state.log(format!("server greeted {server}")),
         ServerMessage::Authenticated { account_id, .. } => {
             state.log(format!("authenticated account {account_id}"));

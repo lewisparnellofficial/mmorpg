@@ -241,6 +241,7 @@ pub fn apply_wire_message(
     message: &ServerMessage,
 ) -> Result<(), AdapterError> {
     match message {
+        ServerMessage::Response { message, .. } => apply_wire_message(model, message),
         ServerMessage::Snapshot(snapshot) => apply_wire_snapshot(model, snapshot),
         ServerMessage::Event(event) => {
             let event = wire_event(event)?;

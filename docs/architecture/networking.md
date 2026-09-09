@@ -3,10 +3,11 @@
 **Status:** Proposed; experiment required
 
 The current wire crate now has a compatibility-only control profile for
-version rejection and a length-delimited additive-event helper. These are
-validated codec boundaries; server/client cutover, retained previous-client
-fixtures, content-digest negotiation, and sequence-aware resync are still
-required before the gameplay protocol version can change.
+version rejection, a length-delimited additive-event helper, and an additive
+request/response correlation wrapper. These are validated codec boundaries;
+server/client cutover, retained previous-client fixtures, content-digest
+negotiation, and sequence-aware resync are still required before the gameplay
+protocol version can change.
 
 ## Core model
 
@@ -133,6 +134,7 @@ The protocol should have:
 - Sequence numbers or tick numbers.
 - Session authentication.
 - Duplicate-command protection.
+- Request/response correlation for immediate session and bootstrap operations.
 - Reconnect and session-resume behavior.
 - Clear separation between gameplay, chat, and administration traffic.
 
@@ -186,3 +188,14 @@ bootstrap-buffer overflow request a fresh snapshot. The typed development
 listener carries the sequence wrapper; retained previous-client fixtures and
 full old-client interoperability evidence are still required before a
 gameplay protocol-version bump.
+
+The typed command schema also has a session-local request wrapper. A nonzero
+request ID is carried from `ClientCommand::Request` to
+`ServerMessage::Response` for immediate authentication, character, content,
+and world-connection results, including world connection completion that is
+delayed until the next simulation join step. The per-session delivery sequence
+still orders those responses. This first boundary deliberately does not assign
+request IDs to every asynchronous gameplay event: those remain correlated by
+the authoritative event payload and delivery sequence. Retryable economic and
+quest commands retain their separate durable operation IDs for deduplication
+and restart recovery.

@@ -241,6 +241,13 @@ pub enum ClientCommand {
         operation_id: u64,
         command: Box<ClientCommand>,
     },
+    /// Correlates one request/response exchange without changing the
+    /// semantics of the wrapped command. Request IDs are session-local and
+    /// must be nonzero.
+    Request {
+        request_id: u64,
+        command: Box<ClientCommand>,
+    },
 }
 
 impl ClientCommand {
@@ -339,6 +346,22 @@ impl ClientCommand {
                 payload.extend_from_slice(&operation_id.to_be_bytes());
                 payload.extend_from_slice(&command.encode_payload()?);
             }
+            Self::Request {
+                request_id,
+                command,
+            } => {
+                if *request_id == 0
+                    || matches!(
+                        command.as_ref(),
+                        Self::Retryable { .. } | Self::Request { .. }
+                    )
+                {
+                    return Err(CommandCodecError::MalformedPayload);
+                }
+                payload.push(29);
+                payload.extend_from_slice(&request_id.to_be_bytes());
+                payload.extend_from_slice(&command.encode_payload()?);
+            }
         }
         Ok(payload)
     }
@@ -431,6 +454,18 @@ impl ClientCommand {
                 }
                 Self::Retryable {
                     operation_id,
+                    command: Box::new(command),
+                }
+            }
+            29 => {
+                let request_id = decoder.take_nonzero_u64("request_id")?;
+                let command = ClientCommand::decode_payload(&decoder.payload[decoder.offset..])?;
+                decoder.offset = decoder.payload.len();
+                if matches!(command, Self::Retryable { .. } | Self::Request { .. }) {
+                    return Err(CommandCodecError::MalformedPayload);
+                }
+                Self::Request {
+                    request_id,
                     command: Box::new(command),
                 }
             }
@@ -812,6 +847,11 @@ pub enum ServerMessage {
         expected: [u8; 32],
         received: [u8; 32],
     },
+    /// Correlates a response to a session-local client request.
+    Response {
+        request_id: u64,
+        message: Box<ServerMessage>,
+    },
 }
 
 /// Typed authoritative event payloads corresponding to the current core
@@ -1066,6 +1106,17 @@ impl ServerMessage {
                 encoder.bytes.extend_from_slice(expected);
                 encoder.bytes.extend_from_slice(received);
             }
+            Self::Response {
+                request_id,
+                message,
+            } => {
+                if *request_id == 0 || matches!(message.as_ref(), Self::Response { .. }) {
+                    return Err(ServerCodecError::MalformedPayload);
+                }
+                encoder.put_u8(11);
+                encoder.put_u64(*request_id, "request_id")?;
+                encoder.bytes.extend_from_slice(&message.encode_payload()?);
+            }
         }
         Ok(encoder.bytes)
     }
@@ -1135,6 +1186,18 @@ impl ServerMessage {
                     .try_into()
                     .expect("content digest is exactly 32 bytes"),
             },
+            11 => {
+                let request_id = decoder.take_nonzero_u64("request_id")?;
+                let message = ServerMessage::decode_payload(&payload[decoder.offset..])?;
+                decoder.offset = payload.len();
+                if matches!(message, ServerMessage::Response { .. }) {
+                    return Err(ServerCodecError::MalformedPayload);
+                }
+                Self::Response {
+                    request_id,
+                    message: Box::new(message),
+                }
+            }
             opcode => return Err(ServerCodecError::UnknownOpcode(opcode)),
         };
         if decoder.offset != payload.len() {
@@ -2297,6 +2360,7 @@ pub fn decode_framed_server_event(input: &[u8]) -> Result<FramedServerEvent, Ser
 pub enum ServerCodecError {
     Empty,
     CannotEncodeSkippedEvent,
+    MalformedPayload,
     Truncated {
         field: &'static str,
     },
@@ -2342,6 +2406,7 @@ impl fmt::Display for ServerCodecError {
             Self::CannotEncodeSkippedEvent => {
                 formatter.write_str("skipped additive events cannot be encoded")
             }
+            Self::MalformedPayload => formatter.write_str("server payload is malformed"),
             Self::Truncated { field } => write!(formatter, "server field '{field}' is truncated"),
             Self::UnknownOpcode(opcode) => write!(formatter, "unknown server opcode {opcode}"),
             Self::UnsupportedSnapshotVersion { version, supported } => write!(
@@ -2818,6 +2883,10 @@ mod tests {
                     quantity: 1,
                 }),
             },
+            ClientCommand::Request {
+                request_id: 77,
+                command: Box::new(ClientCommand::ListCharacters),
+            },
             ClientCommand::Snapshot,
         ];
 
@@ -2862,6 +2931,25 @@ mod tests {
         assert_eq!(
             ClientCommand::decode_payload(&[5, 0, 0, 0, 0, 0, 0, 0, 0]),
             Err(CommandCodecError::InvalidZero { field: "vendor_id" })
+        );
+        assert_eq!(
+            ClientCommand::Request {
+                request_id: 0,
+                command: Box::new(ClientCommand::Snapshot),
+            }
+            .encode_payload(),
+            Err(CommandCodecError::MalformedPayload)
+        );
+        assert_eq!(
+            ClientCommand::Request {
+                request_id: 1,
+                command: Box::new(ClientCommand::Retryable {
+                    operation_id: 2,
+                    command: Box::new(ClientCommand::Snapshot),
+                }),
+            }
+            .encode_payload(),
+            Err(CommandCodecError::MalformedPayload)
         );
         let mut payload = ClientCommand::Snapshot.encode_payload().unwrap();
         payload.push(0);
@@ -3018,6 +3106,14 @@ mod tests {
             ServerMessage::ContentMismatch {
                 expected: [1; 32],
                 received: [2; 32],
+            },
+            ServerMessage::Response {
+                request_id: 77,
+                message: Box::new(ServerMessage::CharacterSelected {
+                    character_id: 1,
+                    name: "Aria".to_owned(),
+                    role: RoleCode::DamageDealer,
+                }),
             },
             ServerMessage::Error {
                 message: "connect first".to_owned(),
