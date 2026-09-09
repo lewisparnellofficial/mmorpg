@@ -1,6 +1,8 @@
 mod account_repository;
 
-use crate::account_repository::{AccountCharacterRepository, DevelopmentAccountRepository};
+use crate::account_repository::{
+    AccountCharacterRepository, CheckpointJob, CheckpointWorker, DevelopmentAccountRepository,
+};
 use mmorpg_content::starter_catalog;
 use mmorpg_core::{CombatTiming, Command, EntityId, Event, ItemId, PartyId, QuestId, Role, World};
 use mmorpg_wire::{
@@ -14,6 +16,7 @@ use std::env;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -176,7 +179,8 @@ struct Server {
     clients: Vec<Client>,
     wire_clients: Vec<WireClient>,
     commands: VecDeque<PendingCommand>,
-    account_repository: Box<dyn AccountCharacterRepository>,
+    account_repository: Arc<dyn AccountCharacterRepository>,
+    checkpoint_worker: CheckpointWorker,
     next_client_id: u64,
     next_session_id: u64,
     combat_timing: CombatTiming,
@@ -204,12 +208,15 @@ impl Server {
         let tick_interval = Duration::from_secs_f64(1.0 / tick_hz as f64);
         let combat_timing = CombatTiming::new(tick_hz.min(u32::MAX as u64) as u32, 0, 0)
             .expect("tick_hz is clamped above zero");
+        let account_repository: Arc<dyn AccountCharacterRepository> = Arc::from(account_repository);
+        let checkpoint_worker = CheckpointWorker::new(Arc::clone(&account_repository));
         Self {
             world: World::new_starter_zone(),
             #[cfg(test)]
             clients: Vec::new(),
             wire_clients: Vec::new(),
             commands: VecDeque::new(),
+            checkpoint_worker,
             account_repository,
             next_client_id: 1,
             next_session_id: 1,
@@ -884,6 +891,14 @@ impl Server {
     }
 
     fn checkpoint_wire_players(&self) {
+        for result in self.checkpoint_worker.drain_results() {
+            if let Err(error) = result.result {
+                eprintln!(
+                    "checkpoint_save_error character={} revision={} error={error}",
+                    result.character_id, result.revision
+                );
+            }
+        }
         for client in &self.wire_clients {
             let (Some(session), Some(character_id), Some(player_id)) = (
                 client.authenticated,
@@ -895,12 +910,16 @@ impl Server {
             let Some(player) = self.world.player(player_id) else {
                 continue;
             };
-            if let Err(error) = self.account_repository.save_checkpoint(
-                session.account_id,
+            let revision = self.world.tick();
+            let job = CheckpointJob {
+                account_id: session.account_id,
                 character_id,
-                &player.durable_state(),
-            ) {
-                eprintln!("checkpoint_save_error player={player_id} error={error}");
+                revision,
+                operation_id: (revision << 32) | player_id.0,
+                state: player.durable_state(),
+            };
+            if self.checkpoint_worker.try_enqueue(job).is_err() {
+                eprintln!("checkpoint_queue_full player={player_id} revision={revision}");
             }
         }
     }

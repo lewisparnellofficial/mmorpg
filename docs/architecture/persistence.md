@@ -70,15 +70,20 @@ The current development server now has an opt-in, single-character local
 checkpoint prototype behind `--character-store <path>`. It uses the repository
 boundary to load validated player state when the selected character enters the
 world and atomically replace a small versioned checkpoint file at a bounded
-20-tick interval at the default 20 Hz, plus at safe logout/disconnect. The core
+20-tick interval at the default 20 Hz, plus at safe logout/disconnect. Checkpoint
+writes are handed to a bounded writer thread; the simulation loop only enqueues
+an immutable job and polls completion results. Version-2 records carry a
+monotonic checkpoint revision and operation ID. A retry at an older revision is
+accepted as a no-op, so a delayed writer cannot overwrite newer state. The core
 validates the state before restoring it; runtime-only target, health, and
 combat timing state is reset.
 
 This is deliberately **not** production persistence: it has no journal,
-database transaction, crash-safe directory sync, concurrent writers,
-multi-character namespace, migration system, credential persistence, or
-idempotent durable-operation IDs. It demonstrates the ownership and restore
-boundary only. The repeatable evidence is recorded in
+database transaction, crash-safe directory sync, concurrent external writers,
+multi-character account store, migration system, credential persistence, or
+transactional economy/reward operation log. The bounded writer and revision
+fence demonstrate the ownership, retry, and restore boundaries only. The
+repeatable evidence is recorded in
 [`EXP-005`](../experiments/EXP-005-durable-character-checkpoint.md).
 
 ## Transactional operations

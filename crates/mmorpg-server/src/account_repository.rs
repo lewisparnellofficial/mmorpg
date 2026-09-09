@@ -13,6 +13,9 @@ use mmorpg_wire::{CharacterSummary, RoleCode};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::thread::{self, JoinHandle};
 
 const DEV_AUTH_TOKEN: &str = "dev-local";
 const DEV_ACCOUNT_ID: u64 = 1;
@@ -59,7 +62,7 @@ impl AuthenticationError {
 /// A production implementation should use durable account and character data,
 /// enforce any account/character status policy, and keep credential processing
 /// separate from the simulation worker.
-pub trait AccountCharacterRepository {
+pub trait AccountCharacterRepository: Send + Sync {
     fn authenticate_development_token(&self, token: &str) -> Result<u64, AuthenticationError>;
 
     fn list_characters(&self, account_id: u64) -> Vec<CharacterRecord>;
@@ -78,6 +81,149 @@ pub trait AccountCharacterRepository {
         character_id: u64,
         state: &DurablePlayerState,
     ) -> Result<(), String>;
+
+    fn save_checkpoint_revisioned(
+        &self,
+        account_id: u64,
+        character_id: u64,
+        revision: u64,
+        operation_id: u64,
+        state: &DurablePlayerState,
+    ) -> Result<(), String> {
+        let _ = (revision, operation_id);
+        self.save_checkpoint(account_id, character_id, state)
+    }
+}
+
+impl<T: AccountCharacterRepository + ?Sized> AccountCharacterRepository for Arc<T> {
+    fn authenticate_development_token(&self, token: &str) -> Result<u64, AuthenticationError> {
+        (**self).authenticate_development_token(token)
+    }
+
+    fn list_characters(&self, account_id: u64) -> Vec<CharacterRecord> {
+        (**self).list_characters(account_id)
+    }
+
+    fn find_character(&self, account_id: u64, character_id: u64) -> Option<CharacterRecord> {
+        (**self).find_character(account_id, character_id)
+    }
+
+    fn load_checkpoint(
+        &self,
+        account_id: u64,
+        character_id: u64,
+    ) -> Result<Option<DurablePlayerState>, String> {
+        (**self).load_checkpoint(account_id, character_id)
+    }
+
+    fn save_checkpoint(
+        &self,
+        account_id: u64,
+        character_id: u64,
+        state: &DurablePlayerState,
+    ) -> Result<(), String> {
+        (**self).save_checkpoint(account_id, character_id, state)
+    }
+
+    fn save_checkpoint_revisioned(
+        &self,
+        account_id: u64,
+        character_id: u64,
+        revision: u64,
+        operation_id: u64,
+        state: &DurablePlayerState,
+    ) -> Result<(), String> {
+        (**self).save_checkpoint_revisioned(account_id, character_id, revision, operation_id, state)
+    }
+}
+
+#[derive(Debug)]
+pub struct CheckpointJob {
+    pub account_id: u64,
+    pub character_id: u64,
+    pub revision: u64,
+    pub operation_id: u64,
+    pub state: DurablePlayerState,
+}
+
+pub struct CheckpointResult {
+    pub character_id: u64,
+    pub revision: u64,
+    pub result: Result<(), String>,
+}
+
+enum CheckpointMessage {
+    Save(CheckpointJob),
+    Stop,
+}
+
+/// Bounded persistence handoff. Simulation code only performs `try_send` and
+/// polls results; file I/O happens on the dedicated writer thread.
+pub struct CheckpointWorker {
+    sender: SyncSender<CheckpointMessage>,
+    results: Receiver<CheckpointResult>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl CheckpointWorker {
+    pub fn new(repository: Arc<dyn AccountCharacterRepository>) -> Self {
+        let (sender, receiver) = mpsc::sync_channel(128);
+        let (result_sender, results) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("mmorpg-checkpoint-writer".to_owned())
+            .spawn(move || {
+                while let Ok(message) = receiver.recv() {
+                    match message {
+                        CheckpointMessage::Save(job) => {
+                            let revision = job.revision;
+                            let character_id = job.character_id;
+                            let result = repository.save_checkpoint_revisioned(
+                                job.account_id,
+                                job.character_id,
+                                job.revision,
+                                job.operation_id,
+                                &job.state,
+                            );
+                            let _ = result_sender.send(CheckpointResult {
+                                character_id,
+                                revision,
+                                result,
+                            });
+                        }
+                        CheckpointMessage::Stop => break,
+                    }
+                }
+            })
+            .expect("checkpoint writer thread should start");
+        Self {
+            sender,
+            results,
+            thread: Some(thread),
+        }
+    }
+
+    pub fn try_enqueue(&self, job: CheckpointJob) -> Result<(), CheckpointJob> {
+        match self.sender.try_send(CheckpointMessage::Save(job)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(CheckpointMessage::Save(job)))
+            | Err(TrySendError::Disconnected(CheckpointMessage::Save(job))) => Err(job),
+            Err(TrySendError::Full(CheckpointMessage::Stop))
+            | Err(TrySendError::Disconnected(CheckpointMessage::Stop)) => unreachable!(),
+        }
+    }
+
+    pub fn drain_results(&self) -> impl Iterator<Item = CheckpointResult> + '_ {
+        std::iter::from_fn(|| self.results.try_recv().ok())
+    }
+}
+
+impl Drop for CheckpointWorker {
+    fn drop(&mut self) {
+        let _ = self.sender.send(CheckpointMessage::Stop);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// Local-only catalog used by the current typed wire development path.
@@ -178,6 +324,23 @@ impl AccountCharacterRepository for DevelopmentAccountRepository {
                 .save(state)
         })
     }
+
+    fn save_checkpoint_revisioned(
+        &self,
+        account_id: u64,
+        character_id: u64,
+        revision: u64,
+        operation_id: u64,
+        state: &DurablePlayerState,
+    ) -> Result<(), String> {
+        if self.find_character(account_id, character_id).is_none() {
+            return Err("unknown character".to_owned());
+        }
+        self.checkpoint_store.as_ref().map_or(Ok(()), |store| {
+            LocalCheckpointStore::new(store.path_for_character(account_id, character_id))
+                .save_revisioned(revision, operation_id, state)
+        })
+    }
 }
 
 struct LocalCheckpointStore {
@@ -210,14 +373,42 @@ impl LocalCheckpointStore {
         parse_checkpoint(&text).map(Some)
     }
 
+    fn load_record(&self) -> Result<Option<CheckpointRecord>, String> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        let text = fs::read_to_string(&self.path)
+            .map_err(|error| format!("cannot read checkpoint: {error}"))?;
+        parse_checkpoint_record(&text).map(Some)
+    }
+
     fn save(&self, state: &DurablePlayerState) -> Result<(), String> {
+        self.save_revisioned(0, 0, state)
+    }
+
+    fn save_revisioned(
+        &self,
+        revision: u64,
+        operation_id: u64,
+        state: &DurablePlayerState,
+    ) -> Result<(), String> {
         let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)
             .map_err(|error| format!("cannot create checkpoint directory: {error}"))?;
+        if let Some(existing) = self.load_record()? {
+            if existing.revision > revision
+                || (existing.revision == revision && existing.operation_id == operation_id)
+            {
+                return Ok(());
+            }
+            if existing.revision == revision {
+                return Err("checkpoint revision reused with a different operation".to_owned());
+            }
+        }
         let temporary = self.path.with_extension("tmp");
         let mut file = File::create(&temporary)
             .map_err(|error| format!("cannot create checkpoint: {error}"))?;
-        file.write_all(format_checkpoint(state).as_bytes())
+        file.write_all(format_checkpoint(revision, operation_id, state).as_bytes())
             .map_err(|error| format!("cannot write checkpoint: {error}"))?;
         file.sync_all()
             .map_err(|error| format!("cannot sync checkpoint: {error}"))?;
@@ -226,9 +417,17 @@ impl LocalCheckpointStore {
     }
 }
 
-fn format_checkpoint(state: &DurablePlayerState) -> String {
+struct CheckpointRecord {
+    revision: u64,
+    operation_id: u64,
+    state: DurablePlayerState,
+}
+
+fn format_checkpoint(revision: u64, operation_id: u64, state: &DurablePlayerState) -> String {
     let mut text = format!(
-        "version=1\nname={}\nrole={}\nx={}\ny={}\ngold={}\ncapacity={}\n",
+        "version=2\nrevision={}\noperation_id={}\nname={}\nrole={}\nx={}\ny={}\ngold={}\ncapacity={}\n",
+        revision,
+        operation_id,
         state.name,
         state.role.as_str(),
         state.position.x,
@@ -252,7 +451,13 @@ fn format_checkpoint(state: &DurablePlayerState) -> String {
 }
 
 fn parse_checkpoint(text: &str) -> Result<DurablePlayerState, String> {
+    Ok(parse_checkpoint_record(text)?.state)
+}
+
+fn parse_checkpoint_record(text: &str) -> Result<CheckpointRecord, String> {
     let mut version = false;
+    let mut revision = None;
+    let mut operation_id = None;
     let mut name = None;
     let mut role = None;
     let mut x = None;
@@ -266,8 +471,22 @@ fn parse_checkpoint(text: &str) -> Result<DurablePlayerState, String> {
             .split_once('=')
             .ok_or_else(|| "malformed checkpoint line".to_owned())?;
         match key {
-            "version" if value == "1" && !version => version = true,
+            "version" if (value == "1" || value == "2") && !version => version = true,
             "version" => return Err("invalid or duplicate checkpoint version".to_owned()),
+            "revision" => set_once(
+                &mut revision,
+                value.parse().map_err(|_| "invalid checkpoint revision")?,
+                "revision",
+            )?,
+            "operation_id" => {
+                set_once(
+                    &mut operation_id,
+                    value
+                        .parse()
+                        .map_err(|_| "invalid checkpoint operation id")?,
+                    "operation_id",
+                )?;
+            }
             "name" => set_once(&mut name, value.to_owned(), "name")?,
             "role" => set_once(
                 &mut role,
@@ -337,19 +556,23 @@ fn parse_checkpoint(text: &str) -> Result<DurablePlayerState, String> {
     if !version {
         return Err("missing checkpoint version".to_owned());
     }
-    Ok(DurablePlayerState {
-        name: name.ok_or_else(|| "missing checkpoint name".to_owned())?,
-        role: role.ok_or_else(|| "missing checkpoint role".to_owned())?,
-        position: Position::new(
-            x.ok_or_else(|| "missing checkpoint x".to_owned())?,
-            y.ok_or_else(|| "missing checkpoint y".to_owned())?,
-        ),
-        gold: gold.ok_or_else(|| "missing checkpoint gold".to_owned())?,
-        inventory: Inventory::from_stacks(
-            capacity.ok_or_else(|| "missing checkpoint capacity".to_owned())?,
-            items,
-        ),
-        quests,
+    Ok(CheckpointRecord {
+        revision: revision.unwrap_or(0),
+        operation_id: operation_id.unwrap_or(0),
+        state: DurablePlayerState {
+            name: name.ok_or_else(|| "missing checkpoint name".to_owned())?,
+            role: role.ok_or_else(|| "missing checkpoint role".to_owned())?,
+            position: Position::new(
+                x.ok_or_else(|| "missing checkpoint x".to_owned())?,
+                y.ok_or_else(|| "missing checkpoint y".to_owned())?,
+            ),
+            gold: gold.ok_or_else(|| "missing checkpoint gold".to_owned())?,
+            inventory: Inventory::from_stacks(
+                capacity.ok_or_else(|| "missing checkpoint capacity".to_owned())?,
+                items,
+            ),
+            quests,
+        },
     })
 }
 
@@ -387,7 +610,7 @@ fn role_code(role: Role) -> RoleCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn development_authentication_requires_loopback_and_exact_token() {
@@ -528,5 +751,83 @@ mod tests {
         );
         let _ = fs::remove_file(character_path);
         let _ = fs::remove_file(other_character_path);
+    }
+
+    #[test]
+    fn revisioned_checkpoint_rejects_stale_writes() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("mmorpg-revision-{unique}.state"));
+        let repository = DevelopmentAccountRepository::with_checkpoint_store(true, path);
+        let newer = DurablePlayerState {
+            name: "Aria".to_owned(),
+            role: Role::DamageDealer,
+            position: Position::new(9.0, 0.0),
+            gold: 20,
+            inventory: Inventory::from_stacks(8, Vec::new()),
+            quests: Vec::new(),
+        };
+        let mut older = newer.clone();
+        older.position = Position::new(1.0, 0.0);
+        repository
+            .save_checkpoint_revisioned(DEV_ACCOUNT_ID, DEV_CHARACTER_ID, 8, 800, &newer)
+            .expect("newer checkpoint should save");
+        repository
+            .save_checkpoint_revisioned(DEV_ACCOUNT_ID, DEV_CHARACTER_ID, 7, 700, &older)
+            .expect("stale retry should be harmless");
+        assert_eq!(
+            repository
+                .load_checkpoint(DEV_ACCOUNT_ID, DEV_CHARACTER_ID)
+                .expect("checkpoint should load")
+                .expect("checkpoint should exist")
+                .position,
+            newer.position
+        );
+    }
+
+    #[test]
+    fn checkpoint_worker_hands_off_file_io_and_reports_completion() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("mmorpg-worker-{unique}.state"));
+        let repository: Arc<dyn AccountCharacterRepository> = Arc::new(
+            DevelopmentAccountRepository::with_checkpoint_store(true, path),
+        );
+        let worker = CheckpointWorker::new(Arc::clone(&repository));
+        worker
+            .try_enqueue(CheckpointJob {
+                account_id: DEV_ACCOUNT_ID,
+                character_id: DEV_CHARACTER_ID,
+                revision: 4,
+                operation_id: 400,
+                state: DurablePlayerState {
+                    name: "Aria".to_owned(),
+                    role: Role::DamageDealer,
+                    position: Position::new(4.0, 2.0),
+                    gold: 3,
+                    inventory: Inventory::from_stacks(4, Vec::new()),
+                    quests: Vec::new(),
+                },
+            })
+            .expect("checkpoint should enter bounded queue");
+        let mut completed = false;
+        for _ in 0..100 {
+            if worker.drain_results().any(|result| result.result.is_ok()) {
+                completed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(completed, "writer should report checkpoint completion");
+        assert!(
+            repository
+                .load_checkpoint(DEV_ACCOUNT_ID, DEV_CHARACTER_ID)
+                .expect("checkpoint should load")
+                .is_some()
+        );
     }
 }
