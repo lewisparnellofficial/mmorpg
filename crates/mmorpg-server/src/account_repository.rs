@@ -609,8 +609,14 @@ fn load_operation_journal(path: &Path) -> Result<BTreeMap<OperationKey, Vec<Vec<
     let text = fs::read_to_string(path)
         .map_err(|error| format!("cannot read operation journal: {error}"))?;
     let mut completed = BTreeMap::new();
-    for line in text.lines() {
+    for (line_index, line) in text.split('\n').enumerate() {
         if line.trim().is_empty() {
+            continue;
+        }
+        // `append_operation_journal` writes and syncs a newline-terminated
+        // record. A process crash can leave only a torn final line; discard
+        // that one record while preserving every earlier complete record.
+        if line_index + 1 == text.split('\n').count() && !text.ends_with('\n') {
             continue;
         }
         let fields: Vec<_> = line.split('\t').collect();
@@ -1207,6 +1213,17 @@ mod tests {
         }
         assert!(failed_recorded, "journal failure record should complete");
         drop(worker);
+
+        use std::io::Write as _;
+        let mut journal = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("journal should reopen");
+        journal
+            .write_all(b"version=1\tcompleted\taccount=1\tcharacter=1")
+            .expect("torn record fixture should write");
+        journal.sync_all().expect("torn record fixture should sync");
+        drop(journal);
 
         let (_worker, loaded) = OperationJournalWorker::new(path.clone()).expect("journal reload");
         assert_eq!(loaded.get(&key), Some(&vec![vec![0x01, 0xa5, 0xff]]));

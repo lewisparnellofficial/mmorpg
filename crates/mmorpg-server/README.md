@@ -113,6 +113,8 @@ returns a typed error to the affected clients. Recovery of an operation after
 an external process crash remains a later journal milestone. Completion queue
 capacity is reserved for the complete staged batch before any completion job
 is submitted, and failed operation attempts have an explicit journal record.
+On restart, a torn non-newline-terminated final journal record is ignored while
+earlier complete records remain available for retry deduplication.
 
 The typed gameplay vocabulary includes authoritative BasicAttack, party
 membership, and Heal { target_id } intents. Party invites and membership are
