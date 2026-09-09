@@ -116,6 +116,7 @@ run_manifest_checks experiments/rust-region-bench/Cargo.toml "region benchmark"
 run_step "authoritative tick benchmark: fmt" cargo fmt --manifest-path experiments/server-tick-bench/Cargo.toml -- --check
 run_step "authoritative tick benchmark: test" cargo test --manifest-path experiments/server-tick-bench/Cargo.toml
 run_step "authoritative tick benchmark: run" cargo run --quiet --release --manifest-path experiments/server-tick-bench/Cargo.toml
+run_step "authoritative 200-player benchmark: run" cargo run --quiet --release --manifest-path experiments/server-tick-bench/Cargo.toml -- --players 200 --ticks 10000 --warmup 1000
 
 run_step "replication model: compile" python3 -m py_compile experiments/replication-model/model.py
 run_step "diff: whitespace" git diff --check
