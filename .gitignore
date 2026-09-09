@@ -5,3 +5,4 @@ __pycache__/
 # Rust build output
 /target/
 **/target/
+/fuzz/artifacts/

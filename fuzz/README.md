@@ -2,7 +2,10 @@
 
 This target uses nightly Rust's libFuzzer instrumentation to exercise the
 public `mmorpg-ui-contract` manifest, operation, and storage validation
-boundaries with bounded generated inputs. It is intended to find panics,
+boundaries with bounded generated inputs. The `luau-source` target separately
+loads arbitrary bounded UTF-8 source through the real adapter and dispatches a
+sanitized event under the runtime quotas. The targets are intended to find
+panics,
 sanitizer failures, and unexpected coverage regressions; a successful run is
 not a security proof.
 

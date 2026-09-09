@@ -140,11 +140,15 @@ performance guarantee. The gate now has an optional coverage-guided fuzz
 target; renderer frame-time data, OS/process isolation, and minimum-hardware
 proof remain separate gates.
 
-The repository also contains a nightly libFuzzer target at
-`fuzz/fuzz_targets/ui_boundaries.rs`. It constructs bounded arbitrary
-manifests, UI operation batches, and nested storage values and exercises the
-public contract validators. A local 1,000-run smoke completed with 201
-coverage features, a 39-entry generated corpus, and no crash or sanitizer
+The repository also contains nightly libFuzzer targets at
+`fuzz/fuzz_targets/ui_boundaries.rs` and
+`fuzz/fuzz_targets/luau_source.rs`. They exercise bounded arbitrary manifests,
+UI operation batches, nested storage values, arbitrary UTF-8 Luau source, and
+sanitized event dispatch. The first 1,000-run campaign found a native Luau
+parser crash for input `[10, 2]`; the adapter now rejects disallowed control
+bytes before VM/parser entry and has a deterministic regression test. A
+follow-up 1,000-run smoke completed with 246 contract-boundary coverage
+features and 1,412 Luau-adapter coverage features, with no crash or sanitizer
 finding. Run it with `./scripts/smoke-ui-fuzz.sh`; set `MMORPG_RUN_FUZZ=1` to
 include it in aggregate validation on a host with `cargo-fuzz` and nightly
 Rust. The normal aggregate remains independent of that optional tool.
@@ -168,10 +172,10 @@ mode, because sandbox mode makes the global table read-only.
 - The host integration covers one real Bevy secure-action presentation and
   native dispatch path, but does not yet cover every pointer hit-test,
   reload, overlay, or addon-unload scenario end to end.
-- There is no full scripted-HUD renderer integration, coverage-guided fuzzing
-  campaign, OS/process isolation, or minimum-hardware calibration. The new
-  adversarial gate is deterministic stress/regression coverage rather than a
-  claim of exhaustive fuzzing.
+- There is no full scripted-HUD renderer integration, process-level isolation,
+  or minimum-hardware calibration. The fuzz smoke is a bounded campaign rather
+  than exhaustive fuzzing; longer campaigns remain required before a
+  production runtime decision.
 - The empty `game` namespace is a placeholder, not the final public API.
 - Callback rollback covers host state, staged panel operations, and
   registrations made during callbacks; initial script-load registration still
@@ -186,14 +190,14 @@ mode, because sandbox mode makes the global table read-only.
   source remains the fallback when no repository is supplied; package
   signatures, remote repositories, and hot reload remain out of scope.
 
-Next work should add coverage-guided manifest/value-boundary fuzzing, calibrate
-quotas on the minimum supported Linux client, and compare the same
-language-neutral contract with a stronger Wasm isolation alternative before
-accepting an architecture decision.
+Next work should run longer coverage-guided campaigns, calibrate quotas on the
+minimum supported Linux client, and compare the same language-neutral contract
+with a stronger Wasm isolation alternative before accepting an architecture
+decision.
 
 ## Evidence classification
 
-- **Measured local result:** commands and 22 passing tests above.
+- **Measured local result:** commands and 23 passing tests above.
 - **Implementation evidence:** per-addon state, host quotas, native secure
   input boundary, and failure isolation in the standalone crate.
 - **Project inference:** Luau is suitable as the first runtime direction.

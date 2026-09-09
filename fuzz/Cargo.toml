@@ -12,10 +12,18 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 mmorpg-ui-contract = { path = "../crates/mmorpg-ui-contract" }
+ui-scripting-spike = { path = "../experiments/ui-scripting" }
 
 [[bin]]
 name = "ui-boundaries"
 path = "fuzz_targets/ui_boundaries.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "luau-source"
+path = "fuzz_targets/luau_source.rs"
 test = false
 doc = false
 bench = false

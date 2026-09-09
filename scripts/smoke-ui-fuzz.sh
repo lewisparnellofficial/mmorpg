@@ -8,5 +8,7 @@ if ! command -v cargo-fuzz >/dev/null 2>&1; then
 fi
 
 (cd "$repo_root/fuzz" && RUSTUP_TOOLCHAIN=nightly cargo fuzz run \
-    ui-boundaries -- -runs=1000 -max_len=4096)
+    ui-boundaries -- -runs=1000 -max_len=4096 && \
+    RUSTUP_TOOLCHAIN=nightly cargo fuzz run \
+    luau-source -- -runs=1000 -max_len=4096)
 echo "ui fuzz smoke: libFuzzer boundary run passed"

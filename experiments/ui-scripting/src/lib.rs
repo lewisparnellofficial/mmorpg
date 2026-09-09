@@ -831,6 +831,14 @@ impl AddonRunner {
                 maximum: policy.max_script_bytes,
             });
         }
+        if source
+            .bytes()
+            .any(|byte| byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r'))
+        {
+            return Err(AddonError::Runtime(
+                "source contains a disallowed control byte".to_owned(),
+            ));
+        }
 
         let lua = Lua::new();
         // Remove dangerous libraries before Luau makes the global table
@@ -1522,6 +1530,16 @@ mod tests {
             policy,
         );
         assert!(matches!(result, Err(AddonError::Runtime(_))));
+    }
+
+    #[test]
+    fn disallowed_source_control_bytes_are_rejected_before_vm_load() {
+        let source = "\n\x02";
+        assert!(matches!(
+            AddonRunner::load("control-byte", source, AddonPolicy::default()),
+            Err(AddonError::Runtime(message))
+                if message == "source contains a disallowed control byte"
+        ));
     }
 
     #[test]
