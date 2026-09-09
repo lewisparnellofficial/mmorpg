@@ -105,6 +105,7 @@ run_step "UI scripting adversarial smoke" "$repo_root/scripts/smoke-ui-adversari
 
 run_manifest_checks experiments/wire-gameplay-smoke/Cargo.toml "wire gameplay smoke"
 run_step "slow-client smoke" "$repo_root/scripts/smoke-slow-client.sh"
+run_step "graphical slow-client smoke" "$repo_root/scripts/smoke-graphical-slow-client.sh"
 run_step "graphical gameplay smoke" "$repo_root/scripts/smoke-graphical-gameplay.sh"
 run_step "graphical three-role smoke" "$repo_root/scripts/smoke-graphical-three-role.sh"
 run_step "graphical reconnect smoke" "$repo_root/scripts/smoke-graphical-three-client.sh"

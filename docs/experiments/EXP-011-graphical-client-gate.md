@@ -74,6 +74,13 @@ or renderer-quality acceptance gate.
   receive a snapshot. The server recorded bounded output saturation and
   isolated the slow session. This is network/queue evidence, not graphical
   slow-client evidence or a production backpressure measurement.
+- **Measured graphical slow-client result:**
+  `scripts/smoke-graphical-slow-client.sh` launched a real Bevy acceptance
+  client for character 3 alongside the raw non-reading/healthy pair, observed
+  the healthy peer remain responsive, saw bounded server saturation, and
+  verified that the graphical client remained alive after loading `Greenfield`.
+  This is a client-survival smoke, not a renderer frame-time or production
+  backpressure measurement.
 - **Measured renderer-active result:** The standalone graphical gameplay smoke
   launched a real Bevy window with `--acceptance-smoke` and observed
   authoritative vendor purchase, quest acceptance, movement into range, three
@@ -99,11 +106,12 @@ or renderer-quality acceptance gate.
 
 ## Interpretation
 
-The client shell, bounded graphical role encounter, and three-window restart
-reconnect now have repeatable local evidence. This is still not a passing
-Milestone 13 result: Vulkan validation errors require investigation before
-using this environment for a renderer-quality acceptance record; graphical
-slow-client behavior and physical renderer-quality evidence remain unverified.
+The client shell, bounded graphical role encounter, three-window restart
+reconnect, and graphical slow-peer survival now have repeatable local
+evidence. This is still not a passing Milestone 13 result: Vulkan validation
+errors require investigation before using this environment for a
+renderer-quality acceptance record; graphical frame-time and physical
+renderer-quality evidence remain unverified.
 The headless harness still provides the stronger privacy, retry, persistence,
 and respawn evidence; it does not substitute for those remaining graphical
 scenarios.
