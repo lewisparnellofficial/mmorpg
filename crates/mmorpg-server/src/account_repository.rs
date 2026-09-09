@@ -21,6 +21,9 @@ use std::thread::{self, JoinHandle};
 
 const DEV_AUTH_TOKEN: &str = "dev-local";
 const DEV_ACCOUNT_ID: u64 = 1;
+const MAX_CHECKPOINT_BYTES: u64 = 64 * 1024;
+const MAX_CHECKPOINT_ITEMS: usize = 128;
+const MAX_CHECKPOINT_QUESTS: usize = 128;
 const MAX_OPERATION_JOURNAL_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_OPERATION_RESULT_PAYLOAD_BYTES: usize = 256 * 1024;
 const MAX_OPERATION_RESULT_COUNT: usize = 128;
@@ -605,8 +608,7 @@ impl LocalCheckpointStore {
         if !self.path.exists() {
             return Ok(None);
         }
-        let text = fs::read_to_string(&self.path)
-            .map_err(|error| format!("cannot read checkpoint: {error}"))?;
+        let text = self.read_bounded()?;
         parse_checkpoint(&text).map(Some)
     }
 
@@ -614,9 +616,18 @@ impl LocalCheckpointStore {
         if !self.path.exists() {
             return Ok(None);
         }
-        let text = fs::read_to_string(&self.path)
-            .map_err(|error| format!("cannot read checkpoint: {error}"))?;
+        let text = self.read_bounded()?;
         parse_checkpoint_record(&text).map(Some)
+    }
+
+    fn read_bounded(&self) -> Result<String, String> {
+        let length = fs::metadata(&self.path)
+            .map_err(|error| format!("cannot inspect checkpoint: {error}"))?
+            .len();
+        if length > MAX_CHECKPOINT_BYTES {
+            return Err("checkpoint exceeds its size limit".to_owned());
+        }
+        fs::read_to_string(&self.path).map_err(|error| format!("cannot read checkpoint: {error}"))
     }
 
     fn save(&self, state: &DurablePlayerState) -> Result<(), String> {
@@ -973,7 +984,8 @@ fn parse_checkpoint_record(text: &str) -> Result<CheckpointRecord, String> {
                     "operation_id",
                 )?;
             }
-            "name" => set_once(&mut name, value.to_owned(), "name")?,
+            "name" if value.len() <= 24 => set_once(&mut name, value.to_owned(), "name")?,
+            "name" => return Err("checkpoint name is too long".to_owned()),
             "role" => set_once(
                 &mut role,
                 value
@@ -1006,6 +1018,9 @@ fn parse_checkpoint_record(text: &str) -> Result<CheckpointRecord, String> {
                 "capacity",
             )?,
             "item" => {
+                if items.len() >= MAX_CHECKPOINT_ITEMS {
+                    return Err("too many checkpoint items".to_owned());
+                }
                 let (id, quantity) = value
                     .split_once(',')
                     .ok_or_else(|| "invalid checkpoint item".to_owned())?;
@@ -1017,6 +1032,9 @@ fn parse_checkpoint_record(text: &str) -> Result<CheckpointRecord, String> {
                 });
             }
             "quest" => {
+                if quests.len() >= MAX_CHECKPOINT_QUESTS {
+                    return Err("too many checkpoint quests".to_owned());
+                }
                 let fields: Vec<_> = value.split(',').collect();
                 if fields.len() != 4 {
                     return Err("invalid checkpoint quest".to_owned());
@@ -1210,6 +1228,16 @@ mod tests {
             "Aria"
         );
         fs::write(&character_path, "not a checkpoint\n").expect("malformed fixture should write");
+        assert!(
+            repository
+                .load_checkpoint(DEV_ACCOUNT_ID, DEV_CHARACTER_ID)
+                .is_err()
+        );
+        fs::write(
+            &character_path,
+            vec![b'x'; MAX_CHECKPOINT_BYTES as usize + 1],
+        )
+        .expect("oversized checkpoint fixture should write");
         assert!(
             repository
                 .load_checkpoint(DEV_ACCOUNT_ID, DEV_CHARACTER_ID)
