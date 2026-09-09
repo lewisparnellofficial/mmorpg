@@ -147,9 +147,10 @@ UI operation batches, nested storage values, arbitrary UTF-8 Luau source, and
 sanitized event dispatch. The first 1,000-run campaign found a native Luau
 parser crash for input `[10, 2]`; the adapter now rejects disallowed control
 bytes before VM/parser entry and has a deterministic regression test. A
-follow-up 1,000-run smoke completed with 246 contract-boundary coverage
-features and 1,412 Luau-adapter coverage features, with no crash or sanitizer
-finding. Run it with `./scripts/smoke-ui-fuzz.sh`; set `MMORPG_RUN_FUZZ=1` to
+follow-up 1,000-run smoke completed with 265 contract-boundary coverage
+features and 1,414 Luau-adapter coverage features, with no crash or sanitizer
+finding. The aggregate run used 64 contract seeds and 20 Luau seeds. Run it
+with `./scripts/smoke-ui-fuzz.sh`; set `MMORPG_RUN_FUZZ=1` to
 include it in aggregate validation on a host with `cargo-fuzz` and nightly
 Rust. The normal aggregate remains independent of that optional tool.
 
