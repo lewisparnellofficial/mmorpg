@@ -34,6 +34,10 @@ atomic save/reload, replay, and undo/redo. Preview samples are returned from
 the Rust document and converted into a bounded indexed Quick3D mesh. The
 device-neutral Rust bridge preserves `Pen`, `Eraser`, and `Mouse` source and
 rejects backward timestamps.
+The QML viewport registers its window-space rectangle with the C++ bridge,
+which maps resized viewport pixels into the bounded 32×32 document domain
+before serialization. Compatibility mouse-release suppression remains armed
+until the synthesized release is consumed.
 
 The editor core also provides a bounded `CapturedStroke` text format with
 round-trip validation and bridge-mediated replay tests. The headless editor

@@ -42,8 +42,18 @@ ApplicationWindow {
                 radius: 6
 
                 View3D {
+                    id: terrainViewport
                     anchors.fill: parent
                     anchors.margins: 12
+                    function syncViewport() {
+                        var origin = terrainViewport.mapToItem(null, 0, 0)
+                        tabletBridge.setViewport(origin.x, origin.y,
+                                                 terrainViewport.width,
+                                                 terrainViewport.height)
+                    }
+                    Component.onCompleted: syncViewport()
+                    onWidthChanged: syncViewport()
+                    onHeightChanged: syncViewport()
                     environment: SceneEnvironment {
                         clearColor: "#202733"
                         backgroundMode: SceneEnvironment.Color

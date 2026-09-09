@@ -11,6 +11,7 @@
 #include <QUrl>
 #include <QVector3D>
 #include <cstring>
+#include <utility>
 
 class HeightmapGeometry final : public QQuick3DGeometry {
     Q_OBJECT
@@ -109,6 +110,14 @@ public:
         sendCommand(QStringLiteral("brush %1").arg(operation));
     }
 
+    Q_INVOKABLE void setViewport(double x, double y, double width, double height)
+    {
+        viewportX_ = x;
+        viewportY_ = y;
+        viewportWidth_ = qMax(width, 1.0);
+        viewportHeight_ = qMax(height, 1.0);
+    }
+
     Q_INVOKABLE void saveTerrain()
     {
         sendCommand(QStringLiteral("save %1").arg(terrainPath()));
@@ -166,7 +175,10 @@ protected:
             emitSample(QStringLiteral("release"), point.x(), point.y(), pressure, source,
                        event->xTilt(), event->yTilt(), event->rotation());
             tabletStrokeActive_ = false;
-            suppressMouseUntilRelease_ = false;
+            // Qt may synthesize a compatibility mouse release after the
+            // tablet release. Keep the suppression armed until that release
+            // is consumed so one physical stroke cannot start a mouse stroke.
+            suppressMouseUntilRelease_ = true;
             emit strokeFinished(source);
         }
 
@@ -203,6 +215,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override
     {
         if (suppressMouseUntilRelease_) {
+            suppressMouseUntilRelease_ = false;
             event->accept();
             return;
         }
@@ -245,12 +258,21 @@ private:
                          .arg(y, 0, 'f', 1)
                          .arg(pressure, 0, 'f', 3)
                          .arg(timestamp));
-        sendEvent(phase, x, y, pressure, source, tiltX, tiltY, rotation, timestamp);
+        const auto documentPoint = toDocumentPoint(x, y);
+        sendEvent(phase, documentPoint.first, documentPoint.second, pressure, source, tiltX,
+                  tiltY, rotation, timestamp);
         if (phase == QStringLiteral("press")) {
             emit strokeStarted(x, y, pressure, source);
         } else if (phase == QStringLiteral("move")) {
             emit strokePoint(x, y, pressure, source);
         }
+    }
+
+    std::pair<double, double> toDocumentPoint(double x, double y) const
+    {
+        const auto normalizedX = qBound(0.0, (x - viewportX_) / viewportWidth_, 1.0);
+        const auto normalizedY = qBound(0.0, (y - viewportY_) / viewportHeight_, 1.0);
+        return {normalizedX * 31.0, normalizedY * 31.0};
     }
 
     void startCoreBridge()
@@ -354,6 +376,10 @@ private:
     bool tabletStrokeActive_ = false;
     bool mouseStrokeActive_ = false;
     bool suppressMouseUntilRelease_ = false;
+    double viewportX_ = 0.0;
+    double viewportY_ = 0.0;
+    double viewportWidth_ = 1280.0;
+    double viewportHeight_ = 800.0;
     QElapsedTimer clock_;
     QProcess core_;
     HeightmapGeometry* terrainGeometry_ = nullptr;
