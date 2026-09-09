@@ -1,6 +1,7 @@
 # EXP-011: Graphical client runtime gate
 
-**Status:** Partial runtime evidence; Milestone 13 gate remains open
+**Status:** Repeatable gameplay/reconnect evidence; renderer-quality and
+physical-input gates remain open
 
 ## Objective
 
@@ -65,6 +66,9 @@ or renderer-quality acceptance gate.
   for all three requested characters. This verifies the bounded worker
   reconnect path while the clients remain alive; it does not verify durable
   world state across the process restart.
+- **Aggregate gate:** `scripts/validate-all.sh` now invokes the three-window
+  reconnect smoke after the renderer-active gameplay and role smokes, so the
+  reconnect evidence is part of the repeatable graphical validation boundary.
 - **Headless slow-client result:** A real TCP gate sent 12,800 snapshot
   requests from a non-reading client while a second client remained able to
   receive a snapshot. The server recorded bounded output saturation and
@@ -95,11 +99,11 @@ or renderer-quality acceptance gate.
 
 ## Interpretation
 
-The client shell and renderer can start on this host, and the bounded graphical
-role encounter now has repeatable local evidence, but this is not a passing
-Milestone 13 result. The Vulkan validation errors require investigation before
-using this environment for a repeatable renderer-quality acceptance record.
-The retry client flow, slow-client graphical behavior, and physical
-renderer-quality gate remain unverified. The headless harness still provides
-the stronger privacy, retry, persistence, and respawn evidence; it does not
-substitute for those remaining graphical scenarios.
+The client shell, bounded graphical role encounter, and three-window restart
+reconnect now have repeatable local evidence. This is still not a passing
+Milestone 13 result: Vulkan validation errors require investigation before
+using this environment for a renderer-quality acceptance record; graphical
+slow-client behavior and physical renderer-quality evidence remain unverified.
+The headless harness still provides the stronger privacy, retry, persistence,
+and respawn evidence; it does not substitute for those remaining graphical
+scenarios.

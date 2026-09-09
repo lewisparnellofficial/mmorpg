@@ -107,6 +107,7 @@ run_manifest_checks experiments/wire-gameplay-smoke/Cargo.toml "wire gameplay sm
 run_step "slow-client smoke" "$repo_root/scripts/smoke-slow-client.sh"
 run_step "graphical gameplay smoke" "$repo_root/scripts/smoke-graphical-gameplay.sh"
 run_step "graphical three-role smoke" "$repo_root/scripts/smoke-graphical-three-role.sh"
+run_step "graphical reconnect smoke" "$repo_root/scripts/smoke-graphical-three-client.sh"
 run_manifest_checks experiments/client-presentation-replay/Cargo.toml "presentation replay"
 run_manifest_checks experiments/ai-respawn/Cargo.toml "AI respawn"
 run_manifest_checks experiments/layer-manager/Cargo.toml "layer manager"
