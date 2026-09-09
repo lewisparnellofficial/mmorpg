@@ -65,6 +65,14 @@ spike does not yet bind it to a keyboard shortcut. The first build may take seve
 minutes because Bevy and its graphics
 dependencies are compiled locally.
 
+For a bounded renderer-active starter-loop smoke, pass
+`--character-id 1 --acceptance-smoke`. This opt-in mode submits the same typed
+vendor, quest, movement, target, attack, loot, and turn-in intents through the
+normal worker after the authoritative session reaches the world. It does not
+grant authority or replace the server validation path; it exists to exercise
+the real Bevy process and presentation projection without depending on a
+compositor's virtual-keyboard protocol.
+
 On Linux, the host needs a working desktop session and graphics stack. Bevy's
 window and renderer may require distribution-specific X11/Wayland, Vulkan,
 OpenGL, audio, or input development libraries. The exact package names are

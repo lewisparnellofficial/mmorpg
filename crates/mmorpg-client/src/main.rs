@@ -147,6 +147,23 @@ struct NetworkBridge {
 struct MovementRepeat(Timer);
 
 #[derive(Resource)]
+struct AcceptanceSmoke {
+    enabled: bool,
+    step: usize,
+    timer: Timer,
+}
+
+impl AcceptanceSmoke {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            step: 0,
+            timer: Timer::from_seconds(0.25, TimerMode::Repeating),
+        }
+    }
+}
+
+#[derive(Resource)]
 struct SecureInputState {
     registry: SecureInputRegistry,
     default_addon: AddonId,
@@ -205,6 +222,7 @@ fn main() {
         .unwrap_or_else(|| DEFAULT_SERVER_ADDRESS.to_owned());
     let mut wire_address = None;
     let mut preferred_character_id = None;
+    let mut acceptance_smoke = false;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--wire-address" => {
@@ -235,6 +253,7 @@ fn main() {
                     Ok(character_id) => preferred_character_id = Some(character_id),
                 }
             }
+            "--acceptance-smoke" => acceptance_smoke = true,
             _ => {
                 eprintln!("unknown argument '{argument}'");
                 return;
@@ -270,6 +289,7 @@ fn main() {
             MOVEMENT_REPEAT_SECONDS,
             TimerMode::Repeating,
         )))
+        .insert_resource(AcceptanceSmoke::new(acceptance_smoke))
         .insert_resource(SecureInputState::new())
         .add_systems(Startup, setup_scene)
         .add_systems(Startup, setup_ui)
@@ -277,6 +297,7 @@ fn main() {
             Update,
             (
                 consume_network_events,
+                acceptance_smoke_input,
                 secure_window_focus,
                 native_secure_pointer_input,
                 keyboard_input,
@@ -302,6 +323,50 @@ fn secure_window_focus(
             secure_input.refresh_default_binding();
         }
     }
+}
+
+fn acceptance_smoke_input(
+    time: Res<Time>,
+    bridge: Res<NetworkBridge>,
+    mut state: ResMut<ClientState>,
+    mut smoke: ResMut<AcceptanceSmoke>,
+) {
+    if !smoke.enabled
+        || state.player_id.is_none()
+        || !smoke.timer.tick(time.delta()).just_finished()
+    {
+        return;
+    }
+    let command = match smoke.step {
+        0 => ClientCommand::ListVendor(EntityId(1)),
+        1 => ClientCommand::ListQuestOffers(EntityId(1)),
+        2 => ClientCommand::BuyItem {
+            vendor_id: EntityId(1),
+            item_id: ItemId::TOWN_RATION,
+            quantity: 1,
+        },
+        3 => ClientCommand::AcceptQuest {
+            npc_id: EntityId(1),
+            quest_id: QuestId::CLEAR_THE_FIELD,
+        },
+        4 => ClientCommand::Move { dx: 10.0, dy: 0.0 },
+        5 => ClientCommand::Target(EntityId(2)),
+        6..=14 => ClientCommand::Attack,
+        15 => ClientCommand::Loot(EntityId(2)),
+        16 => ClientCommand::Target(EntityId(3)),
+        17..=25 => ClientCommand::Attack,
+        26 => ClientCommand::Loot(EntityId(3)),
+        27 => ClientCommand::Target(EntityId(4)),
+        28..=36 => ClientCommand::Attack,
+        37 => ClientCommand::Loot(EntityId(4)),
+        38 => ClientCommand::TurnInQuest {
+            npc_id: EntityId(1),
+            quest_id: QuestId::CLEAR_THE_FIELD,
+        },
+        _ => return,
+    };
+    send_command(&bridge, &mut state, command);
+    smoke.step = smoke.step.saturating_add(1);
 }
 
 fn native_secure_pointer_input(
@@ -1395,9 +1460,10 @@ fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
             state.log("content compatibility rejected".to_owned());
         }
         ServerMessage::Error { message } => state.log(format!("rejected: {message}")),
-        ServerMessage::Event(_)
-        | ServerMessage::SkippedEvent { .. }
-        | ServerMessage::Snapshot(_) => {}
+        ServerMessage::Event(event) => {
+            println!("GRAPHICAL_EVENT {event:?}");
+        }
+        ServerMessage::SkippedEvent { .. } | ServerMessage::Snapshot(_) => {}
     }
     if let Err(error) = apply_wire_message(&mut state.presentation, message) {
         state.log(format!("authoritative presentation rejected: {error}"));

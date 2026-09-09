@@ -70,6 +70,13 @@ or renderer-quality acceptance gate.
   receive a snapshot. The server recorded bounded output saturation and
   isolated the slow session. This is network/queue evidence, not graphical
   slow-client evidence or a production backpressure measurement.
+- **Measured renderer-active result:** The standalone graphical gameplay smoke
+  launched a real Bevy window with `--acceptance-smoke` and observed
+  authoritative vendor purchase, quest acceptance, movement into range, three
+  enemy defeats, three loot rewards, and quest turn-in through the normal typed
+  worker and presentation adapter. Vulkan validation errors were still present
+  on this host; this is gameplay/presentation evidence, not renderer-quality
+  acceptance evidence.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,

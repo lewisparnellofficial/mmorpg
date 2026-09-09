@@ -216,6 +216,7 @@ cargo test --manifest-path experiments/wire-gameplay-smoke/Cargo.toml
 cargo run --quiet --manifest-path experiments/wire-gameplay-smoke/Cargo.toml
 ./scripts/smoke-restart-persistence.sh
 ./scripts/smoke-slow-client.sh
+./scripts/smoke-graphical-gameplay.sh
 ```
 
 The experiment README files and records under `docs/experiments/` define the
