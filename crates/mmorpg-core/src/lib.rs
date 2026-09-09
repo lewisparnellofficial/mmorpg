@@ -26,6 +26,8 @@ const ENEMY_MOVE_PER_TICK: f32 = 1.0;
 const ENEMY_ATTACK_RANGE: f32 = 2.0;
 const ENEMY_ATTACK_DAMAGE: u32 = 8;
 const ENEMY_ATTACK_COOLDOWN_TICKS: u64 = 20;
+const TAUNT_RANGE: f32 = 32.0;
+const TAUNT_THREAT: u32 = 100;
 
 /// Server-owned timing parameters for the explicit timed-combat path.
 ///
@@ -459,6 +461,9 @@ pub enum Command {
         player_id: EntityId,
         target_id: EntityId,
     },
+    Taunt {
+        player_id: EntityId,
+    },
     ListVendor {
         player_id: EntityId,
         vendor_id: EntityId,
@@ -519,6 +524,10 @@ pub enum Event {
         target_id: EntityId,
         amount: u32,
         target_health: u32,
+    },
+    TauntResolved {
+        player_id: EntityId,
+        target_id: EntityId,
     },
     EnemyDefeated {
         enemy_id: EntityId,
@@ -1441,6 +1450,42 @@ impl World {
                     target_health: self.players[&target_id].health,
                 });
             }
+            Command::Taunt { player_id } => {
+                let Some(player) = self.players.get(&player_id) else {
+                    Self::reject(events, format!("unknown player {player_id}"));
+                    return;
+                };
+                if player.role != Role::Tank {
+                    Self::reject(events, "only tanks can use taunt");
+                    return;
+                }
+                if player.health == 0 {
+                    Self::reject(events, "defeated players cannot taunt");
+                    return;
+                }
+                let Some(target_id) = player.target else {
+                    Self::reject(events, "player has no target");
+                    return;
+                };
+                let player_position = player.position;
+                let Some(target) = self.npcs.get(&target_id) else {
+                    Self::reject(events, "target no longer exists");
+                    return;
+                };
+                if target.kind != NpcKind::Enemy || target.health == 0 {
+                    Self::reject(events, "target is not a living enemy");
+                    return;
+                }
+                if player_position.distance_squared(target.position) > TAUNT_RANGE * TAUNT_RANGE {
+                    Self::reject(events, "taunt target is out of range");
+                    return;
+                }
+                self.add_enemy_threat(target_id, player_id, TAUNT_THREAT);
+                events.push(Event::TauntResolved {
+                    player_id,
+                    target_id,
+                });
+            }
             Command::ListVendor {
                 player_id,
                 vendor_id,
@@ -2054,6 +2099,47 @@ mod tests {
             world.npc(enemy_id).unwrap().spawn_position
         );
         assert_eq!(world.player(player_id).unwrap().health, 92);
+    }
+
+    #[test]
+    fn only_a_living_nearby_tank_can_taunt_and_gain_threat() {
+        let mut world = World::new_starter_zone();
+        let tank_id = join(&mut world, "Tank", Role::Tank);
+        let damage_id = join(&mut world, "Damage", Role::DamageDealer);
+        let enemy_id = first_enemy(&world);
+        for player_id in [tank_id, damage_id] {
+            world.step([
+                Command::Move {
+                    player_id,
+                    dx: 10.0,
+                    dy: 0.0,
+                },
+                Command::Move {
+                    player_id,
+                    dx: 10.0,
+                    dy: 0.0,
+                },
+                Command::SelectTarget {
+                    player_id,
+                    target_id: enemy_id,
+                },
+            ]);
+        }
+
+        assert_eq!(
+            world.step([Command::Taunt {
+                player_id: damage_id
+            }]),
+            vec![Event::CommandRejected {
+                reason: "only tanks can use taunt".to_owned(),
+            }]
+        );
+        let taunt_events = world.step([Command::Taunt { player_id: tank_id }]);
+        assert!(taunt_events.contains(&Event::TauntResolved {
+            player_id: tank_id,
+            target_id: enemy_id,
+        }));
+        assert_eq!(world.player(tank_id).unwrap().health, 92);
     }
 
     #[test]

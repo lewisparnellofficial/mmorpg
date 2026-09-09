@@ -20,13 +20,15 @@ clears the prior reward claimant/claimed flag, and emits
 applied by the client model as an authoritative health/defeat transition.
 
 The follow-on slice adds a server-owned per-generation threat table. Damage
-creates threat, healing creates nearby threat, and a threatened enemy enters
-an engaged state, moves at a fixed rate, attacks on a fixed cooldown, and
-returns to its spawn when its target is defeated or exceeds the leash. Enemy
-damage and player defeat are carried as typed opcodes 20 and 21.
+creates threat, healing creates nearby threat, and a tank-only taunt creates a
+large validated threat increment. A threatened enemy enters an engaged state,
+moves at a fixed rate, attacks on a fixed cooldown, and returns to its spawn
+when its target is defeated or exceeds the leash. Enemy damage and player
+defeat are carried as typed opcodes 20 and 21; taunt confirmation uses opcode
+22.
 
 This is intentionally narrower than the standalone AI experiment: patrol
-waypoints, explicit taunt, corpse expiry, and
+waypoints, corpse expiry, and
 deterministic loot selection across multiple eligible players are not yet
 integrated.
 

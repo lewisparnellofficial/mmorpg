@@ -475,6 +475,19 @@ impl ClientWorld {
                 player.health = 0;
                 ApplyEventResult::Applied
             }
+            Event::TauntResolved {
+                player_id,
+                target_id,
+            } => {
+                if !self.entities.contains_key(target_id) {
+                    return ApplyEventResult::Ignored;
+                }
+                let Some(ClientEntity::Player(player)) = self.entities.get_mut(player_id) else {
+                    return ApplyEventResult::Ignored;
+                };
+                player.target = Some(*target_id);
+                ApplyEventResult::Applied
+            }
             Event::EnemyDefeated { enemy_id } => {
                 let Some(ClientEntity::Npc(npc)) = self.entities.get_mut(enemy_id) else {
                     return ApplyEventResult::Ignored;

@@ -442,6 +442,13 @@ fn wire_event(event: &WireServerEvent) -> Result<Event, AdapterError> {
         WireServerEvent::EnemyDefeated { enemy_id } => Event::EnemyDefeated {
             enemy_id: CoreEntityId(*enemy_id),
         },
+        WireServerEvent::TauntResolved {
+            player_id,
+            target_id,
+        } => Event::TauntResolved {
+            player_id: CoreEntityId(*player_id),
+            target_id: CoreEntityId(*target_id),
+        },
         WireServerEvent::EnemyAttackResolved {
             enemy_id,
             target_id,

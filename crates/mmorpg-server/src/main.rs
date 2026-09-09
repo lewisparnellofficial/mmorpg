@@ -1112,6 +1112,13 @@ fn wire_event(event: &Event) -> Option<ServerEvent> {
             amount: *amount,
             target_health: *target_health,
         },
+        Event::TauntResolved {
+            player_id,
+            target_id,
+        } => ServerEvent::TauntResolved {
+            player_id: player_id.0,
+            target_id: target_id.0,
+        },
         Event::EnemyDefeated { enemy_id } => ServerEvent::EnemyDefeated {
             enemy_id: enemy_id.0,
         },
@@ -1335,6 +1342,10 @@ fn format_event(event: &Event) -> String {
             "EVENT heal player={} target={} amount={} target_hp={}",
             player_id, target_id, amount, target_health
         ),
+        Event::TauntResolved {
+            player_id,
+            target_id,
+        } => format!("EVENT taunt player={} target={}", player_id, target_id),
         Event::EnemyDefeated { enemy_id } => format!("EVENT enemy_defeated id={enemy_id}"),
         Event::EnemyAttackResolved {
             enemy_id,
@@ -1755,6 +1766,7 @@ fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Com
             player_id,
             target_id: EntityId(target_id),
         },
+        WireCommand::Taunt => Command::Taunt { player_id },
         WireCommand::ListVendor { vendor_id } => Command::ListVendor {
             player_id,
             vendor_id: EntityId(vendor_id),
