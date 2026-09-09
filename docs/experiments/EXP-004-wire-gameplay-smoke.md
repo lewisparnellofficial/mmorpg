@@ -20,7 +20,8 @@ vertical slice.
 
 ## Procedure
 
-1. Start `mmorpg-server` with the line listener and optional wire listener.
+1. Start `mmorpg-server`; its primary address is the typed listener. An
+   optional `--wire-address` opens a second typed listener for staged runs.
 2. Run `experiments/wire-gameplay-smoke` against the wire address.
 3. The tool verifies that a legacy wire join is rejected before
    authentication, authenticates with the loopback-only development token,

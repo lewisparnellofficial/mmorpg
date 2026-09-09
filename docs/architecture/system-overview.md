@@ -83,7 +83,8 @@ The repository now contains the first implementation of this shape:
   prototype with explicit message kinds and payload boundaries.
 - `crates/mmorpg-core` — dependency-free authoritative starter-zone simulation.
 - `crates/mmorpg-server` — Linux headless development server with a temporary
-  nonblocking TCP line protocol and an opt-in versioned-wire listener that
+  nonblocking versioned typed-wire listener (with line data retained only as
+  inert compatibility fixtures) that
   routes typed commands into the same authoritative world.
 
 The current development tooling also includes `tools/mmorpg-content-check`, a
@@ -107,7 +108,7 @@ server.
 
 The current server is intentionally a development process. It does not yet
 provide production authentication, durable persistence, interest-managed
-replication, or multi-worker deployment. Its optional typed wire listener has a
+replication, or multi-worker deployment. Its typed wire listener has a
 loopback-only development token handshake, server-assigned session ID, and
 explicit character list/selection phase so the client can exercise an
 authenticated-session boundary; this does not represent the eventual account,
@@ -122,15 +123,12 @@ credential verification, and transactional persistence outside the simulation
 critical path.
 
 The wire and transport crates are preparatory boundaries, not a production
-network stack. The current server still supports its temporary line protocol,
-and the graphical client still uses its own background line-protocol worker.
-The opt-in server wire listener now accepts typed command payloads and emits
+network stack. The server's primary listener accepts typed command payloads and emits
 typed server-message payloads for welcome/authentication/connect/error
 responses, gameplay events, and the bounded bootstrap snapshot. Production
 authentication, asynchronous backpressure, and interest-managed replication
-remain future work. The
-graphical client still uses the line listener during its staged migration and
-the current player/NPC renderer consumes the presentation model directly.
+remain future work. The graphical client uses the typed listener by default;
+line parsing remains only in inert compatibility fixtures and tests.
 
 The code should retain interfaces for separating these later:
 

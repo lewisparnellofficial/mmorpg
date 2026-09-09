@@ -1721,25 +1721,28 @@ fn parse_server_addresses() -> Result<(String, Option<String>, Option<PathBuf>),
 }
 
 fn main() -> io::Result<()> {
-    let (address, wire_address, checkpoint_path) = parse_server_addresses()
+    let (address, additional_wire_address, checkpoint_path) = parse_server_addresses()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    // The primary listener is typed gameplay. The retained optional address
+    // is a second typed listener for staged smoke tooling, not a line server.
     let listener = TcpListener::bind(&address)?;
     listener.set_nonblocking(true)?;
-    let wire_listener = wire_address.as_deref().map(TcpListener::bind).transpose()?;
-    if let Some(listener) = &wire_listener {
+    let additional_listener = additional_wire_address
+        .as_deref()
+        .map(TcpListener::bind)
+        .transpose()?;
+    if let Some(listener) = &additional_listener {
         listener.set_nonblocking(true)?;
     }
-    let dev_auth_enabled = wire_listener.as_ref().is_some_and(|listener| {
-        listener
-            .local_addr()
-            .map(|address| address.ip().is_loopback())
-            .unwrap_or(false)
-    });
+    let dev_auth_enabled = listener
+        .local_addr()
+        .map(|address| address.ip().is_loopback())
+        .unwrap_or(false);
     let mut server = Server::new(DEFAULT_TICK_HZ, dev_auth_enabled, checkpoint_path.clone());
-    println!("server_listening address={address} tick_hz={DEFAULT_TICK_HZ}");
-    if let Some(address) = wire_address {
-        println!("wire_server_listening address={address}");
-        println!("wire_dev_auth_enabled={dev_auth_enabled}");
+    println!("typed_server_listening address={address} tick_hz={DEFAULT_TICK_HZ}");
+    println!("typed_dev_auth_enabled={dev_auth_enabled}");
+    if let Some(address) = additional_wire_address {
+        println!("typed_server_additional_listener address={address}");
     }
     if let Some(path) = checkpoint_path {
         println!("character_checkpoint_store={}", path.display());
@@ -1750,20 +1753,20 @@ fn main() -> io::Result<()> {
             match listener.accept() {
                 Ok((stream, peer)) => {
                     stream.set_nonblocking(true)?;
-                    println!("accepted peer={peer}");
-                    server.add_client(stream);
+                    println!("accepted_typed_peer={peer}");
+                    server.add_wire_client(stream);
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(error),
             }
         }
 
-        if let Some(listener) = &wire_listener {
+        if let Some(listener) = &additional_listener {
             loop {
                 match listener.accept() {
                     Ok((stream, peer)) => {
                         stream.set_nonblocking(true)?;
-                        println!("accepted_wire_peer={peer}");
+                        println!("accepted_typed_additional_peer={peer}");
                         server.add_wire_client(stream);
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
@@ -1772,7 +1775,6 @@ fn main() -> io::Result<()> {
             }
         }
 
-        server.read_clients();
         server.read_wire_clients();
         // Apply commands received before a socket close, then checkpoint the
         // still-bound character in `advance_if_due`. Queue the leave only

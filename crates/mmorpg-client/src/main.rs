@@ -1,10 +1,9 @@
 //! Minimal interactive Linux client technology spike.
 //!
 //! Bevy owns presentation and input. A dedicated TCP worker owns all socket
-//! I/O so render and input systems never wait on the server. The default line
-//! connection remains available for local compatibility. An
-//! opt-in wire address uses typed command frames and typed server messages;
-//! both paths feed the same renderer-independent presentation model.
+//! I/O so render and input systems never wait on the server. Typed command
+//! frames and typed server messages feed the renderer-independent presentation
+//! model.
 
 use bevy::prelude::*;
 use mmorpg_client_adapter::{
@@ -164,16 +163,10 @@ fn main() {
             return;
         }
     }
-    let display_address = wire_address
-        .clone()
-        .unwrap_or_else(|| server_address.clone());
+    let typed_address = wire_address.unwrap_or_else(|| server_address.clone());
     let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel();
-    if let Some(wire_address) = wire_address {
-        spawn_wire_network_worker(wire_address, command_rx, event_tx);
-    } else {
-        spawn_network_worker(server_address, command_rx, event_tx);
-    }
+    spawn_wire_network_worker(typed_address.clone(), command_rx, event_tx);
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -185,7 +178,7 @@ fn main() {
             ..default()
         }))
         .insert_resource(ClearColor(Color::srgb(0.08, 0.12, 0.18)))
-        .insert_resource(ClientState::new(display_address))
+        .insert_resource(ClientState::new(typed_address))
         .insert_resource(NetworkBridge {
             command_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),

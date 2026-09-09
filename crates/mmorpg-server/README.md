@@ -7,15 +7,15 @@ production gateway or authentication service.
 ## Intended first-slice behavior
 
 - Bind a configurable local TCP address.
-- Optionally bind a second TCP address for versioned wire-envelope clients.
+- Bind a versioned typed wire-envelope listener on the primary TCP address.
 - Advance the authoritative world at a fixed tick rate.
-- Accept simple line-oriented development commands.
+- Retain line-oriented command data only in inert compatibility fixtures.
 - Return authoritative events and state summaries.
 - Keep sockets and command parsing outside the simulation core.
 
-The line development protocol is temporary. It remains available for manual
-testing while the optional wire listener exercises versioned binary command
-ingress against the same authoritative world.
+The line development protocol is temporary and is no longer bound by the
+server. The optional `--wire-address` argument opens a second typed listener
+for staged smoke tooling.
 
 ## Planned commands
 
@@ -42,11 +42,10 @@ first argument. For example:
 
 ```bash
 cargo run -p mmorpg-server -- 127.0.0.1:4400
-nc 127.0.0.1 4400
 ```
 
-To enable the opt-in wire listener, provide `--wire-address` after the line
-listener address:
+To open a second typed listener for staged smoke tooling, provide
+`--wire-address`:
 
 ```bash
 cargo run -p mmorpg-server -- 127.0.0.1:4400 --wire-address 127.0.0.1:4401
@@ -67,12 +66,13 @@ commands already read during that loop iteration, then queues the player's
 authoritative leave. This prevents a same-tick reward from being discarded
 before the local checkpoint prototype can record it.
 
-The wire listener accepts versioned `MMOW` command envelopes containing the
+The typed listener accepts versioned `MMOW` command envelopes containing the
 typed `mmorpg-wire::ClientCommand` payload. It routes those commands through
-the same bound-player checks and authoritative `World` as the line listener.
+the same bound-player checks and authoritative `World` as the former line
+listener.
 It emits typed server-message payloads for welcome/connect/error responses,
-gameplay events, and the bootstrap snapshot. The line listener remains
-available for terminal debugging and graphical-client migration.
+gameplay events, and the bootstrap snapshot. The line parser remains only as
+inert compatibility data for equivalence tests.
 
 Wire clients must authenticate before sending gameplay commands:
 
@@ -88,7 +88,7 @@ Connected { player_id: <server-assigned>, ... }
 ```
 
 The server rejects unauthenticated commands and the legacy wire `Join` command.
-The `dev-local` token is accepted only on a loopback-bound wire listener. The
+The `dev-local` token is accepted only on a loopback-bound typed listener. The
 development account currently exposes one static `Aria` damage-dealer
 character, but the client must list and explicitly select it before entering
 the world. This is intentionally a local protocol smoke-test handshake; it is

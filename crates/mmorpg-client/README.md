@@ -27,21 +27,20 @@ cargo check --manifest-path crates/mmorpg-client/Cargo.toml
 cargo run --manifest-path crates/mmorpg-client/Cargo.toml
 ```
 
-To use the typed wire listener, pass the line address first and the optional
-wire address second:
+The default connection is typed wire. To use a second typed listener during
+staged smoke testing, pass it with `--wire-address`:
 
 ```bash
 cargo run --manifest-path crates/mmorpg-client/Cargo.toml -- \
   127.0.0.1:4000 --wire-address 127.0.0.1:4001
 ```
 
-In wire mode the background worker sends the loopback-only development token,
+The background worker sends the loopback-only development token,
 waits for the typed `Authenticated` response, lists available characters,
 displays the account's available characters, waits for the user to press
 `Enter` to select the displayed development character, enters the world,
 requests a typed bootstrap snapshot, and passes typed
-`ServerMessage` values through `mmorpg-client-adapter`. The default line mode
-remains available while the two paths are compared locally. This handshake is
+`ServerMessage` values through `mmorpg-client-adapter`. This handshake is
 not production authentication or an internet-safe credential flow. If the
 typed socket closes or the development server is restarted, the worker retries
 after 500 ms and repeats the full authentication, character-selection, and

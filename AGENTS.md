@@ -111,16 +111,14 @@ git diff --check
 ```bash
 cargo run -p mmorpg-server
 cargo run -p mmorpg-server -- 127.0.0.1:4400
-cargo run -p mmorpg-server -- 127.0.0.1:4400 --wire-address 127.0.0.1:4401
+cargo run -p mmorpg-server -- 127.0.0.1:4400
 ```
 
-Connect to the default server from another terminal:
+The default server address is now the typed `MMOW` listener. The temporary
+line protocol remains only as inert parser/fixture code for equivalence tests;
+it is not bound by the server.
 
-```bash
-nc 127.0.0.1 4000
-```
-
-The temporary development protocol supports:
+The typed development handshake supports:
 
 ```text
 connect <name> <tank|healer|damage>
@@ -134,10 +132,11 @@ help
 quit
 ```
 
-The optional `--wire-address` listener accepts versioned `MMOW` envelopes with
-typed `mmorpg-wire::ClientCommand` payloads and returns typed server-message
-payloads for events and bootstrap snapshots. It is a protocol/session spike;
-the graphical client still uses the line listener during its staged migration.
+The primary listener accepts versioned `MMOW` envelopes with typed
+`mmorpg-wire::ClientCommand` payloads and returns typed server-message
+payloads for events and bootstrap snapshots. `--wire-address` is retained as
+an optional second typed listener for staged smoke tooling; it is not a line
+listener. The graphical client uses the typed listener by default.
 
 For the opt-in restart-persistence prototype, add
 `--character-store /tmp/mmorpg-dev/aria.state` to a loopback wire-server
@@ -240,7 +239,7 @@ Convenience launch commands from the repository root:
 
 ```bash
 ./scripts/run-server.sh [127.0.0.1:4000]
-./scripts/run-client.sh [127.0.0.1:4000] [--wire-address 127.0.0.1:4001]
+./scripts/run-client.sh [127.0.0.1:4000]
 ./scripts/run-editor.sh [--output /tmp/starter-terrain.mmterrain]
 ```
 
@@ -255,10 +254,10 @@ currently has no production authentication, durable persistence,
 interest-managed replication, client prediction, layer manager, or instance
 manager.
 
-The optional typed wire listener has a deliberately narrow development
-handshake: a client must send `Authenticate { token: "dev-local" }`, receive an
-`Authenticated` message, list and select a character, and then send
-`EnterWorld`. The development token is accepted only when the wire listener is
+The typed listener has a deliberately narrow development handshake: a client
+must send `Authenticate { token: "dev-local" }`, receive an `Authenticated`
+message, list and select a character, and then send `EnterWorld`. The
+development token is accepted only when the typed listener is
 bound to a loopback address. This is a local smoke-test boundary, not an
 account system, credential store, encrypted session, or internet-safe
 authentication design.
