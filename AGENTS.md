@@ -215,6 +215,14 @@ cargo test --manifest-path tools/mmorpg-content-check/Cargo.toml
 cargo run --quiet --manifest-path tools/mmorpg-content-check/Cargo.toml
 ```
 
+Typed diagnostic client against the default server:
+
+```bash
+cargo fmt --manifest-path tools/mmorpg-wire-cli/Cargo.toml -- --check
+cargo test --manifest-path tools/mmorpg-wire-cli/Cargo.toml
+cargo run --quiet --manifest-path tools/mmorpg-wire-cli/Cargo.toml
+```
+
 Client and editor technology spikes:
 
 ```bash

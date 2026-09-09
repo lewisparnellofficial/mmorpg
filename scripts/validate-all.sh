@@ -92,6 +92,7 @@ run_manifest_checks crates/mmorpg-client-transport/Cargo.toml "client transport"
 
 run_manifest_checks tools/mmorpg-editor-core/Cargo.toml "editor core"
 run_manifest_checks tools/mmorpg-content-check/Cargo.toml "content check"
+run_manifest_checks tools/mmorpg-wire-cli/Cargo.toml "typed diagnostic CLI"
 run_manifest_checks experiments/ui-scripting/Cargo.toml "UI scripting"
 
 run_manifest_checks experiments/wire-gameplay-smoke/Cargo.toml "wire gameplay smoke"
