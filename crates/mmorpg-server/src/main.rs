@@ -1343,7 +1343,8 @@ impl Server {
         let deadline = Instant::now() + SHUTDOWN_DRAIN_TIMEOUT;
         while (!self.commands.is_empty()
             || !self.prepared_operations.is_empty()
-            || self.staged_operation_batch.is_some())
+            || self.staged_operation_batch.is_some()
+            || !self.pending_failed_operations.is_empty())
             && Instant::now() < deadline
         {
             self.next_tick = Instant::now() - Duration::from_millis(1);
@@ -1353,16 +1354,24 @@ impl Server {
         if !self.commands.is_empty()
             || !self.prepared_operations.is_empty()
             || self.staged_operation_batch.is_some()
+            || !self.pending_failed_operations.is_empty()
         {
             eprintln!(
-                "shutdown_drain_timeout commands={} prepared={} staged={}",
+                "shutdown_drain_timeout commands={} prepared={} staged={} pending_failed={}",
                 self.commands.len(),
                 self.prepared_operations.len(),
-                self.staged_operation_batch.is_some()
+                self.staged_operation_batch.is_some(),
+                self.pending_failed_operations.len()
             );
             self.commands.clear();
             self.prepared_operations.clear();
             self.staged_operation_batch = None;
+            for (_, (client_id, reason)) in std::mem::take(&mut self.pending_failed_operations) {
+                self.queue_wire_error(
+                    client_id,
+                    format!("operation failure abandoned during shutdown: {reason}"),
+                );
+            }
         }
 
         self.checkpoint_wire_players();
@@ -3459,9 +3468,27 @@ mod tests {
             },
             operation: None,
         });
+        let failed_key = OperationKey {
+            account_id: 1,
+            character_id: 1,
+            operation_id: 900,
+        };
+        let failed_reason = "shutdown drain test".to_owned();
+        server
+            .pending_failed_operations
+            .insert(failed_key, (1, failed_reason.clone()));
+        server
+            .operation_journal_worker
+            .try_enqueue(OperationJournalJob::Failed {
+                key: failed_key,
+                reason: failed_reason,
+            })
+            .expect("failed operation should be queued for shutdown drain");
 
         server.shutdown();
         assert!(server.commands.is_empty());
+        assert!(server.pending_failed_operations.is_empty());
+        assert!(server.failed_operations.contains_key(&failed_key));
         assert!(server.world.player(player_id).is_none());
         drop(server);
 

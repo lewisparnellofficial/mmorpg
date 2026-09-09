@@ -49,7 +49,8 @@ durable operation journal.
   the unrelated damage client received no private party summary.
 - `./scripts/validate-all.sh`: passed with `aggregate validation: PASS`.
 - `--shutdown-after-ticks 2`: passed; the server reported a graceful drain
-  and completion at the requested tick.
+  and completion at the requested tick, including the pending failed-operation
+  drain regression test.
 
 ## Result
 
@@ -82,7 +83,8 @@ cache without reapplying the core command.
   staged world batch is discarded and the affected clients receive an error.
 - The prototype does not provide cross-process fencing or recovery of in-flight
   operations after an external process crash. The deterministic shutdown path
-  covers orderly local exit only.
+  covers orderly local exit and now drains pending failed-operation records;
+  the bounded timeout path explicitly reports abandoned failures.
 - Failed validation outcomes now carry a durable failed-operation record and
   are replayed as the same error for a duplicate key after restart. Core
   gameplay rejections and a general typed error-result schema remain outside
