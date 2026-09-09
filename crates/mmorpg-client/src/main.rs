@@ -1169,10 +1169,26 @@ fn format_hud_text(state: &ClientState) -> String {
         || "not connected".to_owned(),
         |id| match state.presentation.player(id) {
             Some(player) => format!(
-                "player {}  hp {}/{}  target {}",
-                id.0, player.health, player.max_health, target
+                "player {} ({:?})  hp {}/{}  target {}",
+                id.0, player.role, player.health, player.max_health, target
             ),
             None => format!("player {}  waiting for snapshot", id.0),
+        },
+    );
+    let party = state.presentation.parties().next().map_or_else(
+        || "party: none".to_owned(),
+        |party| {
+            format!(
+                "party {}  leader {}  members {}",
+                party.id.0,
+                party.leader_id.0,
+                party
+                    .member_ids
+                    .iter()
+                    .map(|member_id| member_id.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
         },
     );
     let tick = state
@@ -1275,10 +1291,11 @@ fn format_hud_text(state: &ClientState) -> String {
         |notification| format!("\nnotice: {notification:?}"),
     );
     format!(
-        "server: {} ({})\n{}\n{}  tick {}\n{}\n{}\n{}\n{}\n\ncontrols: Enter select character | WASD move | Tab target | Space attack | L loot | V vendor | B buy | O offers | E accept | R turn in{}\n\n{}",
+        "server: {} ({})\n{}\n{}\n{}  tick {}\n{}\n{}\n{}\n{}\n\ncontrols: Enter select character | WASD move | Tab target | Space attack | L loot | V vendor | B buy | O offers | E accept | R turn in{}\n\n{}",
         state.connection_status,
         state.server_address,
         character_selection,
+        party,
         player_summary,
         tick,
         inventory,
@@ -1884,6 +1901,8 @@ mod tests {
             "EVENT quest_offers player=5 npc=1 quests=id=1 name=Clear_the_Field",
         );
         let hud = format_hud_text(&state);
+        assert!(hud.contains("player 5 (DamageDealer)  hp 88/100  target 2"));
+        assert!(hud.contains("party: none"));
         assert!(hud.contains("inventory (1/16): Town Ration x2"));
         assert!(hud.contains("Clear the Field 1/3 (Accepted)"));
         assert!(hud.contains("vendor: Town Ration 2g (98 left)"));

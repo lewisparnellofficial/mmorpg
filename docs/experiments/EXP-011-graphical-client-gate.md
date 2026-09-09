@@ -51,6 +51,9 @@ encounter, privacy, persistence, or renderer-quality acceptance gate.
   `--character-id <id>` argument. The worker selects that character only after
   receiving the authoritative character list; without the option, the
   existing Enter-key flow remains unchanged.
+- **Presentation update:** The graphical HUD now displays the authoritative
+  player role, health, target health, and private party membership summary in
+  addition to inventory, quest, vendor, and server notification state.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,
