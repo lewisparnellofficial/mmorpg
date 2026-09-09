@@ -219,6 +219,7 @@ cargo run --quiet --manifest-path experiments/wire-gameplay-smoke/Cargo.toml
 ./scripts/smoke-graphical-slow-client.sh
 ./scripts/smoke-graphical-gameplay.sh
 ./scripts/smoke-graphical-three-role.sh
+./scripts/smoke-graphical-three-client.sh
 ```
 
 The experiment README files and records under `docs/experiments/` define the
