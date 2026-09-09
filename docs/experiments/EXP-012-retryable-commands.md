@@ -60,6 +60,9 @@ cache without reapplying the core command.
 - The prepared intent is journaled before live apply, but completion insertion
   follows successful world-step application; the pair is not yet one atomic
   commit-before-live-apply transaction.
+- Completion queue capacity is reserved for the full staged batch before any
+  completion record is submitted, and journal parsing preserves explicit
+  failed-operation records without treating them as successful results.
 - The restart smoke repeats the same wrapped operation IDs after process
   restart and passes; the loaded result cache prevents the second run from
   reapplying those operations. Completion-store failure recovery remains an

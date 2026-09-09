@@ -15,6 +15,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
 
@@ -170,6 +171,10 @@ pub enum OperationJournalJob {
         key: OperationKey,
         result_payloads: Vec<Vec<u8>>,
     },
+    Failed {
+        key: OperationKey,
+        reason: String,
+    },
 }
 
 pub struct OperationJournalResult {
@@ -187,6 +192,7 @@ enum OperationJournalMessage {
 /// enqueues immutable result bytes; the journal thread performs file I/O.
 pub struct OperationJournalWorker {
     sender: Option<SyncSender<OperationJournalMessage>>,
+    queued: Option<Arc<AtomicUsize>>,
     results: Receiver<OperationJournalResult>,
     thread: Option<JoinHandle<()>>,
 }
@@ -196,6 +202,7 @@ impl OperationJournalWorker {
         let (_sender, results) = mpsc::channel();
         Self {
             sender: None,
+            queued: None,
             results,
             thread: None,
         }
@@ -204,6 +211,8 @@ impl OperationJournalWorker {
     pub fn new(path: PathBuf) -> Result<(Self, BTreeMap<OperationKey, Vec<Vec<u8>>>), String> {
         let completed = load_operation_journal(&path)?;
         let (sender, receiver) = mpsc::sync_channel(128);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let queued_for_thread = Arc::clone(&queued);
         let (result_sender, results) = mpsc::channel();
         let thread = thread::Builder::new()
             .name("mmorpg-operation-journal".to_owned())
@@ -211,9 +220,11 @@ impl OperationJournalWorker {
                 while let Ok(message) = receiver.recv() {
                     match message {
                         OperationJournalMessage::Job(job) => {
+                            queued_for_thread.fetch_sub(1, Ordering::AcqRel);
                             let (key, prepared) = match &job {
                                 OperationJournalJob::Prepare { key, .. } => (*key, true),
-                                OperationJournalJob::Complete { key, .. } => (*key, false),
+                                OperationJournalJob::Complete { key, .. }
+                                | OperationJournalJob::Failed { key, .. } => (*key, false),
                             };
                             let result = append_operation_journal(&path, &job);
                             let _ = result_sender.send(OperationJournalResult {
@@ -230,6 +241,7 @@ impl OperationJournalWorker {
         Ok((
             Self {
                 sender: Some(sender),
+                queued: Some(queued),
                 results,
                 thread: Some(thread),
             },
@@ -238,16 +250,54 @@ impl OperationJournalWorker {
     }
 
     pub fn try_enqueue(&self, job: OperationJournalJob) -> Result<(), OperationJournalJob> {
-        let Some(sender) = &self.sender else {
+        let (Some(sender), Some(queued)) = (&self.sender, &self.queued) else {
             return Err(job);
         };
+        if !reserve_journal_slots(queued, 1) {
+            return Err(job);
+        }
         match sender.try_send(OperationJournalMessage::Job(job)) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(OperationJournalMessage::Job(job)))
-            | Err(TrySendError::Disconnected(OperationJournalMessage::Job(job))) => Err(job),
+            | Err(TrySendError::Disconnected(OperationJournalMessage::Job(job))) => {
+                queued.fetch_sub(1, Ordering::AcqRel);
+                Err(job)
+            }
             Err(TrySendError::Full(OperationJournalMessage::Stop))
             | Err(TrySendError::Disconnected(OperationJournalMessage::Stop)) => unreachable!(),
         }
+    }
+
+    pub fn try_enqueue_batch(
+        &self,
+        jobs: Vec<OperationJournalJob>,
+    ) -> Result<(), Vec<OperationJournalJob>> {
+        let count = jobs.len();
+        if count == 0 {
+            return Ok(());
+        }
+        let (Some(sender), Some(queued)) = (&self.sender, &self.queued) else {
+            return Err(jobs);
+        };
+        if !reserve_journal_slots(queued, count) {
+            return Err(jobs);
+        }
+        for (index, job) in jobs.into_iter().enumerate() {
+            match sender.try_send(OperationJournalMessage::Job(job)) {
+                Ok(()) => {}
+                Err(TrySendError::Full(OperationJournalMessage::Job(job)))
+                | Err(TrySendError::Disconnected(OperationJournalMessage::Job(job))) => {
+                    let remaining = count.saturating_sub(index + 1);
+                    queued.fetch_sub(remaining + 1, Ordering::AcqRel);
+                    return Err(vec![job]);
+                }
+                Err(TrySendError::Full(OperationJournalMessage::Stop))
+                | Err(TrySendError::Disconnected(OperationJournalMessage::Stop)) => {
+                    unreachable!()
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn enabled(&self) -> bool {
@@ -256,6 +306,23 @@ impl OperationJournalWorker {
 
     pub fn drain_results(&self) -> impl Iterator<Item = OperationJournalResult> + '_ {
         std::iter::from_fn(|| self.results.try_recv().ok())
+    }
+}
+
+fn reserve_journal_slots(queued: &AtomicUsize, count: usize) -> bool {
+    const CAPACITY: usize = 128;
+    let mut current = queued.load(Ordering::Acquire);
+    loop {
+        let Some(next) = current.checked_add(count) else {
+            return false;
+        };
+        if next > CAPACITY {
+            return false;
+        }
+        match queued.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
     }
 }
 
@@ -559,6 +626,12 @@ fn load_operation_journal(path: &Path) -> Result<BTreeMap<OperationKey, Vec<Vec<
             }
             continue;
         }
+        if fields[1] == "failed" {
+            if !fields[5].starts_with("reason=") {
+                return Err("malformed operation journal failure field".to_owned());
+            }
+            continue;
+        }
         if fields[1] != "completed" {
             return Err("unknown operation journal record kind".to_owned());
         }
@@ -620,6 +693,13 @@ fn append_operation_journal(path: &Path, job: &OperationJournalJob) -> Result<()
                 key.account_id, key.character_id, key.operation_id, results
             )
         }
+        OperationJournalJob::Failed { key, reason } => format!(
+            "version=1\tfailed\taccount={}\tcharacter={}\toperation={}\treason={}",
+            key.account_id,
+            key.character_id,
+            key.operation_id,
+            encode_hex(reason.as_bytes())
+        ),
     };
     writeln!(file, "{record}")
         .map_err(|error| format!("cannot append operation journal: {error}"))?;
@@ -1111,6 +1191,21 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(completed, "journal result should report completion");
+        worker
+            .try_enqueue(OperationJournalJob::Failed {
+                key,
+                reason: "test failure record".to_owned(),
+            })
+            .expect("failure record should enter bounded queue");
+        let mut failed_recorded = false;
+        for _ in 0..100 {
+            if worker.drain_results().any(|result| result.result.is_ok()) {
+                failed_recorded = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(failed_recorded, "journal failure record should complete");
         drop(worker);
 
         let (_worker, loaded) = OperationJournalWorker::new(path.clone()).expect("journal reload");

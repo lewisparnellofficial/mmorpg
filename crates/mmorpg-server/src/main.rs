@@ -1059,6 +1059,7 @@ impl Server {
         );
         let mut operations = BTreeMap::new();
         let mut operation_events = BTreeMap::new();
+        let mut journal_jobs = Vec::new();
         for (key, player_id, origin) in operation_commands {
             let result = events
                 .iter()
@@ -1070,22 +1071,22 @@ impl Server {
                 .filter_map(|event| wire_event(event).map(ServerMessage::Event))
                 .filter_map(|message| message.encode_payload().ok())
                 .collect();
-            if self
-                .operation_journal_worker
-                .try_enqueue(OperationJournalJob::Complete {
-                    key,
-                    result_payloads: payloads,
-                })
-                .is_err()
-            {
-                self.queue_wire_error(
-                    origin_client_id(origin),
-                    "operation journal queue is full".to_owned(),
-                );
-                return;
-            }
+            journal_jobs.push(OperationJournalJob::Complete {
+                key,
+                result_payloads: payloads,
+            });
             operations.insert(key, origin_client_id(origin));
             operation_events.insert(key, result);
+        }
+        if self
+            .operation_journal_worker
+            .try_enqueue_batch(journal_jobs)
+            .is_err()
+        {
+            for client_id in operations.values().copied() {
+                self.queue_wire_error(client_id, "operation journal queue is full".to_owned());
+            }
+            return;
         }
         self.staged_operation_batch = Some(StagedOperationBatch {
             world: staged_world,
@@ -1159,13 +1160,23 @@ impl Server {
 
         if let Some((failed_key, error)) = failed_batch {
             if let Some(batch) = self.staged_operation_batch.take() {
+                let failure_reason = error;
                 for client_id in batch.operations.values().copied() {
-                    self.queue_wire_error(client_id, format!("operation journal failed: {error}"));
+                    self.queue_wire_error(
+                        client_id,
+                        format!("operation journal failed: {failure_reason}"),
+                    );
                 }
                 eprintln!(
-                    "operation_journal_error account={} character={} operation={} error={error}",
+                    "operation_journal_error account={} character={} operation={} error={failure_reason}",
                     failed_key.account_id, failed_key.character_id, failed_key.operation_id
                 );
+                let _ = self
+                    .operation_journal_worker
+                    .try_enqueue(OperationJournalJob::Failed {
+                        key: failed_key,
+                        reason: failure_reason,
+                    });
             }
         } else if self
             .staged_operation_batch

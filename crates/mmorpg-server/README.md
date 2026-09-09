@@ -102,7 +102,9 @@ crash reconciliation for an operation that fails between live mutation and
 result publication. Successful journal acknowledgements gate the operation's
 success event; a completion-store failure discards the staged world batch and
 returns a typed error to the affected clients. Recovery of an operation after
-an external process crash remains a later journal milestone.
+an external process crash remains a later journal milestone. Completion queue
+capacity is reserved for the complete staged batch before any completion job
+is submitted, and failed operation attempts have an explicit journal record.
 
 The typed gameplay vocabulary includes authoritative BasicAttack, party
 membership, and Heal { target_id } intents. Party invites and membership are
