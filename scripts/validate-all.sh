@@ -102,6 +102,8 @@ run_manifest_checks tools/mmorpg-wire-cli/Cargo.toml "typed diagnostic CLI"
 run_step "typed diagnostic smoke" "$repo_root/scripts/smoke-typed-diagnostic.sh"
 run_manifest_checks experiments/ui-scripting/Cargo.toml "UI scripting"
 run_step "UI scripting adversarial smoke" "$repo_root/scripts/smoke-ui-adversarial.sh"
+run_manifest_checks experiments/ui-wasm-comparison/Cargo.toml "Wasm UI comparison"
+run_step "Wasm UI comparison smoke" cargo run --quiet --manifest-path experiments/ui-wasm-comparison/Cargo.toml
 if [[ "${MMORPG_RUN_FUZZ:-0}" == "1" ]]; then
     run_step "UI boundary fuzz smoke" "$repo_root/scripts/smoke-ui-fuzz.sh"
 fi

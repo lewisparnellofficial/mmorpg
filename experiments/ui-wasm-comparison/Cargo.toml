@@ -1,0 +1,14 @@
+[package]
+name = "ui-wasm-comparison"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wasmi = "2.0"
+wat = "1.258"
+
+[lints.rust]
+unsafe_code = "forbid"

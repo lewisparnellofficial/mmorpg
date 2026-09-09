@@ -174,6 +174,14 @@ with `./scripts/smoke-ui-fuzz.sh`; set `MMORPG_RUN_FUZZ=1` to
 include it in aggregate validation on a host with `cargo-fuzz` and nightly
 Rust. The normal aggregate remains independent of that optional tool.
 
+Because the Luau campaign found a native parser crash, the repository now also
+contains `experiments/ui-wasm-comparison`, a standalone Wasmi proof of the
+stronger isolation alternative. Its local run linked only one explicit UI
+import, rejected WASI by having no WASI imports, interrupted an infinite loop
+with fuel in 25,217 microseconds, and verified a four-page maximum linear
+memory declaration. This is an ABI and control-boundary comparison, not a
+production runtime selection or a complete scripted-UI implementation.
+
 ## Result
 
 The hypothesis is supported for this narrow host surface. Luau embedding is a
@@ -212,9 +220,9 @@ mode, because sandbox mode makes the global table read-only.
   signatures, remote repositories, and hot reload remain out of scope.
 
 Next work should run longer coverage-guided campaigns, calibrate quotas on the
-minimum supported Linux client, and compare the same language-neutral contract
-with a stronger Wasm isolation alternative before accepting an architecture
-decision.
+minimum supported Linux client, and use the Wasmi comparison to decide whether
+the stronger isolation boundary justifies the added guest ABI/toolchain cost
+before accepting an architecture decision.
 
 ## Evidence classification
 
