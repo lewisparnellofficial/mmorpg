@@ -228,6 +228,7 @@ pub enum ClientNotification {
 pub struct ClientWorld {
     entities: BTreeMap<EntityId, ClientEntity>,
     combat_ready_ticks: BTreeMap<EntityId, u64>,
+    enemy_threat_targets: BTreeMap<EntityId, EntityId>,
     defeated_enemies: BTreeSet<EntityId>,
     vendor_listings: BTreeMap<EntityId, Vec<ClientVendorListing>>,
     quest_offers: BTreeMap<EntityId, Vec<QuestOffer>>,
@@ -307,6 +308,12 @@ impl ClientWorld {
         self.combat_ready_ticks.get(&player_id).copied()
     }
 
+    /// Returns the last server-authoritative player targeted by an enemy
+    /// attack event. The model never infers threat from local proximity.
+    pub fn enemy_threat_target(&self, enemy_id: EntityId) -> Option<EntityId> {
+        self.enemy_threat_targets.get(&enemy_id).copied()
+    }
+
     /// Returns the tick associated with the most recently applied complete
     /// world snapshot, when the transport supplies one.
     pub fn world_tick(&self) -> Option<u64> {
@@ -329,6 +336,7 @@ impl ClientWorld {
     ) {
         self.entities.clear();
         self.combat_ready_ticks.clear();
+        self.enemy_threat_targets.clear();
         self.defeated_enemies.clear();
         self.vendor_listings.clear();
         self.quest_offers.clear();
@@ -527,13 +535,18 @@ impl ClientWorld {
                 ApplyEventResult::Applied
             }
             Event::EnemyAttackResolved {
+                enemy_id,
                 target_id,
                 target_health,
                 ..
             } => {
+                if !matches!(self.entities.get(enemy_id), Some(ClientEntity::Npc(_))) {
+                    return ApplyEventResult::Ignored;
+                }
                 let Some(ClientEntity::Player(target)) = self.entities.get_mut(target_id) else {
                     return ApplyEventResult::Ignored;
                 };
+                self.enemy_threat_targets.insert(*enemy_id, *target_id);
                 target.health = *target_health;
                 ApplyEventResult::Applied
             }
@@ -572,12 +585,14 @@ impl ClientWorld {
                 ApplyEventResult::Applied
             }
             Event::EnemyCorpseExpired { enemy_id, .. } => {
+                self.enemy_threat_targets.remove(enemy_id);
                 if !matches!(self.entities.get(enemy_id), Some(ClientEntity::Npc(_))) {
                     return ApplyEventResult::Ignored;
                 }
                 ApplyEventResult::Applied
             }
             Event::EnemyDefeated { enemy_id } => {
+                self.enemy_threat_targets.remove(enemy_id);
                 let Some(ClientEntity::Npc(npc)) = self.entities.get_mut(enemy_id) else {
                     return ApplyEventResult::Ignored;
                 };
@@ -587,6 +602,7 @@ impl ClientWorld {
                 ApplyEventResult::Applied
             }
             Event::EnemyRespawned { enemy_id, .. } => {
+                self.enemy_threat_targets.remove(enemy_id);
                 let Some(ClientEntity::Npc(npc)) = self.entities.get_mut(enemy_id) else {
                     return ApplyEventResult::Ignored;
                 };
@@ -992,10 +1008,21 @@ mod tests {
         assert_eq!(model.player(player_id).unwrap().target, Some(wolf_id));
         assert_eq!(model.npc(wolf_id).unwrap().health, 88);
         assert_eq!(model.combat_ready_tick(player_id), Some(1));
+        apply_all(
+            &mut model,
+            &[Event::EnemyAttackResolved {
+                enemy_id: wolf_id,
+                target_id: player_id,
+                damage: 10,
+                target_health: 90,
+            }],
+        );
+        assert_eq!(model.enemy_threat_target(wolf_id), Some(player_id));
 
         let defeated = authoritative.step((0..8).map(|_| Command::BasicAttack { player_id }));
         apply_all(&mut model, &defeated);
         assert!(model.npc(wolf_id).unwrap().defeated);
+        assert_eq!(model.enemy_threat_target(wolf_id), None);
 
         apply_all(&mut model, &[Event::PlayerLeft { player_id }]);
         assert!(model.player(player_id).is_none());

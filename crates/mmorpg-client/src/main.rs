@@ -1161,7 +1161,16 @@ fn format_hud_text(state: &ClientState) -> String {
         |target| {
             state.presentation.npc(target).map_or_else(
                 || target.0.to_string(),
-                |npc| format!("{} ({}/{})", target.0, npc.health, npc.max_health),
+                |npc| {
+                    let threat = state
+                        .presentation
+                        .enemy_threat_target(target)
+                        .map_or_else(|| "none".to_owned(), |player_id| player_id.0.to_string());
+                    format!(
+                        "{} ({}/{}) threat={threat}",
+                        target.0, npc.health, npc.max_health
+                    )
+                },
             )
         },
     );
