@@ -62,7 +62,10 @@ older core callers. Empty server ticks still advance deferred work and enemy
 lifecycle state through the same owner.
 This is an implementation boundary, not a capacity result. The exact tick
 budget must still be established through profiling, especially for the
-200-player encounter.
+200-player encounter. Each live server tick records elapsed simulation work,
+the maximum observed duration, and deadline misses; deterministic shutdown
+prints those counters for experiment capture. A deadline miss is telemetry,
+not proof that the server can safely absorb the workload.
 
 Typed intake is bounded per session and globally, and the server interleaves
 decoded per-session queues before handing commands to the single world owner.

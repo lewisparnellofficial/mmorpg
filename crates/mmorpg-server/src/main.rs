@@ -194,6 +194,23 @@ struct PendingCommand {
     operation: Option<OperationKey>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SimulationTimingStats {
+    ticks: u64,
+    deadline_misses: u64,
+    max_duration: Duration,
+}
+
+impl SimulationTimingStats {
+    fn record(&mut self, duration: Duration, deadline: Duration) {
+        self.ticks = self.ticks.saturating_add(1);
+        self.max_duration = self.max_duration.max(duration);
+        if duration > deadline {
+            self.deadline_misses = self.deadline_misses.saturating_add(1);
+        }
+    }
+}
+
 struct StagedOperationBatch {
     world: World,
     events: Vec<Event>,
@@ -226,6 +243,7 @@ struct Server {
     combat_timing: CombatTiming,
     tick_interval: Duration,
     next_tick: Instant,
+    timing_stats: SimulationTimingStats,
 }
 
 impl Server {
@@ -327,6 +345,7 @@ impl Server {
             combat_timing,
             tick_interval,
             next_tick: Instant::now() + tick_interval,
+            timing_stats: SimulationTimingStats::default(),
         }
     }
 
@@ -1146,6 +1165,7 @@ impl Server {
             return;
         }
 
+        let simulation_started = Instant::now();
         let events = self.world.step_with_combat_timing(
             pending.into_iter().map(|pending| pending.command),
             self.combat_timing,
@@ -1175,6 +1195,17 @@ impl Server {
 
         if self.world.tick().is_multiple_of(CHECKPOINT_INTERVAL_TICKS) {
             self.checkpoint_wire_players();
+        }
+
+        let duration = simulation_started.elapsed();
+        self.timing_stats.record(duration, self.tick_interval);
+        if duration > self.tick_interval {
+            eprintln!(
+                "simulation_tick_deadline_missed tick={} duration_ms={:.3} budget_ms={:.3}",
+                self.world.tick(),
+                duration.as_secs_f64() * 1000.0,
+                self.tick_interval.as_secs_f64() * 1000.0
+            );
         }
 
         self.schedule_next_tick();
@@ -3012,6 +3043,12 @@ fn main() -> io::Result<()> {
             println!("graceful_shutdown_begin tick={}", server.world.tick());
             server.shutdown();
             server.flush_clients();
+            println!(
+                "simulation_timing ticks={} deadline_misses={} max_duration_ms={:.3}",
+                server.timing_stats.ticks,
+                server.timing_stats.deadline_misses,
+                server.timing_stats.max_duration.as_secs_f64() * 1000.0
+            );
             println!("graceful_shutdown_complete tick={}", server.world.tick());
             break Ok(());
         }
@@ -3167,6 +3204,17 @@ mod tests {
             server.combat_timing.cooldown_ticks(),
             DEFAULT_COMBAT_COOLDOWN_TICKS
         );
+    }
+
+    #[test]
+    fn simulation_timing_stats_count_deadline_misses_and_track_maximum() {
+        let mut stats = SimulationTimingStats::default();
+        stats.record(Duration::from_millis(2), Duration::from_millis(5));
+        stats.record(Duration::from_millis(8), Duration::from_millis(5));
+
+        assert_eq!(stats.ticks, 2);
+        assert_eq!(stats.deadline_misses, 1);
+        assert_eq!(stats.max_duration, Duration::from_millis(8));
     }
 
     #[test]

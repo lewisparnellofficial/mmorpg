@@ -101,6 +101,9 @@ The fixed-tick server uses a two-tick basic-combat cast and a two-tick
 basic-combat cooldown at the default 20 Hz rate. The compatibility
 `mmorpg-core::World::step` API remains immediate for older non-server callers;
 live server commands use the deferred timing path.
+At deterministic shutdown the server reports measured tick count, deadline
+misses, and maximum observed simulation duration; these counters are local
+telemetry and do not constitute a capacity claim.
 
 Purchase, loot, and quest-turn-in commands may use the additive retryable
 wrapper with a nonzero operation ID. The server retains up to 256 completed or
