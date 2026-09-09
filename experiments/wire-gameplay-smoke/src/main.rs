@@ -165,10 +165,13 @@ fn main() {
     assert!(listings.iter().any(|listing| listing.item_id == 2));
 
     connection
-        .send_typed_command(&ClientCommand::BuyItem {
-            vendor_id: 1,
-            item_id: 2,
-            quantity: 1,
+        .send_typed_command(&ClientCommand::Retryable {
+            operation_id: 101,
+            command: Box::new(ClientCommand::BuyItem {
+                vendor_id: 1,
+                item_id: 2,
+                quantity: 1,
+            }),
         })
         .expect("purchase command should send");
     let purchase = expect_event(&mut connection, "purchase", |event| {
@@ -245,7 +248,7 @@ fn main() {
                         target_id,
                         ..
                     } if *attacker == player_id && *target_id == enemy_id
-                )
+                ) || matches!(event, ServerEvent::CommandRejected { .. })
             });
             if matches!(
                 attack,
@@ -266,7 +269,10 @@ fn main() {
         );
 
         connection
-            .send_typed_command(&ClientCommand::LootEnemy { enemy_id })
+            .send_typed_command(&ClientCommand::Retryable {
+                operation_id: 200 + enemy_id,
+                command: Box::new(ClientCommand::LootEnemy { enemy_id }),
+            })
             .expect("loot command should send");
         expect_event(&mut connection, "loot reward", |event| {
             matches!(
@@ -281,9 +287,12 @@ fn main() {
     }
 
     connection
-        .send_typed_command(&ClientCommand::TurnInQuest {
-            npc_id: 1,
-            quest_id: 1,
+        .send_typed_command(&ClientCommand::Retryable {
+            operation_id: 301,
+            command: Box::new(ClientCommand::TurnInQuest {
+                npc_id: 1,
+                quest_id: 1,
+            }),
         })
         .expect("quest turn-in command should send");
     expect_event(&mut connection, "quest reward", |event| {

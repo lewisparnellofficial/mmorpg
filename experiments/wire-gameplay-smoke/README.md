@@ -17,6 +17,12 @@ development server process and does not measure capacity, latency, persistence,
 production authentication, or production backpressure. The development auth
 token is intentionally not a deployable credential mechanism.
 
+The purchase, loot, and quest-turn-in intents use the additive retryable
+command wrapper with explicit operation IDs. The development server caches up
+to 256 completed results per process and returns a cached result instead of
+reapplying a duplicate operation. The cache is intentionally not a durable
+cross-restart journal yet.
+
 The crate also provides a deterministic three-role shared-zone gate. It opens
 three typed connections for the tank, healer, and damage characters, verifies
 that each receives only its own detailed player snapshot, forms a two-member

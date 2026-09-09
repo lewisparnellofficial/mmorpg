@@ -58,7 +58,9 @@ covers development authentication, character listing/selection, world entry,
 join compatibility decoding, movement, target selection, attack, vendor
 listing and purchase, loot, quest offers/acceptance/turn-in, party
 invite/accept/decline, leave/remove/leader-transfer/disband, snapshot request,
-and pre-entry content digest exchange. Numeric IDs are
+pre-entry content digest exchange, and an additive retryable wrapper carrying
+a nonzero operation ID. The current development server accepts that wrapper
+for purchase, loot, and quest turn-in. Numeric IDs are
 big-endian, movement values are IEEE-754 `f32` bit patterns, names are bounded
 UTF-8 strings, and zero IDs/quantities or non-finite movement values are
 rejected. The server session adapter now consumes these commands on its

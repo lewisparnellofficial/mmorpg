@@ -16,6 +16,7 @@ Current experiment records:
 - [EXP-009: Party ownership, eligibility, and generation loot](EXP-009-party-loot.md)
 - [EXP-010: Minimum addressed delivery and interest filtering](EXP-010-addressed-delivery.md)
 - [EXP-011: Graphical client runtime gate](EXP-011-graphical-client-gate.md)
+- [EXP-012: Retryable durable-command prototype](EXP-012-retryable-commands.md)
 
 ## Required experiment categories
 

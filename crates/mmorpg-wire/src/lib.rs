@@ -235,6 +235,12 @@ pub enum ClientCommand {
         quest_id: u32,
     },
     Snapshot,
+    /// A retryable durable intent. The wrapper is additive so existing
+    /// clients can continue sending the unwrapped command forms.
+    Retryable {
+        operation_id: u64,
+        command: Box<ClientCommand>,
+    },
 }
 
 impl ClientCommand {
@@ -322,6 +328,17 @@ impl ClientCommand {
                 put_nonzero_u32(&mut payload, *quest_id, "quest_id")?;
             }
             Self::Snapshot => payload.push(11),
+            Self::Retryable {
+                operation_id,
+                command,
+            } => {
+                if *operation_id == 0 || matches!(command.as_ref(), Self::Retryable { .. }) {
+                    return Err(CommandCodecError::MalformedPayload);
+                }
+                payload.push(28);
+                payload.extend_from_slice(&operation_id.to_be_bytes());
+                payload.extend_from_slice(&command.encode_payload()?);
+            }
         }
         Ok(payload)
     }
@@ -405,6 +422,18 @@ impl ClientCommand {
                 quest_id: decoder.take_nonzero_u32("quest_id")?,
             },
             11 => Self::Snapshot,
+            28 => {
+                let operation_id = decoder.take_nonzero_u64("operation_id")?;
+                let command = ClientCommand::decode_payload(&decoder.payload[decoder.offset..])?;
+                decoder.offset = decoder.payload.len();
+                if matches!(command, Self::Retryable { .. }) {
+                    return Err(CommandCodecError::MalformedPayload);
+                }
+                Self::Retryable {
+                    operation_id,
+                    command: Box::new(command),
+                }
+            }
             opcode => return Err(CommandCodecError::UnknownOpcode(opcode)),
         };
         if decoder.offset != payload.len() {
@@ -478,6 +507,7 @@ pub enum CommandCodecError {
     InvalidString { field: &'static str },
     InvalidUtf8 { field: &'static str },
     TrailingBytes { count: usize },
+    MalformedPayload,
 }
 
 impl fmt::Display for CommandCodecError {
@@ -507,6 +537,7 @@ impl fmt::Display for CommandCodecError {
             Self::TrailingBytes { count } => {
                 write!(formatter, "command payload has {count} trailing bytes")
             }
+            Self::MalformedPayload => formatter.write_str("command payload is malformed"),
         }
     }
 }
@@ -2762,6 +2793,14 @@ mod tests {
             ClientCommand::TurnInQuest {
                 npc_id: 1,
                 quest_id: 1,
+            },
+            ClientCommand::Retryable {
+                operation_id: 42,
+                command: Box::new(ClientCommand::BuyItem {
+                    vendor_id: 1,
+                    item_id: 2,
+                    quantity: 1,
+                }),
             },
             ClientCommand::Snapshot,
         ];

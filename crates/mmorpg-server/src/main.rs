@@ -29,6 +29,7 @@ const INTEREST_RANGE: f32 = 45.0;
 const MAX_WIRE_COMMANDS_PER_CLIENT_POLL: usize = 32;
 const MAX_WIRE_COMMANDS_PER_POLL: usize = 256;
 const MAX_PENDING_COMMANDS: usize = 1024;
+const MAX_COMPLETED_OPERATIONS: usize = 256;
 const CHECKPOINT_INTERVAL_TICKS: u64 = 20;
 const DISCONNECT_GRACE_TICKS: u64 = 100;
 
@@ -178,6 +179,14 @@ enum ClientOrigin {
 struct PendingCommand {
     origin: ClientOrigin,
     command: Command,
+    operation: Option<OperationKey>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct OperationKey {
+    account_id: u64,
+    character_id: u64,
+    operation_id: u64,
 }
 
 struct Server {
@@ -187,6 +196,7 @@ struct Server {
     wire_clients: Vec<WireClient>,
     detached_characters: BTreeMap<(u64, u64), DetachedCharacter>,
     commands: VecDeque<PendingCommand>,
+    completed_operations: BTreeMap<OperationKey, Vec<Event>>,
     account_repository: Arc<dyn AccountCharacterRepository>,
     checkpoint_worker: CheckpointWorker,
     next_client_id: u64,
@@ -225,6 +235,7 @@ impl Server {
             wire_clients: Vec::new(),
             detached_characters: BTreeMap::new(),
             commands: VecDeque::new(),
+            completed_operations: BTreeMap::new(),
             checkpoint_worker,
             account_repository,
             next_client_id: 1,
@@ -410,6 +421,13 @@ impl Server {
             );
             return;
         }
+        let (requested_operation_id, command) = match command {
+            WireCommand::Retryable {
+                operation_id,
+                command,
+            } => (Some(operation_id), *command),
+            command => (None, command),
+        };
         let bound_player = self.wire_clients[client_index].player_id;
         if matches!(command, WireCommand::Join { .. }) {
             self.queue_wire_error(
@@ -588,6 +606,44 @@ impl Server {
             self.queue_wire_error(client_id, "connect first".to_owned());
             return;
         };
+        let operation = if let Some(operation_id) = requested_operation_id {
+            if !is_retryable_core_command(&command) {
+                self.queue_wire_error(
+                    client_id,
+                    "operation wrapper is only valid for durable commands".to_owned(),
+                );
+                return;
+            }
+            let client = &self.wire_clients[client_index];
+            let session = client
+                .authenticated
+                .expect("authenticated state checked above");
+            let character_id = client
+                .selected_character_id
+                .expect("bound gameplay client has selected character");
+            let key = OperationKey {
+                account_id: session.account_id,
+                character_id,
+                operation_id,
+            };
+            if let Some(events) = self.completed_operations.get(&key).cloned() {
+                if let Some(client) = self
+                    .wire_clients
+                    .iter_mut()
+                    .find(|client| client.id == client_id)
+                {
+                    for event in events {
+                        if let Some(event) = wire_event(&event) {
+                            client.queue_server_message(&ServerMessage::Event(event));
+                        }
+                    }
+                }
+                return;
+            }
+            Some(key)
+        } else {
+            None
+        };
         let command = match wire_command_to_core(command, player_id) {
             Ok(command) => command,
             Err(error) => {
@@ -595,10 +651,19 @@ impl Server {
                 return;
             }
         };
-        self.enqueue_pending_wire_command(client_id, command);
+        self.enqueue_pending_wire_command_with_operation(client_id, command, operation);
     }
 
     fn enqueue_pending_wire_command(&mut self, client_id: u64, command: Command) {
+        self.enqueue_pending_wire_command_with_operation(client_id, command, None);
+    }
+
+    fn enqueue_pending_wire_command_with_operation(
+        &mut self,
+        client_id: u64,
+        command: Command,
+        operation: Option<OperationKey>,
+    ) {
         if self.commands.len() >= MAX_PENDING_COMMANDS {
             self.queue_wire_error(client_id, "typed command queue is full".to_owned());
             return;
@@ -606,6 +671,7 @@ impl Server {
         self.commands.push_back(PendingCommand {
             origin: ClientOrigin::Wire(client_id),
             command,
+            operation,
         });
     }
 
@@ -678,6 +744,7 @@ impl Server {
                 self.commands.push_back(PendingCommand {
                     origin: ClientOrigin::Line(client_id),
                     command,
+                    operation: None,
                 });
             }
             Ok(ParsedLine::State) => self.send_state(client_id),
@@ -861,6 +928,10 @@ impl Server {
 
         self.expire_detached_characters();
         let pending: Vec<_> = self.commands.drain(..).collect();
+        let operation_commands: Vec<_> = pending
+            .iter()
+            .filter_map(|pending| pending.operation.zip(command_player_id(&pending.command)))
+            .collect();
         let mut join_origins: VecDeque<ClientOrigin> = pending
             .iter()
             .filter_map(|pending| {
@@ -875,6 +946,26 @@ impl Server {
             pending.into_iter().map(|pending| pending.command),
             self.combat_timing,
         );
+
+        // Record the result before publishing the corresponding event. This
+        // is a server-process idempotency fence; the durable journal and
+        // commit-before-live-apply transaction remain a later persistence
+        // milestone.
+        for (key, player_id) in operation_commands {
+            let result = events
+                .iter()
+                .filter(|event| event_recipient(event) == Some(player_id))
+                .cloned()
+                .collect::<Vec<_>>();
+            if self.completed_operations.len() >= MAX_COMPLETED_OPERATIONS
+                && !self.completed_operations.contains_key(&key)
+            {
+                if let Some(oldest) = self.completed_operations.keys().next().copied() {
+                    self.completed_operations.remove(&oldest);
+                }
+            }
+            self.completed_operations.insert(key, result);
+        }
 
         // The development protocol only accepts valid join commands, so join
         // events correspond in order to the pending join origins.
@@ -996,6 +1087,7 @@ impl Server {
                     command: Command::LeavePlayer {
                         player_id: detached.player_id,
                     },
+                    operation: None,
                 });
             }
         }
@@ -2176,6 +2268,24 @@ fn parse_positive_quantity(value: &str) -> Result<u32, String> {
     Ok(quantity)
 }
 
+fn is_retryable_core_command(command: &WireCommand) -> bool {
+    matches!(
+        command,
+        WireCommand::BuyItem { .. }
+            | WireCommand::LootEnemy { .. }
+            | WireCommand::TurnInQuest { .. }
+    )
+}
+
+fn command_player_id(command: &Command) -> Option<EntityId> {
+    match command {
+        Command::BuyItem { player_id, .. }
+        | Command::LootEnemy { player_id, .. }
+        | Command::TurnInQuest { player_id, .. } => Some(*player_id),
+        _ => None,
+    }
+}
+
 fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Command, String> {
     Ok(match command {
         WireCommand::Move { dx, dy } => Command::Move { player_id, dx, dy },
@@ -2250,6 +2360,7 @@ fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Com
         | WireCommand::ListCharacters
         | WireCommand::SelectCharacter { .. }
         | WireCommand::ContentDigest { .. }
+        | WireCommand::Retryable { .. }
         | WireCommand::Snapshot => {
             return Err("command is not valid in a bound session".to_owned());
         }
@@ -2588,6 +2699,74 @@ mod tests {
             server.commands.front().map(|pending| &pending.command),
             Some(Command::LeavePlayer { player_id }) if *player_id == player
         ));
+    }
+
+    #[test]
+    fn retryable_durable_command_returns_cached_result_without_reapplying() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let _peer = TcpStream::connect(address).expect("connect test peer");
+        let (stream, _) = listener.accept().expect("accept test peer");
+        let mut server = Server::new(DEFAULT_TICK_HZ, false, None);
+        let player_id = server
+            .world
+            .step([Command::JoinPlayer {
+                name: "Aria".to_owned(),
+                role: Role::DamageDealer,
+            }])
+            .into_iter()
+            .find_map(|event| match event {
+                Event::PlayerJoined { player } => Some(player.id),
+                _ => None,
+            })
+            .expect("test player should join");
+        let mut client = WireClient::new(1, stream);
+        client.authenticated = Some(AuthenticatedSession {
+            account_id: 1,
+            session_id: 1,
+        });
+        client.selected_character_id = Some(1);
+        client.content_compatible = true;
+        client.player_id = Some(player_id);
+        server.wire_clients.push(client);
+        let key = OperationKey {
+            account_id: 1,
+            character_id: 1,
+            operation_id: 77,
+        };
+        server.commands.push_back(PendingCommand {
+            origin: ClientOrigin::Wire(1),
+            command: Command::BuyItem {
+                player_id,
+                vendor_id: EntityId(1),
+                item_id: ItemId::TOWN_RATION,
+                quantity: 1,
+            },
+            operation: Some(key),
+        });
+        server.next_tick = Instant::now() - Duration::from_millis(1);
+        server.advance_if_due();
+        let gold_after_first_apply = server.world.player(player_id).unwrap().gold;
+        assert!(server.completed_operations.contains_key(&key));
+
+        server.handle_wire_command(
+            1,
+            WireCommand::Retryable {
+                operation_id: 77,
+                command: Box::new(WireCommand::BuyItem {
+                    vendor_id: 1,
+                    item_id: ItemId::TOWN_RATION.0,
+                    quantity: 1,
+                }),
+            },
+        );
+
+        assert_eq!(
+            server.world.player(player_id).unwrap().gold,
+            gold_after_first_apply
+        );
+        assert!(server.commands.is_empty());
+        assert!(!server.wire_clients[0].output.is_empty());
     }
 
     #[test]

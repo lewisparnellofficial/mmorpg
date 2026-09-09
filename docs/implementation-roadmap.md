@@ -100,6 +100,9 @@ roadmap, including post-gate editor and UI-scripting work.
 - Minimum addressed typed delivery with nearby public-event filtering and
   bounded replaceable movement coalescing; production interest management
   remains open.
+- Additive retryable typed commands for purchase, loot, and quest turn-in with
+  a bounded process-local operation-result cache; durable cross-restart
+  transaction journaling remains open.
 
 ## Completed batch: town/field gameplay loop
 

@@ -89,6 +89,13 @@ coalesces pending updates by entity; transactional, party, and private events
 use the reliable ordered queue. This is a minimum-interest development
 boundary, not production spatial replication or backpressure.
 
+Purchase, loot, and quest-turn-in commands may use the additive retryable
+wrapper with a nonzero operation ID. The server caches up to 256 completed
+process-local results per instance, scoped by account and character, and
+returns the cached event on a duplicate instead of reapplying the command.
+This is an idempotency boundary for the development protocol, not yet a
+durable journal or commit-before-live-apply transaction.
+
 The typed gameplay vocabulary includes authoritative BasicAttack, party
 membership, and Heal { target_id } intents. Party invites and membership are
 validated by the core and typed party events are filtered to current/former
