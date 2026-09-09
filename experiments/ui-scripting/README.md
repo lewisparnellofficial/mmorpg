@@ -11,8 +11,9 @@ Each `AddonRunner` owns one sandboxed Luau state and exposes only:
 - `ui.set_position(node_id, x, y)`; and
 - `ui.on(event_name, callback)`.
 
-The host supplies an immutable, sanitized visible view model when dispatching
-an event. `game` and `storage` are empty API namespaces in this spike, and
+The host supplies an immutable, sanitized `mmorpg-ui-contract::ViewRecord`
+when dispatching an event (exported locally as the compatibility name
+`VisibleState`). `game` and `storage` are empty API namespaces in this spike, and
 there is no script function for movement, targeting, casting, packets, file
 access, process execution, sockets, native modules, or secure input. A native
 caller may use `AddonRunner::secure_input` after validating ownership; that

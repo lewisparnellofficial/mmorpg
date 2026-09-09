@@ -16,6 +16,7 @@ use std::sync::{
 };
 
 use mlua::{Function, Lua, Result as LuaResult, VmState};
+pub use mmorpg_ui_contract::ViewRecord;
 
 pub const DEFAULT_MAX_NODES: usize = 64;
 pub const DEFAULT_MAX_EVENTS: usize = 16;
@@ -46,13 +47,10 @@ impl Default for AddonPolicy {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VisibleState {
-    pub player_name: String,
-    pub target_name: Option<String>,
-    pub inventory_slots_used: u32,
-    pub quest_progress: u32,
-}
+/// Compatibility name for the Luau adapter. The value itself is owned by the
+/// language-neutral `ui.v1` contract, so the VM cannot define a parallel view
+/// schema.
+pub type VisibleState = ViewRecord;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UiNode {

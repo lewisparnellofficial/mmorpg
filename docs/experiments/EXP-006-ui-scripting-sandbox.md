@@ -26,8 +26,10 @@ The language-neutral portion is implemented in
 renderer, socket, filesystem, or authoritative-core dependency. Its focused
 tests cover bounded event coalescing/FIFO behavior, operation validation,
 manifest rejection, and account/package-scoped storage failure atomicity.
-The Luau experiment remains an adapter prototype and has not yet been moved to
-this contract.
+The Luau experiment now consumes the contract's immutable `ViewRecord` as its
+`VisibleState` compatibility type. UI-node operations remain a deliberately
+limited adapter prototype; the full transactional operation application and
+manifest/storage lifecycle are still owned only by the contract crate.
 
 The implementation is in
 [`experiments/ui-scripting`](../../experiments/ui-scripting/README.md). It uses
