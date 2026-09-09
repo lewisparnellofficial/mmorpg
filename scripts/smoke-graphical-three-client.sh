@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # Opt-in Linux desktop smoke test. It opens three real Bevy windows, selects
-# the three development characters without keyboard input, and checks that
-# each client loads the starter zone. It is not part of validate-all.sh because
-# it requires a working graphical session.
+# the three development characters without keyboard input, and checks startup,
+# role selection, and reconnect after one typed-server restart. It is not part
+# of validate-all.sh because it requires a working graphical session.
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 server_pid=''
@@ -30,16 +30,24 @@ trap cleanup EXIT INT TERM
 cargo build --manifest-path "$repo_root/Cargo.toml" -p mmorpg-server
 cargo build --manifest-path "$repo_root/crates/mmorpg-client/Cargo.toml"
 
-"$repo_root/target/debug/mmorpg-server" 127.0.0.1:4400 \
-    --wire-address 127.0.0.1:4401 >"$work_dir/server.log" 2>&1 &
-server_pid=$!
+start_server() {
+    "$repo_root/target/debug/mmorpg-server" 127.0.0.1:4400 \
+        --wire-address 127.0.0.1:4401 >>"$work_dir/server.log" 2>&1 &
+    server_pid=$!
 
-for attempt in $(seq 1 50); do
-    if (echo >/dev/tcp/127.0.0.1/4401) 2>/dev/null; then
-        break
-    fi
-    sleep 0.1
-done
+    for attempt in $(seq 1 50); do
+        if (echo >/dev/tcp/127.0.0.1/4401) 2>/dev/null; then
+            return
+        fi
+        sleep 0.1
+    done
+
+    echo "typed server did not become ready" >&2
+    sed -n '1,160p' "$work_dir/server.log" >&2
+    exit 1
+}
+
+start_server
 
 for character_id in 1 2 3; do
     "$repo_root/crates/mmorpg-client/target/debug/mmorpg-client" \
@@ -91,6 +99,32 @@ for character_id in 1 2 3; do
     fi
 done
 
-echo "graphical three-client smoke: startup and role selection passed"
+echo "graphical smoke: restarting typed server" >>"$work_dir/server.log"
+old_server_pid=$server_pid
+server_pid=''
+kill "$old_server_pid" 2>/dev/null || true
+wait "$old_server_pid" 2>/dev/null || true
+sleep 1
+start_server
+sleep 8
+
+for character_id in 1 2 3; do
+    log="$work_dir/client-$character_id.log"
+    role="${expected_roles[$character_id]}"
+    selected_count=$(rg -c "server selected character $character_id .* role=$role" "$log" || true)
+    connected_count=$(rg -c "server connected player .* role=$role" "$log" || true)
+    if (( selected_count < 2 )); then
+        echo "graphical client $character_id did not re-select its character after server restart" >&2
+        sed -n '1,240p' "$log" >&2
+        exit 1
+    fi
+    if (( connected_count < 2 )); then
+        echo "graphical client $character_id did not re-enter the world as $role after server restart" >&2
+        sed -n '1,240p' "$log" >&2
+        exit 1
+    fi
+done
+
+echo "graphical three-client smoke: startup, role selection, and reconnect passed"
 echo "logs: $work_dir"
 smoke_status=0

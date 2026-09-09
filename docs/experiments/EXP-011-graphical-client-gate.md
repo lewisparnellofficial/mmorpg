@@ -29,9 +29,12 @@ For the opt-in three-window startup smoke, use:
 The script launches three real clients with `--character-id 1`, `2`, and `3`,
 then checks that each process loads `Greenfield` and reaches the typed startup
 character-selection path. It also checks the server-confirmed role and world
-player binding for each client, plus at least three accepted typed peers. It is
-a bounded startup/role-selection check, not a substitute for the full
-encounter, privacy, persistence, or renderer-quality acceptance gate.
+player binding for each client, plus at least three accepted typed peers. While
+the clients remain alive, the script restarts the typed server once and checks
+that each client re-authenticates, re-selects its preferred character, and
+re-enters the world with the same role. It is a bounded startup/reconnect
+check, not a substitute for the full encounter, privacy, durable-persistence,
+or renderer-quality acceptance gate.
 
 ## Evidence
 
@@ -57,6 +60,11 @@ encounter, privacy, persistence, or renderer-quality acceptance gate.
   server-published combat cooldown-ready tick. After an enemy attack, the HUD
   also shows the last authoritative threat target for the selected enemy and
   clears it when that enemy is defeated or respawned.
+- **Measured local result:** The three-window smoke passed startup, role
+  selection, one typed-server restart, and graphical client reconnect/re-entry
+  for all three requested characters. This verifies the bounded worker
+  reconnect path while the clients remain alive; it does not verify durable
+  world state across the process restart.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,
@@ -69,7 +77,7 @@ encounter, privacy, persistence, or renderer-quality acceptance gate.
 The client shell and renderer can start on this host, but this is not a passing
 Milestone 13 result. The Vulkan validation errors require investigation before
 using this environment for a repeatable graphical acceptance record. The
-The graphical role encounter, restart/retry client flow, slow-client graphical
+graphical role encounter, retry client flow, slow-client graphical
 behavior, and physical renderer-quality gate remain unverified. The headless
 harness now covers the role encounter and two loot generations; it does not
 substitute for those graphical scenarios.
