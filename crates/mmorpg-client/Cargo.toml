@@ -15,6 +15,7 @@ mmorpg-content = { path = "../mmorpg-content" }
 mmorpg-client-protocol = { path = "../mmorpg-client-protocol" }
 mmorpg-client-secure-input = { path = "../mmorpg-client-secure-input" }
 mmorpg-wire = { path = "../mmorpg-wire" }
+ui-scripting-spike = { path = "../../experiments/ui-scripting" }
 
 [lints.rust]
 unsafe_code = "forbid"

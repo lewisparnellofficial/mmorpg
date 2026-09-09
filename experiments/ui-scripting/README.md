@@ -1,8 +1,9 @@
 # UI scripting sandbox spike
 
 This standalone experiment embeds Luau through `mlua` and exercises the
-proposed `ui.v1` boundary. It is intentionally not connected to the Bevy
-client or authoritative server.
+proposed `ui.v1` boundary. The client consumes the same runner as a narrow
+startup/secure-input integration proof; the experiment remains independent of
+authoritative gameplay state and is not a full scripted-HUD implementation.
 
 Each `AddonRunner` owns one sandboxed Luau state and exposes only:
 

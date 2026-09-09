@@ -41,10 +41,12 @@ The implementation is in
 Luau state. The exposed functions are limited to `ui.create_panel`,
 `ui.set_text`, `ui.set_position`, and `ui.on`; `game` is an empty namespace and
 `storage` exposes bounded `get`, `set`, and `delete` operations. Secure input is
-a native host method and is not available to script callbacks. The separate
-graphical client now routes its default Space attack through the native secure
-input registry; this experiment does not claim full pointer/focus or scripted
-action presentation coverage.
+a native host method and is not available to script callbacks. The graphical
+client now starts one default-UI runner and one ordinary-addon runner, renders
+their script-described secure-action labels, and registers their host-owned
+action nodes with the native secure-input registry. The default action is
+activated only after a fresh native key/pointer dispatch; this is a minimal
+renderer integration proof, not a complete scripted-HUD implementation.
 
 Default limits are 64 UI nodes, 16 event registrations, 64 KiB of source,
 4 MiB of VM memory, 100,000 interrupt-budget instructions, and 4 KiB of panel
@@ -105,10 +107,12 @@ mode, because sandbox mode makes the global table read-only.
   store, dependency resolver, or bytecode compatibility policy.
 - It does not provide process-level isolation from a compromised native
   runtime or binding.
-- Secure-input provenance is represented only by a native method and ownership
-  check; it is not connected to a real window/input system.
-- There is no renderer integration, event-queue backpressure measurement,
-  wall-clock benchmark, fuzzing campaign, or minimum-hardware calibration.
+- The host integration covers one real Bevy secure-action presentation and
+  native dispatch path, but does not yet cover every pointer hit-test,
+  reload, overlay, or addon-unload scenario end to end.
+- There is no full scripted-HUD renderer integration, event-queue backpressure
+  measurement, wall-clock benchmark, fuzzing campaign, or minimum-hardware
+  calibration.
 - The empty `game` namespace is a placeholder, not the final public API.
 - Callback rollback covers host state, staged panel operations, and
   registrations made during callbacks; initial script-load registration still
@@ -117,6 +121,9 @@ mode, because sandbox mode makes the global table read-only.
   validates source-only manifests before VM creation, and exposes bounded
   account/package/schema storage. It does not yet load packages from a
   repository or provide an off-thread durable storage worker.
+- The Bevy client currently constructs the two integration runners from
+  built-in source strings; package repository loading and durable off-thread
+  storage remain intentionally outside this proof.
 
 Next work should add manifest/value-boundary fuzzing, calibrate quotas on the
 minimum supported Linux client, and compare the same language-neutral contract

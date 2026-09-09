@@ -41,6 +41,11 @@ if ! rg -q "loaded zone 'Greenfield'" "$client_log"; then
     sed -n '1,240p' "$client_log" >&2
     exit 1
 fi
+if ! rg -q "SCRIPTED_UI default_node=[0-9]+ addon_node=[0-9]+ action=basic_attack" "$client_log"; then
+    echo "graphical client did not initialize the scripted UI host proof" >&2
+    sed -n '1,240p' "$client_log" >&2
+    exit 1
+fi
 for expected_event in ItemPurchased QuestAccepted QuestRewarded; do
     if ! rg -q "GRAPHICAL_EVENT $expected_event" "$client_log"; then
         echo "graphical acceptance client did not observe $expected_event" >&2

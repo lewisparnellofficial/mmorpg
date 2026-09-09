@@ -33,6 +33,7 @@ use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use ui_scripting_spike::{AddonPolicy, AddonRunner};
 
 const FIELD_SIZE: Vec2 = Vec2::new(40.0, 30.0);
 const DEFAULT_SERVER_ADDRESS: &str = "127.0.0.1:4000";
@@ -151,6 +152,57 @@ struct NetworkBridge {
 #[derive(Resource)]
 struct MovementRepeat(Timer);
 
+#[derive(Clone, Resource)]
+struct ScriptedUiPresentation {
+    default_label: String,
+    addon_label: String,
+    default_node_id: u64,
+    addon_node_id: u64,
+}
+
+fn build_scripted_ui_presentation() -> ScriptedUiPresentation {
+    let default_source = r#"
+        local panel = ui.create_panel("Default UI secure attack")
+        ui.set_position(panel, 12, 12)
+    "#;
+    let addon_source = r#"
+        local panel = ui.create_panel("Addon secure attack presentation")
+        ui.set_position(panel, 12, 42)
+    "#;
+    let mut default_ui = AddonRunner::load("default-ui", default_source, AddonPolicy::default())
+        .expect("default UI addon must load during client startup");
+    let mut addon = AddonRunner::load("starter-addon", addon_source, AddonPolicy::default())
+        .expect("ordinary UI addon must load during client startup");
+    let default_node = default_ui
+        .snapshot()
+        .nodes
+        .first()
+        .expect("default UI addon must describe one panel")
+        .clone();
+    let addon_node = addon
+        .snapshot()
+        .nodes
+        .first()
+        .expect("ordinary UI addon must describe one panel")
+        .clone();
+    default_ui
+        .secure_input(default_node.id, "basic_attack")
+        .expect("host must accept the default secure action presentation");
+    addon
+        .secure_input(addon_node.id, "basic_attack")
+        .expect("host must accept the addon secure action presentation");
+    println!(
+        "SCRIPTED_UI default_node={} addon_node={} action=basic_attack",
+        default_node.id, addon_node.id
+    );
+    ScriptedUiPresentation {
+        default_label: default_node.text,
+        addon_label: addon_node.text,
+        default_node_id: default_node.id,
+        addon_node_id: addon_node.id,
+    }
+}
+
 #[derive(Resource)]
 struct AcceptanceSmoke {
     enabled: bool,
@@ -181,15 +233,22 @@ struct SecureInputState {
 }
 
 impl SecureInputState {
-    fn new() -> Self {
+    fn new(scripted_ui: &ScriptedUiPresentation) -> Self {
         let default_addon = AddonId::new(1).expect("default addon ID cannot be zero");
-        let default_node = NodeId::new(1).expect("default action node cannot be zero");
+        let default_node = NodeId::new(scripted_ui.default_node_id)
+            .expect("scripted default action node cannot be zero");
+        let addon = AddonId::new(2).expect("addon ID cannot be zero");
+        let addon_node = NodeId::new(scripted_ui.addon_node_id)
+            .expect("scripted addon action node cannot be zero");
         let node_generation = Generation::new(1).expect("default node generation cannot be zero");
         let attack_action = ActionId::new(1).expect("attack action ID cannot be zero");
         let mut registry = SecureInputRegistry::new();
         registry
             .register(default_addon, default_node, node_generation, attack_action)
             .expect("default secure attack binding must be valid");
+        registry
+            .register(addon, addon_node, node_generation, attack_action)
+            .expect("addon secure attack binding must be valid");
         Self {
             registry,
             default_addon,
@@ -266,6 +325,7 @@ fn main() {
         }
     }
     let typed_address = wire_address.unwrap_or_else(|| server_address.clone());
+    let scripted_ui = build_scripted_ui_presentation();
     let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel();
     spawn_wire_network_worker(
@@ -286,6 +346,7 @@ fn main() {
         }))
         .insert_resource(ClearColor(Color::srgb(0.08, 0.12, 0.18)))
         .insert_resource(ClientState::new(typed_address))
+        .insert_resource(scripted_ui.clone())
         .insert_resource(NetworkBridge {
             command_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
@@ -295,7 +356,7 @@ fn main() {
             TimerMode::Repeating,
         )))
         .insert_resource(AcceptanceSmoke::new(acceptance_smoke))
-        .insert_resource(SecureInputState::new())
+        .insert_resource(SecureInputState::new(&scripted_ui))
         .add_systems(Startup, setup_scene)
         .add_systems(Startup, setup_ui)
         .add_systems(
@@ -529,7 +590,7 @@ fn setup_scene(
     ));
 }
 
-fn setup_ui(mut commands: Commands) {
+fn setup_ui(mut commands: Commands, scripted_ui: Res<ScriptedUiPresentation>) {
     commands
         .spawn((
             Node {
@@ -564,7 +625,10 @@ fn setup_ui(mut commands: Commands) {
                 ))
                 .with_children(|button| {
                     button.spawn((
-                        Text::new("Secure attack — click or Space"),
+                        Text::new(format!(
+                            "{} / {} — click or Space",
+                            scripted_ui.default_label, scripted_ui.addon_label
+                        )),
                         TextFont {
                             font_size: FontSize::Px(14.0),
                             ..default()
@@ -1564,7 +1628,8 @@ mod tests {
 
     #[test]
     fn secure_attack_binding_rejects_replay_and_refreshes_after_focus_change() {
-        let mut secure = SecureInputState::new();
+        let scripted_ui = build_scripted_ui_presentation();
+        let mut secure = SecureInputState::new(&scripted_ui);
         let first = secure
             .registry
             .dispatch(

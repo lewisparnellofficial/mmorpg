@@ -1,7 +1,8 @@
 # Client UI Scripting and Addon Sandbox
 
-**Status:** Proposed; language-neutral `ui.v1` contract implemented, runtime
-and secure-input evidence still required
+**Status:** Proposed; language-neutral `ui.v1` contract and a minimal Luau/
+Bevy secure-action integration are implemented, while production runtime and
+physical-input evidence remain required
 
 ## Contract boundary
 
@@ -26,16 +27,17 @@ The contract currently defines:
 Native protected-action provenance is kept in the dependency-light
 `mmorpg-client-secure-input` crate. It rejects repeats, replayed physical event
 IDs, stale focus/node generations, and unloaded addons before yielding a
-single-use trusted intent. The graphical client now routes its default Space
-attack and a bounded primary-pointer hit region through that registry before
-queuing the ordinary typed attack intent, and refreshes the binding across
-native window focus transitions. Scripted action presentation and the physical
-Wayland proof remain Milestone 4 work; this integration is not evidence that
-scripts can activate protected actions.
+single-use trusted intent. The graphical client now starts one default-UI and
+one ordinary-addon runner, projects their bounded panel descriptions into the
+secure-action HUD, and routes its default Space attack and a bounded
+primary-pointer hit region through that registry before queuing the ordinary
+typed attack intent. It refreshes the binding across native window focus
+transitions. The integration is not evidence that scripts can activate
+protected actions, nor is it the full scripted-HUD or physical Wayland proof.
 
-These are policy tests and a host-adapter foundation. They do not yet prove
-that a Luau VM, renderer, filesystem adapter, or native input path enforces
-the contract under hostile load.
+These are policy tests and a minimal host-adapter foundation. They do not yet
+prove that a Luau VM, renderer, filesystem adapter, or native input path
+enforces the contract under hostile load.
 
 ## Goals
 

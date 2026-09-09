@@ -65,6 +65,12 @@ spike does not yet bind it to a keyboard shortcut. The first build may take seve
 minutes because Bevy and its graphics
 dependencies are compiled locally.
 
+At startup the client also runs the narrow `ui.v1` host proof: a default UI
+runner and an ordinary Luau addon each describe a bounded panel, and the host
+projects those labels into the secure-action HUD. Native input is still the
+only path that can mint the trusted basic-attack dispatch; addon code cannot
+call the protected action.
+
 For a bounded renderer-active starter-loop smoke, pass
 `--character-id 1 --acceptance-smoke`. This opt-in mode submits the same typed
 vendor, quest, movement, target, attack, loot, and turn-in intents through the
