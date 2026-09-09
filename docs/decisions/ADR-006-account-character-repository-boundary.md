@@ -47,7 +47,9 @@ a `JoinPlayer` command only after account-scoped character lookup succeeds.
   bounded-write prototype, not a persistent account system or production MMO
   durability guarantee.
 - The wire server fences one stable account/character selection to one active
-  session at a time.
+  session at a time. With the opt-in checkpoint store it also uses a local
+  PID-marker lease to reject the same character in another live server
+  process; this is a development guard, not production distributed fencing.
 - Future storage work must preserve account ownership checks and must not put
   blocking database operations in the simulation-critical path.
 

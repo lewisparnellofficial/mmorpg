@@ -106,8 +106,11 @@ cache without reapplying the core command.
 - Legacy version-2 completion records written before command-payload capture
   remain deduplication-only and cannot be replayed after a checkpoint gap.
   Current records compare operation and checkpoint revisions before replaying
-  a completed command. Cross-process fencing and database-level transaction
-  semantics remain outside the prototype. Prepared-but-not-completed records
+  a completed command. The checkpoint-enabled server now adds a local PID-marker
+  lease for active account/character ownership, rejecting a second live
+  process and reclaiming markers whose owner is no longer present. This is a
+  development-only guard rather than strong distributed fencing or database-
+  level transaction semantics. Prepared-but-not-completed records
   have an explicit no-replay failure policy. The deterministic shutdown path
   covers orderly local exit and now drains pending failed-operation records;
   the bounded timeout path explicitly reports abandoned failures.

@@ -96,7 +96,9 @@ parent directory, and only then report success; an oversized state cannot
 replace the last valid checkpoint.
 The local operation journal now persists retryable operation IDs, revisions,
 original command payloads, and result payloads off the simulation owner, and
-reconciles a completed command against an older checkpoint on restart. It does
-not yet provide database transactions or cross-process fencing, fsync of the
-parent directory, concurrent-writer coordination, migration tooling, or
-PostgreSQL-backed account data.
+reconciles a completed command against an older checkpoint on restart. The
+checkpoint-enabled server also holds a local PID-marker lease per active
+account/character and rejects a second live process; stale markers can be
+reclaimed after an owner exits. This remains a development-only local guard,
+not database transactions, strong cross-process fencing, concurrent-writer
+coordination, migration tooling, or PostgreSQL-backed account data.

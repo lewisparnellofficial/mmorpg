@@ -178,7 +178,11 @@ protocol smoke-test handshake; it is not production authentication,
 authorization, encryption, or account/character persistence.
 
 The server fences an account/character selection across active wire sessions;
-the same stable character cannot be entered concurrently by two sessions.
+the same stable character cannot be entered concurrently by two sessions. When
+`--character-store` is enabled, it additionally holds a local PID-marker lease
+for that stable character, so a second live server process using the same
+checkpoint store is rejected. This is a development-only local guard: it is
+not a durable coordinator or production-grade distributed fencing mechanism.
 
 The current server resolves the development token and character catalog through
 its `AccountCharacterRepository` boundary. `DevelopmentAccountRepository` is

@@ -11,7 +11,7 @@ use mmorpg_core::{
 };
 use mmorpg_wire::{CharacterSummary, RoleCode};
 use std::collections::BTreeMap;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -175,6 +175,82 @@ pub struct CheckpointResult {
     pub character_id: u64,
     pub revision: u64,
     pub result: Result<(), String>,
+}
+
+/// Development-only cross-process character ownership lease.
+///
+/// The lease is a create-new marker containing the owning process ID. It is
+/// deliberately kept behind the local checkpoint store and is not presented
+/// as production fencing; a durable coordinator must replace this boundary.
+#[derive(Clone, Debug)]
+pub struct CharacterFenceStore {
+    base_path: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct CharacterFence {
+    path: PathBuf,
+}
+
+impl CharacterFenceStore {
+    pub fn new(base_path: PathBuf) -> Self {
+        Self { base_path }
+    }
+
+    pub fn acquire(&self, account_id: u64, character_id: u64) -> Result<CharacterFence, String> {
+        let parent = self.base_path.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create character fence directory: {error}"))?;
+        let stem = self
+            .base_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("character.state");
+        let path = parent.join(format!(
+            ".{stem}.account-{account_id}.character-{character_id}.active"
+        ));
+        for _ in 0..2 {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    writeln!(file, "pid={}", std::process::id())
+                        .and_then(|()| file.sync_all())
+                        .map_err(|error| format!("cannot initialize character fence: {error}"))?;
+                    return Ok(CharacterFence { path });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if character_fence_owner_is_alive(&path) {
+                        return Err("character is fenced by another server process".to_owned());
+                    }
+                    fs::remove_file(&path).map_err(|error| {
+                        format!("cannot reclaim stale character fence: {error}")
+                    })?;
+                }
+                Err(error) => {
+                    return Err(format!("cannot acquire character fence: {error}"));
+                }
+            }
+        }
+        Err("character fence acquisition did not complete".to_owned())
+    }
+}
+
+impl Drop for CharacterFence {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn character_fence_owner_is_alive(path: &Path) -> bool {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return true;
+    };
+    let Some(pid) = contents.lines().find_map(|line| {
+        line.strip_prefix("pid=")
+            .and_then(|pid| pid.parse::<u32>().ok())
+    }) else {
+        return true;
+    };
+    Path::new("/proc").join(pid.to_string()).exists()
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1192,6 +1268,37 @@ mod tests {
         );
         assert!(repository.find_character(2, DEV_CHARACTER_ID).is_none());
         assert!(repository.find_character(DEV_ACCOUNT_ID, 4).is_none());
+    }
+
+    #[test]
+    fn character_fence_rejects_live_owner_and_reclaims_stale_marker() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("mmorpg-fence-{unique}.state"));
+        let store = CharacterFenceStore::new(base.clone());
+        let fence = store
+            .acquire(7, 42)
+            .expect("first owner should acquire fence");
+        assert!(store.acquire(7, 42).is_err());
+        drop(fence);
+        let fence = store
+            .acquire(7, 42)
+            .expect("released owner should acquire fence again");
+        drop(fence);
+
+        let parent = base.parent().unwrap_or_else(|| Path::new("."));
+        let stale = parent.join(format!(
+            ".{}.account-7.character-42.active",
+            base.file_name().unwrap().to_str().unwrap()
+        ));
+        fs::write(&stale, "pid=4294967294\n").expect("stale marker should write");
+        let fence = store
+            .acquire(7, 42)
+            .expect("stale owner marker should be reclaimed");
+        drop(fence);
+        let _ = fs::remove_file(stale);
     }
 
     #[test]

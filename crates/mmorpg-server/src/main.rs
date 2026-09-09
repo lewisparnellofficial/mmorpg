@@ -1,8 +1,9 @@
 mod account_repository;
 
 use crate::account_repository::{
-    AccountCharacterRepository, CheckpointJob, CheckpointWorker, DevelopmentAccountRepository,
-    OperationJournalJob, OperationJournalWorker, OperationKey, PersistedOperation,
+    AccountCharacterRepository, CharacterFence, CharacterFenceStore, CheckpointJob,
+    CheckpointWorker, DevelopmentAccountRepository, OperationJournalJob, OperationJournalWorker,
+    OperationKey, PersistedOperation,
 };
 use mmorpg_content::starter_catalog;
 use mmorpg_core::{CombatTiming, Command, EntityId, Event, ItemId, PartyId, QuestId, Role, World};
@@ -195,6 +196,8 @@ struct Server {
     world: World,
     wire_clients: Vec<WireClient>,
     detached_characters: BTreeMap<(u64, u64), DetachedCharacter>,
+    character_fences: BTreeMap<(u64, u64), CharacterFence>,
+    character_fence_store: Option<CharacterFenceStore>,
     commands: VecDeque<PendingCommand>,
     prepared_operations: BTreeMap<OperationKey, (u64, Command)>,
     staged_operation_batch: Option<StagedOperationBatch>,
@@ -218,6 +221,9 @@ struct Server {
 
 impl Server {
     fn new(tick_hz: u64, dev_auth_enabled: bool, checkpoint_path: Option<PathBuf>) -> Self {
+        let character_fence_store = checkpoint_path
+            .as_ref()
+            .map(|path| CharacterFenceStore::new(path.clone()));
         let operation_journal_path = checkpoint_path
             .as_ref()
             .map(|path| path.with_extension("operations"));
@@ -228,7 +234,10 @@ impl Server {
             )),
             None => Box::new(DevelopmentAccountRepository::new(dev_auth_enabled)),
         };
-        Self::with_account_repository_and_journal(tick_hz, repository, operation_journal_path)
+        let mut server =
+            Self::with_account_repository_and_journal(tick_hz, repository, operation_journal_path);
+        server.character_fence_store = character_fence_store;
+        server
     }
 
     fn with_account_repository_and_journal(
@@ -296,6 +305,8 @@ impl Server {
             world: World::new_starter_zone(),
             wire_clients: Vec::new(),
             detached_characters: BTreeMap::new(),
+            character_fences: BTreeMap::new(),
+            character_fence_store: None,
             commands: VecDeque::new(),
             prepared_operations: BTreeMap::new(),
             staged_operation_batch: None,
@@ -657,6 +668,26 @@ impl Server {
                 );
                 return;
             };
+            if self.commands.len() >= MAX_PENDING_COMMANDS {
+                self.queue_wire_error(client_id, "typed command queue is full".to_owned());
+                return;
+            }
+            if !self
+                .character_fences
+                .contains_key(&(account_id, character_id))
+                && let Some(store) = &self.character_fence_store
+            {
+                match store.acquire(account_id, character_id) {
+                    Ok(fence) => {
+                        self.character_fences
+                            .insert((account_id, character_id), fence);
+                    }
+                    Err(error) => {
+                        self.queue_wire_error(client_id, error);
+                        return;
+                    }
+                }
+            }
             if let Some(detached) = self.detached_characters.remove(&(account_id, character_id)) {
                 if self.world.player(detached.player_id).is_some()
                     && detached.expires_at_tick > self.world.tick()
@@ -1420,6 +1451,7 @@ impl Server {
             .collect();
         for (identity, detached) in expired {
             self.detached_characters.remove(&identity);
+            self.character_fences.remove(&identity);
             if self.world.player(detached.player_id).is_some() {
                 self.commands.push_back(PendingCommand {
                     origin: ClientOrigin::Wire(0),
