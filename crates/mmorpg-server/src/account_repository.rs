@@ -21,6 +21,9 @@ use std::thread::{self, JoinHandle};
 
 const DEV_AUTH_TOKEN: &str = "dev-local";
 const DEV_ACCOUNT_ID: u64 = 1;
+const MAX_OPERATION_JOURNAL_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_OPERATION_RESULT_PAYLOAD_BYTES: usize = 256 * 1024;
+const MAX_OPERATION_RESULT_COUNT: usize = 128;
 #[cfg(test)]
 const DEV_CHARACTER_ID: u64 = 1;
 
@@ -657,6 +660,12 @@ fn load_operation_journal(
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
+    let length = fs::metadata(path)
+        .map_err(|error| format!("cannot inspect operation journal: {error}"))?
+        .len();
+    if length > MAX_OPERATION_JOURNAL_BYTES {
+        return Err("operation journal exceeds its size limit".to_owned());
+    }
     let text = fs::read_to_string(path)
         .map_err(|error| format!("cannot read operation journal: {error}"))?;
     let mut operations = BTreeMap::new();
@@ -694,7 +703,11 @@ fn load_operation_journal(
                     character_id,
                     operation_id,
                 },
-                PersistedOperation::Prepared(decode_hex(command)?),
+                PersistedOperation::Prepared(decode_hex_bounded(
+                    command,
+                    MAX_OPERATION_RESULT_PAYLOAD_BYTES,
+                    "operation journal command payload exceeds its limit",
+                )?),
             );
             continue;
         }
@@ -712,8 +725,12 @@ fn load_operation_journal(
                     operation_id,
                 },
                 PersistedOperation::Failed(
-                    String::from_utf8(decode_hex(reason)?)
-                        .map_err(|_| "invalid operation journal failure payload".to_owned())?,
+                    String::from_utf8(decode_hex_bounded(
+                        reason,
+                        MAX_OPERATION_RESULT_PAYLOAD_BYTES,
+                        "operation journal failure payload exceeds its limit",
+                    )?)
+                    .map_err(|_| "invalid operation journal failure payload".to_owned())?,
                 ),
             );
             continue;
@@ -730,7 +747,15 @@ fn load_operation_journal(
                 let command = fields[6]
                     .strip_prefix("command=")
                     .ok_or_else(|| "malformed operation journal command field".to_owned())?;
-                (revision, Some(decode_hex(command)?), fields[7])
+                (
+                    revision,
+                    Some(decode_hex_bounded(
+                        command,
+                        MAX_OPERATION_RESULT_PAYLOAD_BYTES,
+                        "operation journal command payload exceeds its limit",
+                    )?),
+                    fields[7],
+                )
             } else {
                 (revision, None, fields[6])
             }
@@ -744,9 +769,20 @@ fn load_operation_journal(
             if encoded.is_empty() {
                 Vec::new()
             } else {
-                encoded
-                    .split(',')
-                    .map(decode_hex)
+                let encoded_payloads = encoded.split(',').collect::<Vec<_>>();
+                if encoded_payloads.len() > MAX_OPERATION_RESULT_COUNT {
+                    return Err("operation journal result count exceeds its limit".to_owned());
+                }
+                encoded_payloads
+                    .into_iter()
+                    .map(|payload| {
+                        if payload.len() > MAX_OPERATION_RESULT_PAYLOAD_BYTES * 2 {
+                            return Err(
+                                "operation journal result payload exceeds its limit".to_owned()
+                            );
+                        }
+                        decode_hex(payload)
+                    })
                     .collect::<Result<Vec<_>, _>>()?
             }
         } else {
@@ -858,6 +894,13 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
                 .map_err(|_| "invalid operation journal payload".to_owned())
         })
         .collect()
+}
+
+fn decode_hex_bounded(value: &str, max_bytes: usize, message: &str) -> Result<Vec<u8>, String> {
+    if value.len() > max_bytes.saturating_mul(2) {
+        return Err(message.to_owned());
+    }
+    decode_hex(value)
 }
 
 struct CheckpointRecord {
@@ -1356,6 +1399,24 @@ mod tests {
                 "test failure record".to_owned()
             ))
         );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn operation_journal_rejects_oversized_startup_input() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("mmorpg-operation-oversized-{unique}.journal"));
+        let oversized = vec![b'x'; MAX_OPERATION_JOURNAL_BYTES as usize + 1];
+        fs::write(&path, oversized).expect("oversized journal fixture should write");
+        let error = match OperationJournalWorker::new(path.clone()) {
+            Ok(_) => panic!("oversized journal should fail before worker startup"),
+            Err(error) => error,
+        };
+        assert!(error.contains("exceeds its size limit"));
         let _ = fs::remove_file(path);
     }
 

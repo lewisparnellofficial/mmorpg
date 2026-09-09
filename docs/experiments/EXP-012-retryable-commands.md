@@ -52,6 +52,12 @@ durable operation journal.
 - Completed-record recovery test: passed; a completed durable command with an
   older checkpoint revision is replayed once through the staged world path,
   while the cached result remains the duplicate fence.
+- Commit-before-live-apply test: passed; the staged world and operation result
+  are published only after the durable completion record is acknowledged, and
+  a journal failure leaves the live world and result cache unchanged.
+- Journal input-boundary test: passed; oversized startup journals are rejected
+  before the journal worker starts, and command/result/failure payloads and
+  result counts have explicit bounds.
 - Typed gameplay smoke: passed with purchase, loot, and quest completion.
 - Three-client gate: passed; the tank and healer shared one party summary while
   the unrelated damage client received no private party summary.
@@ -64,8 +70,10 @@ durable operation journal.
 
 The hypothesis is supported for the bounded prototype. With the opt-in
 character store, the journal records the typed intent before it enters the
-  authoritative command queue and persists the completed result for restart
-loading. The wire codec accepts an additive `Retryable` wrapper, and duplicate operation
+authoritative command queue and persists the completed result for restart
+loading. Journal completion is acknowledged before the staged world is
+published, so a completion-store failure leaves the live world unchanged. The
+wire codec accepts an additive `Retryable` wrapper, and duplicate operation
 keys for the same account and character are served from the bounded result
 cache without reapplying the core command.
 
@@ -73,9 +81,10 @@ cache without reapplying the core command.
 
 - Without `--character-store`, the result cache is process-local and is lost on
   restart.
-- The prepared intent is journaled before live apply, but completion insertion
-  follows successful world-step application; the pair is not yet one atomic
-  commit-before-live-apply transaction.
+- The staged world and completion result are ordered behind a durable journal
+  acknowledgement, but the local journal and in-memory world are not one
+  database transaction. A process crash after journal completion and before
+  live publication relies on the documented restart reconciliation path.
 - Completion queue capacity is reserved for the full staged batch before any
   completion record is submitted, and journal parsing preserves explicit
   failed-operation records without treating them as successful results.
@@ -84,6 +93,9 @@ cache without reapplying the core command.
   live economy unchanged, and does not populate the completed-operation cache.
 - The journal restart test appends a torn final record and confirms earlier
   complete results remain loadable.
+- Journal startup input is capped at 4 MiB; individual command/result/failure
+  payloads and result counts are bounded before decoding. These are local
+  resource guards, not a production journal format or database quota policy.
 - The restart smoke repeats the same wrapped operation IDs after process
   restart and passes; the loaded result cache prevents the second run from
   reapplying those operations. Completion-store failure recovery remains an
