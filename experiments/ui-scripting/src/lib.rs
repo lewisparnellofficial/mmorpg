@@ -9,7 +9,8 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{
@@ -479,9 +480,19 @@ fn persist_namespace(
         fs::create_dir_all(parent).map_err(|error| format!("storage directory failed: {error}"))?;
     }
     let temporary = path.with_extension("tmp");
-    if let Err(error) = fs::write(&temporary, source.as_bytes()) {
+    let mut file = match File::create(&temporary) {
+        Ok(file) => file,
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("storage temporary write failed: {error}"));
+        }
+    };
+    if let Err(error) = file
+        .write_all(source.as_bytes())
+        .and_then(|()| file.sync_all())
+    {
         let _ = fs::remove_file(&temporary);
-        return Err(format!("storage temporary write failed: {error}"));
+        return Err(format!("storage temporary sync failed: {error}"));
     }
     if let Err(error) = fs::rename(&temporary, path) {
         let _ = fs::remove_file(&temporary);
