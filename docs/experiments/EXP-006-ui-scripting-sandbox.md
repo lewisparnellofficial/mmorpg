@@ -183,6 +183,13 @@ with `./scripts/smoke-ui-fuzz.sh`; set `MMORPG_RUN_FUZZ=1` to
 include it in aggregate validation on a host with `cargo-fuzz` and nightly
 Rust. The normal aggregate remains independent of that optional tool.
 
+The Wasmi comparison also has a bubblewrap process-wrapper smoke. On a host
+with `bwrap`, `scripts/smoke-ui-process-isolation.sh` runs the comparison with
+unshared namespaces, read-only system binds, and a private `/tmp`; a marker
+created inside the wrapper must not appear in the host's `/tmp`. This is
+measured wrapper evidence for the stronger isolation option, not proof of a
+production addon supervisor or graphical-client integration.
+
 An extended local `ui-boundaries` campaign then ran for 21 seconds with
 `-max_total_time=20 -max_len=4096`. It completed 746,189 executions without
 a crash or sanitizer finding, reached 827 coverage features, and left 952
