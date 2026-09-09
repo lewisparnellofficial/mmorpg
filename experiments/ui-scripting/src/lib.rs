@@ -1030,6 +1030,11 @@ fn lua_to_stored(value: mlua::Value, depth: usize) -> LuaResult<StoredValue> {
         mlua::Value::Table(table) => {
             let mut entries = Vec::new();
             for entry in table.pairs::<mlua::Value, mlua::Value>() {
+                if entries.len() >= mmorpg_ui_contract::MAX_STORAGE_KEYS {
+                    return Err(mlua::Error::RuntimeError(
+                        "storage value has too many entries".to_owned(),
+                    ));
+                }
                 let (key, value) = entry?;
                 entries.push((key, lua_to_stored(value, depth + 1)?));
             }

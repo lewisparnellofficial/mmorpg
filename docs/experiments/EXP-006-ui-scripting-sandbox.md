@@ -54,9 +54,11 @@ renderer integration proof, not a complete scripted-HUD implementation.
 
 Default limits are 64 UI nodes, 16 event registrations, 64 KiB of source,
 4 MiB of VM memory, 100,000 interrupt-budget instructions, and 4 KiB of panel
-text. The test policy also exercises lower limits. Node IDs are process-unique
-so a forged handle from another addon cannot accidentally refer to a local
-node.
+text. Manifest dependency, capability, and asset collections are bounded, as
+are their identifying fields; stored records and lists are each capped at 128
+entries, with the existing depth and byte limits still applying. The test
+policy also exercises lower limits. Node IDs are process-unique so a forged
+handle from another addon cannot accidentally refer to a local node.
 
 ## Reproduction
 
@@ -71,7 +73,7 @@ cargo run --quiet --manifest-path experiments/ui-scripting/Cargo.toml
 
 ## Measured local results
 
-The standalone test suite completed with **20 passed, 0 failed**. The tests
+The standalone test suite completed with **22 passed, 0 failed**. The tests
 covered:
 
 - the default UI and an addon using the same public functions;
@@ -89,9 +91,11 @@ covered:
 - contract validation rejecting an invalid operation batch atomically;
 - rollback of callback registrations made by a failed callback;
 - pre-VM manifest and source-integrity rejection;
+- manifest collection and field bounds;
 - deterministic dependency-first package ordering and cycle rejection;
 - account/package-scoped storage sharing and account isolation; and
 - rollback of storage writes made by a failed callback;
+- storage list-size validation; and
 - ordered-event storm isolation from the default UI; and
 - a deterministic hostile-source corpus covering loops, recursion, memory
   growth, forbidden libraries, and oversized diagnostics.
@@ -142,9 +146,9 @@ mode, because sandbox mode makes the global table read-only.
 ## Limitations and follow-up
 
 - The spike has no signature verifier or bytecode compatibility policy. Its
-  package repository validates manifest dependency IDs but does not yet
-  resolve or order a multi-package graph. The storage worker is a local
-  atomic-file proof, not a production database or crash-recovery journal.
+  package repository resolves a bounded dependency graph, but the storage
+  worker is a local atomic-file proof, not a production database or
+  crash-recovery journal.
 - It does not provide process-level isolation from a compromised native
   runtime or binding.
 - The host integration covers one real Bevy secure-action presentation and

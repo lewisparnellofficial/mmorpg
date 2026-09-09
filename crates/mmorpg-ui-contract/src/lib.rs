@@ -20,6 +20,11 @@ pub const MAX_STORAGE_KEYS: usize = 128;
 pub const MAX_STORAGE_KEY_BYTES: usize = 128;
 pub const MAX_STORAGE_VALUE_BYTES: usize = 16 * 1024;
 pub const MAX_STORAGE_DEPTH: usize = 16;
+pub const MAX_MANIFEST_DEPENDENCIES: usize = 128;
+pub const MAX_MANIFEST_CAPABILITIES: usize = 64;
+pub const MAX_MANIFEST_ASSETS: usize = 256;
+pub const MAX_MANIFEST_FIELD_BYTES: usize = 256;
+pub const MAX_MANIFEST_CAPABILITY_BYTES: usize = 128;
 
 macro_rules! id_type {
     ($name:ident) => {
@@ -374,10 +379,15 @@ pub fn validate_manifest(
         || manifest.name.is_empty()
         || manifest.name.len() > 128
         || manifest.version.is_empty()
+        || manifest.version.len() > MAX_MANIFEST_FIELD_BYTES
     {
         return Err(ContractError::InvalidManifest("invalid identity".into()));
     }
     if manifest.manifest_schema != 1
+        || manifest.api_range.is_empty()
+        || manifest.api_range.len() > MAX_MANIFEST_FIELD_BYTES
+        || manifest.runtime_range.is_empty()
+        || manifest.runtime_range.len() > MAX_MANIFEST_FIELD_BYTES
         || manifest.entry.is_empty()
         || manifest.entry.len() > 256
         || manifest.entry.starts_with('/')
@@ -398,7 +408,20 @@ pub fn validate_manifest(
             "integrity hash must be hexadecimal sha256".into(),
         ));
     }
+    if manifest.dependencies.len() > MAX_MANIFEST_DEPENDENCIES
+        || manifest.capabilities.len() > MAX_MANIFEST_CAPABILITIES
+        || manifest.asset_ids.len() > MAX_MANIFEST_ASSETS
+    {
+        return Err(ContractError::InvalidManifest(
+            "manifest collection limit exceeded".into(),
+        ));
+    }
     for capability in &manifest.capabilities {
+        if capability.is_empty() || capability.len() > MAX_MANIFEST_CAPABILITY_BYTES {
+            return Err(ContractError::InvalidManifest(
+                "invalid capability name".into(),
+            ));
+        }
         if !known_capabilities.contains(capability) {
             return Err(ContractError::UnsupportedCapability(capability.clone()));
         }
@@ -409,6 +432,13 @@ pub fn validate_manifest(
                 "unknown or self dependency".into(),
             ));
         }
+    }
+    if manifest
+        .asset_ids
+        .iter()
+        .any(|asset_id| asset_id.is_empty() || asset_id.len() > MAX_MANIFEST_FIELD_BYTES)
+    {
+        return Err(ContractError::InvalidManifest("invalid asset ID".into()));
     }
     Ok(())
 }
@@ -447,6 +477,9 @@ impl StoredValue {
                 value.len() + 1
             }
             Self::List(values) => {
+                if values.len() > MAX_STORAGE_KEYS {
+                    return Err(ContractError::InvalidStorage("too many keys".into()));
+                }
                 1 + values.iter().try_fold(0usize, |sum, value| {
                     Ok::<_, ContractError>(sum.saturating_add(value.validate(depth + 1)?))
                 })?
@@ -665,6 +698,53 @@ mod tests {
             Err(ContractError::InvalidManifest(_))
         ));
     }
+
+    #[test]
+    fn manifest_rejects_oversized_collections_and_fields() {
+        let (package, _, _) = ids();
+        let known = ["ui.panel".to_owned()].into_iter().collect();
+        let packages = [package].into_iter().collect();
+        let manifest = || Manifest {
+            package_id: package,
+            name: "demo".into(),
+            version: "1".into(),
+            manifest_schema: 1,
+            api_range: API_VERSION.into(),
+            runtime_range: "luau".into(),
+            entry: "main.lua".into(),
+            load_order: 0,
+            dependencies: vec![],
+            capabilities: BTreeSet::new(),
+            saved_data: false,
+            asset_ids: vec![],
+            integrity_sha256: "0".repeat(64),
+        };
+
+        let mut too_many_dependencies = manifest();
+        too_many_dependencies.dependencies = (0..MAX_MANIFEST_DEPENDENCIES + 1)
+            .map(|value| PackageId::new(value as u64 + 2).unwrap())
+            .collect();
+        assert!(matches!(
+            validate_manifest(&too_many_dependencies, &known, &packages),
+            Err(ContractError::InvalidManifest(message))
+                if message.contains("collection limit")
+        ));
+
+        let mut too_many_assets = manifest();
+        too_many_assets.asset_ids = vec!["asset".into(); MAX_MANIFEST_ASSETS + 1];
+        assert!(matches!(
+            validate_manifest(&too_many_assets, &known, &packages),
+            Err(ContractError::InvalidManifest(message))
+                if message.contains("collection limit")
+        ));
+
+        let mut oversized_field = manifest();
+        oversized_field.runtime_range = "x".repeat(MAX_MANIFEST_FIELD_BYTES + 1);
+        assert!(matches!(
+            validate_manifest(&oversized_field, &known, &packages),
+            Err(ContractError::InvalidManifest(_))
+        ));
+    }
     #[test]
     fn storage_is_account_and_package_scoped_and_preserves_failed_write() {
         let account = AccountId::new(1).unwrap();
@@ -693,6 +773,14 @@ mod tests {
         assert_eq!(
             storage.get(&namespace, "name"),
             Some(&StoredValue::String("Aria".into()))
+        );
+        assert_eq!(
+            storage.set(
+                namespace,
+                "list".into(),
+                StoredValue::List(vec![StoredValue::Null; MAX_STORAGE_KEYS + 1]),
+            ),
+            Err(ContractError::InvalidStorage("too many keys".into()))
         );
     }
 }
