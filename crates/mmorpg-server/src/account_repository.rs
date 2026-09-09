@@ -290,6 +290,9 @@ impl OperationJournalWorker {
     }
 
     pub fn try_enqueue(&self, job: OperationJournalJob) -> Result<(), OperationJournalJob> {
+        if !operation_job_within_limits(&job) {
+            return Err(job);
+        }
         let (Some(sender), Some(queued)) = (&self.sender, &self.queued) else {
             return Err(job);
         };
@@ -315,6 +318,9 @@ impl OperationJournalWorker {
         let count = jobs.len();
         if count == 0 {
             return Ok(());
+        }
+        if jobs.iter().any(|job| !operation_job_within_limits(job)) {
+            return Err(jobs);
         }
         let (Some(sender), Some(queued)) = (&self.sender, &self.queued) else {
             return Err(jobs);
@@ -362,6 +368,28 @@ fn reserve_journal_slots(queued: &AtomicUsize, count: usize) -> bool {
         match queued.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => return true,
             Err(observed) => current = observed,
+        }
+    }
+}
+
+fn operation_job_within_limits(job: &OperationJournalJob) -> bool {
+    match job {
+        OperationJournalJob::Prepare {
+            command_payload, ..
+        } => command_payload.len() <= MAX_OPERATION_RESULT_PAYLOAD_BYTES,
+        OperationJournalJob::Complete {
+            command_payload,
+            result_payloads,
+            ..
+        } => {
+            command_payload.len() <= MAX_OPERATION_RESULT_PAYLOAD_BYTES
+                && result_payloads.len() <= MAX_OPERATION_RESULT_COUNT
+                && result_payloads
+                    .iter()
+                    .all(|payload| payload.len() <= MAX_OPERATION_RESULT_PAYLOAD_BYTES)
+        }
+        OperationJournalJob::Failed { reason, .. } => {
+            reason.len() <= MAX_OPERATION_RESULT_PAYLOAD_BYTES
         }
     }
 }
@@ -1470,6 +1498,42 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.contains("exceeds its size limit"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn operation_journal_rejects_oversized_jobs_before_enqueue() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("mmorpg-operation-job-limit-{unique}.journal"));
+        let (worker, _) = OperationJournalWorker::new(path.clone()).expect("journal should start");
+        let key = OperationKey {
+            account_id: DEV_ACCOUNT_ID,
+            character_id: DEV_CHARACTER_ID,
+            operation_id: 103,
+        };
+        assert!(
+            worker
+                .try_enqueue(OperationJournalJob::Prepare {
+                    key,
+                    command_payload: vec![0; MAX_OPERATION_RESULT_PAYLOAD_BYTES + 1],
+                })
+                .is_err()
+        );
+        assert!(
+            worker
+                .try_enqueue(OperationJournalJob::Complete {
+                    key,
+                    revision: 1,
+                    command_payload: Vec::new(),
+                    result_payloads: vec![vec![0; MAX_OPERATION_RESULT_PAYLOAD_BYTES + 1]],
+                })
+                .is_err()
+        );
+        drop(worker);
         let _ = fs::remove_file(path);
     }
 

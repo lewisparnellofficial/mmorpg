@@ -59,7 +59,7 @@ durable operation journal.
   a journal failure leaves the live world and result cache unchanged.
 - Journal input-boundary test: passed; oversized startup journals are rejected
   before the journal worker starts, and command/result/failure payloads and
-  result counts have explicit bounds.
+  result counts have explicit bounds at both queue admission and reload.
 - Typed gameplay smoke: passed with purchase, loot, and quest completion.
 - Three-client gate: passed; the tank and healer shared one party summary while
   the unrelated damage client received no private party summary.
