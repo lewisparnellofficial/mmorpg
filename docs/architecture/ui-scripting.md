@@ -23,6 +23,13 @@ The contract currently defines:
   integrity hashes; and
 - bounded, finite `storage.v1` values scoped by account, package, and schema.
 
+Native protected-action provenance is kept in the dependency-light
+`mmorpg-client-secure-input` crate. It rejects repeats, replayed physical event
+IDs, stale focus/node generations, and unloaded addons before yielding a
+single-use trusted intent. Bevy dispatch integration and the physical Wayland
+proof remain Milestone 4 work; the registry is not evidence that scripts can
+activate protected actions.
+
 These are policy tests and a host-adapter foundation. They do not yet prove
 that a Luau VM, renderer, filesystem adapter, or native input path enforces
 the contract under hostile load.

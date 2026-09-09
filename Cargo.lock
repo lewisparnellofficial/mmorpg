@@ -11,6 +11,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mmorpg-client-secure-input"
+version = "0.1.0"
+
+[[package]]
 name = "mmorpg-client-session"
 version = "0.1.0"
 dependencies = [
