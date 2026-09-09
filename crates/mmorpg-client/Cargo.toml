@@ -13,6 +13,7 @@ mmorpg-client-model = { path = "../mmorpg-client-model" }
 mmorpg-client-session = { path = "../mmorpg-client-session" }
 mmorpg-content = { path = "../mmorpg-content" }
 mmorpg-client-protocol = { path = "../mmorpg-client-protocol" }
+mmorpg-client-secure-input = { path = "../mmorpg-client-secure-input" }
 mmorpg-wire = { path = "../mmorpg-wire" }
 
 [lints.rust]

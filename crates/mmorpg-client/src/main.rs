@@ -15,6 +15,9 @@ use mmorpg_client_model::{ClientEntity, ClientWorld};
 use mmorpg_client_protocol::{EntityId, NpcKind, SnapshotAssembler};
 #[cfg(test)]
 use mmorpg_client_protocol::{ServerEvent, ServerLine, Snapshot, decode_server_line};
+use mmorpg_client_secure_input::{
+    ActionId, AddonId, Generation, NativePress, NodeId, SecureInputRegistry,
+};
 use mmorpg_client_session::{Session as TypedSession, SessionInput, SessionOutput, SessionState};
 use mmorpg_content::{ItemId, QuestId, item_definition, starter_catalog};
 use mmorpg_wire::{
@@ -141,6 +144,42 @@ struct NetworkBridge {
 #[derive(Resource)]
 struct MovementRepeat(Timer);
 
+#[derive(Resource)]
+struct SecureInputState {
+    registry: SecureInputRegistry,
+    default_addon: AddonId,
+    default_node: NodeId,
+    node_generation: Generation,
+    attack_action: ActionId,
+    next_physical_event_id: u64,
+}
+
+impl SecureInputState {
+    fn new() -> Self {
+        let default_addon = AddonId::new(1).expect("default addon ID cannot be zero");
+        let default_node = NodeId::new(1).expect("default action node cannot be zero");
+        let node_generation = Generation::new(1).expect("default node generation cannot be zero");
+        let attack_action = ActionId::new(1).expect("attack action ID cannot be zero");
+        let mut registry = SecureInputRegistry::new();
+        registry
+            .register(default_addon, default_node, node_generation, attack_action)
+            .expect("default secure attack binding must be valid");
+        Self {
+            registry,
+            default_addon,
+            default_node,
+            node_generation,
+            attack_action,
+            next_physical_event_id: 0,
+        }
+    }
+
+    fn next_physical_event_id(&mut self) -> u64 {
+        self.next_physical_event_id = self.next_physical_event_id.saturating_add(1).max(1);
+        self.next_physical_event_id
+    }
+}
+
 fn main() {
     let mut arguments = std::env::args().skip(1);
     let server_address = arguments
@@ -186,6 +225,7 @@ fn main() {
             MOVEMENT_REPEAT_SECONDS,
             TimerMode::Repeating,
         )))
+        .insert_resource(SecureInputState::new())
         .add_systems(Startup, setup_scene)
         .add_systems(Startup, setup_ui)
         .add_systems(
@@ -685,6 +725,7 @@ fn keyboard_input(
     mut repeat: ResMut<MovementRepeat>,
     bridge: Res<NetworkBridge>,
     mut state: ResMut<ClientState>,
+    mut secure_input: ResMut<SecureInputState>,
 ) {
     if input.just_pressed(KeyCode::Enter)
         && state.player_id.is_none()
@@ -738,7 +779,28 @@ fn keyboard_input(
         send_command(&bridge, &mut state, ClientCommand::Target(target_id));
     }
     if input.just_pressed(KeyCode::Space) {
-        send_command(&bridge, &mut state, ClientCommand::Attack);
+        let physical_event_id = secure_input.next_physical_event_id();
+        let default_addon = secure_input.default_addon;
+        let default_node = secure_input.default_node;
+        let node_generation = secure_input.node_generation;
+        let attack_action = secure_input.attack_action;
+        match secure_input.registry.dispatch(
+            default_addon,
+            default_node,
+            node_generation,
+            NativePress::Key {
+                physical_event_id,
+                repeat: false,
+            },
+        ) {
+            Ok(trusted) => {
+                let (action, _, _, _) = trusted.consume();
+                if action == attack_action {
+                    send_command(&bridge, &mut state, ClientCommand::Attack);
+                }
+            }
+            Err(error) => state.log(error.to_string()),
+        }
     }
     if input.just_pressed(KeyCode::KeyL)
         && let Some(target_id) = state

@@ -41,8 +41,10 @@ The implementation is in
 Luau state. The exposed functions are limited to `ui.create_panel`,
 `ui.set_text`, `ui.set_position`, and `ui.on`; `game` is an empty namespace and
 `storage` exposes bounded `get`, `set`, and `delete` operations. Secure input is
-a native host method and is not
-available to script callbacks.
+a native host method and is not available to script callbacks. The separate
+graphical client now routes its default Space attack through the native secure
+input registry; this experiment does not claim full pointer/focus or scripted
+action presentation coverage.
 
 Default limits are 64 UI nodes, 16 event registrations, 64 KiB of source,
 4 MiB of VM memory, 100,000 interrupt-budget instructions, and 4 KiB of panel
