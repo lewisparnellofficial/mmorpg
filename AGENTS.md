@@ -223,6 +223,12 @@ cargo test --manifest-path tools/mmorpg-wire-cli/Cargo.toml
 cargo run --quiet --manifest-path tools/mmorpg-wire-cli/Cargo.toml
 ```
 
+The repeatable loopback smoke for the default typed listener is:
+
+```bash
+./scripts/smoke-typed-diagnostic.sh
+```
+
 Client and editor technology spikes:
 
 ```bash
