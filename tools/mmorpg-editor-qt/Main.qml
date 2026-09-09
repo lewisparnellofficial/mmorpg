@@ -113,7 +113,7 @@ ApplicationWindow {
 
         Label {
             Layout.fillWidth: true
-            text: "Native lifecycle: proximity / press / move / release; cancellation and Qt-to-domain persistence remain next shell wiring."
+            text: "Native lifecycle: proximity / press / move / release / focus-loss cancellation; Rust terrain persistence wiring remains next."
             color: "#9aa8bb"
         }
     }

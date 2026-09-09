@@ -22,16 +22,20 @@ prove this experiment.
 
 The standalone `tools/mmorpg-editor-qt` target now configures and compiles
 against Qt 6.11.2 with Qt Quick, Qt Quick3D, and Qt Quick Controls. Its native
-`QQuickView` subclass receives tablet press/move/release events, exposes input
-diagnostics to QML, accepts mouse input as pressure `1.0`, and suppresses
-compatibility mouse handling after a tablet press. The QML shell includes a
-Quick3D preview placeholder and editing controls.
+`QQuickView` subclass receives tablet proximity, press/move/release, proximity
+loss, and focus-loss lifecycle events, exposes input diagnostics to QML,
+accepts mouse input as pressure `1.0`, adds monotonic nanosecond diagnostics,
+and suppresses compatibility mouse handling after a tablet press. The QML
+shell includes a Quick3D preview placeholder and editing controls. The
+device-neutral Rust bridge now preserves `Pen`, `Eraser`, and `Mouse` source
+and rejects backward timestamps.
 
 This is a directly measured local build result, not hardware evidence. The
 current host has a Wayland session and `/dev/input` devices, but no physical
 tablet run, event capture, latency distribution, replay equivalence, or
 save/reload result has been recorded yet. Cancellation, conversion into
-`NativeTabletEvent`, and Rust `TerrainEditor` command wiring remain open.
+`NativeTabletEvent` construction in the Qt shell and Rust `TerrainEditor`
+command wiring remain open.
 
 ## Reproduction
 

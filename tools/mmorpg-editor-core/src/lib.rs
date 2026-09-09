@@ -68,17 +68,53 @@ impl NormalizedTabletSample {
     }
 }
 
+/// The toolkit-neutral input device that produced a sample.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputSource {
+    Pen,
+    Eraser,
+    Mouse,
+}
+
 /// A tablet sample located in heightmap sample coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TabletPoint {
     pub x: f32,
     pub y: f32,
     pub sample: NormalizedTabletSample,
+    pub source: InputSource,
+    pub timestamp_ns: u64,
 }
 
 impl TabletPoint {
     pub fn new(x: f32, y: f32, sample: NormalizedTabletSample) -> Self {
-        Self { x, y, sample }
+        Self {
+            x,
+            y,
+            sample,
+            source: if sample.eraser {
+                InputSource::Eraser
+            } else {
+                InputSource::Pen
+            },
+            timestamp_ns: 0,
+        }
+    }
+
+    pub fn with_metadata(
+        x: f32,
+        y: f32,
+        sample: NormalizedTabletSample,
+        source: InputSource,
+        timestamp_ns: u64,
+    ) -> Self {
+        Self {
+            x,
+            y,
+            sample,
+            source,
+            timestamp_ns,
+        }
     }
 }
 
@@ -107,6 +143,8 @@ pub struct NativeTabletEvent {
     pub tilt_y_degrees: f32,
     pub rotation_degrees: f32,
     pub eraser: bool,
+    pub source: InputSource,
+    pub timestamp_ns: u64,
     pressure_min: f32,
     pressure_max: f32,
     tilt_limit_degrees: f32,
@@ -149,6 +187,12 @@ impl NativeTabletEvent {
             tilt_y_degrees,
             rotation_degrees,
             eraser,
+            source: if eraser {
+                InputSource::Eraser
+            } else {
+                InputSource::Pen
+            },
+            timestamp_ns: 0,
             pressure_min,
             pressure_max,
             tilt_limit_degrees,
@@ -183,6 +227,25 @@ impl NativeTabletEvent {
             360.0,
             eraser,
         )
+    }
+
+    pub fn from_mouse(
+        phase: NativeTabletPhase,
+        x: f32,
+        y: f32,
+        timestamp_ns: u64,
+    ) -> Result<Self, EditorError> {
+        let mut event = Self::from_axes(
+            phase, x, y, 1.0, 0.0, 1.0, 0.0, 0.0, 60.0, 0.0, 360.0, false,
+        )?;
+        event.source = InputSource::Mouse;
+        event.timestamp_ns = timestamp_ns;
+        Ok(event)
+    }
+
+    pub fn with_timestamp(mut self, timestamp_ns: u64) -> Self {
+        self.timestamp_ns = timestamp_ns;
+        self
     }
 
     /// Converts this native event to the device-neutral project sample.
@@ -232,6 +295,7 @@ pub enum TabletBridgeError {
     StrokeAlreadyActive,
     NoActiveStroke,
     StrokeTooLong { maximum: usize },
+    NonMonotonicTimestamp { previous: u64, current: u64 },
 }
 
 impl fmt::Display for TabletBridgeError {
@@ -245,6 +309,10 @@ impl fmt::Display for TabletBridgeError {
             Self::StrokeTooLong { maximum } => {
                 write!(formatter, "tablet stroke exceeds the {maximum}-point limit")
             }
+            Self::NonMonotonicTimestamp { previous, current } => write!(
+                formatter,
+                "tablet timestamp moved backward from {previous} to {current}"
+            ),
         }
     }
 }
@@ -263,6 +331,7 @@ pub struct TabletEventBridge {
     in_proximity: bool,
     points: Vec<TabletPoint>,
     maximum_points: usize,
+    last_timestamp_ns: Option<u64>,
 }
 
 impl Default for TabletEventBridge {
@@ -277,6 +346,7 @@ impl TabletEventBridge {
             in_proximity: false,
             points: Vec::new(),
             maximum_points: MAX_STROKE_POINTS,
+            last_timestamp_ns: None,
         }
     }
 
@@ -290,6 +360,7 @@ impl TabletEventBridge {
             in_proximity: false,
             points: Vec::new(),
             maximum_points,
+            last_timestamp_ns: None,
         })
     }
 
@@ -309,6 +380,15 @@ impl TabletEventBridge {
         if !event.x.is_finite() || !event.y.is_finite() {
             return Err(TabletBridgeError::InvalidEventCoordinate);
         }
+        if let Some(previous) = self.last_timestamp_ns
+            && event.timestamp_ns < previous
+        {
+            return Err(TabletBridgeError::NonMonotonicTimestamp {
+                previous,
+                current: event.timestamp_ns,
+            });
+        }
+        self.last_timestamp_ns = Some(event.timestamp_ns);
         match event.phase {
             NativeTabletPhase::ProximityEnter => {
                 self.in_proximity = true;
@@ -359,7 +439,13 @@ impl TabletEventBridge {
     }
 
     fn point(&self, event: NativeTabletEvent) -> TabletPoint {
-        TabletPoint::new(event.x, event.y, event.normalized_sample(true))
+        TabletPoint::with_metadata(
+            event.x,
+            event.y,
+            event.normalized_sample(true),
+            event.source,
+            event.timestamp_ns,
+        )
     }
 
     fn push_point(
@@ -1029,6 +1115,40 @@ mod tests {
             ..wrapped
         };
         assert_eq!(wrapped.normalized_sample(true).rotation, 0.25);
+    }
+
+    #[test]
+    fn device_source_and_timestamp_survive_bridge_conversion() {
+        let mut bridge = TabletEventBridge::new();
+        bridge
+            .push(NativeTabletEvent::from_mouse(NativeTabletPhase::Press, 4.0, 5.0, 10).unwrap())
+            .unwrap();
+        let Ok(TabletBridgeOutput::StrokePoint(point)) = bridge
+            .push(NativeTabletEvent::from_mouse(NativeTabletPhase::Move, 5.0, 6.0, 11).unwrap())
+        else {
+            panic!("mouse move must produce a stroke point");
+        };
+        assert_eq!(point.source, InputSource::Mouse);
+        assert_eq!(point.timestamp_ns, 11);
+        assert_eq!(point.sample.pressure, 1.0);
+    }
+
+    #[test]
+    fn bridge_rejects_backward_native_timestamps() {
+        let mut bridge = TabletEventBridge::new();
+        bridge
+            .push(NativeTabletEvent::from_mouse(NativeTabletPhase::Press, 1.0, 1.0, 20).unwrap())
+            .unwrap();
+        assert_eq!(
+            bridge.push(
+                NativeTabletEvent::from_mouse(NativeTabletPhase::Move, 1.0, 2.0, 19).unwrap(),
+            ),
+            Err(TabletBridgeError::NonMonotonicTimestamp {
+                previous: 20,
+                current: 19,
+            })
+        );
+        assert!(bridge.is_stroke_active());
     }
 
     #[test]
