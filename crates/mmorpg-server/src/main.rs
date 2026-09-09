@@ -256,8 +256,16 @@ impl Server {
             .unwrap_or_else(|| (OperationJournalWorker::disabled(), BTreeMap::new()));
         let mut completed_operations = BTreeMap::new();
         let mut failed_operations = BTreeMap::new();
+        let mut interrupted_operations = Vec::new();
         for (key, operation) in persisted_operations {
             match operation {
+                PersistedOperation::Prepared(_) => {
+                    failed_operations.insert(
+                        key,
+                        "operation was interrupted before durable completion".to_owned(),
+                    );
+                    interrupted_operations.push(key);
+                }
                 PersistedOperation::Completed { payloads, .. } => {
                     let messages = payloads
                         .into_iter()
@@ -271,6 +279,12 @@ impl Server {
             }
         }
         trim_operation_maps(&mut completed_operations, &mut failed_operations);
+        for key in interrupted_operations {
+            let _ = operation_journal_worker.try_enqueue(OperationJournalJob::Failed {
+                key,
+                reason: "operation was interrupted before durable completion".to_owned(),
+            });
+        }
         Self {
             world: World::new_starter_zone(),
             #[cfg(test)]
@@ -3116,6 +3130,56 @@ mod tests {
         ]);
         let owners: Vec<_> = commands.iter().map(|(owner, _)| *owner).collect();
         assert_eq!(owners, vec![1, 2, 1, 1]);
+    }
+
+    #[test]
+    fn interrupted_prepared_operation_is_failed_before_retry_after_restart() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let checkpoint_path =
+            std::env::temp_dir().join(format!("mmorpg-interrupted-operation-{unique}.state"));
+        let journal_path = checkpoint_path.with_extension("operations");
+        let key = OperationKey {
+            account_id: 1,
+            character_id: 1,
+            operation_id: 102,
+        };
+        let (worker, _) =
+            OperationJournalWorker::new(journal_path.clone()).expect("journal should start");
+        worker
+            .try_enqueue(OperationJournalJob::Prepare {
+                key,
+                command_payload: vec![0x01],
+            })
+            .expect("prepared operation should enter bounded queue");
+        let mut prepared = false;
+        for _ in 0..100 {
+            if worker.drain_results().any(|result| result.result.is_ok()) {
+                prepared = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(prepared, "journal should report prepared record");
+        drop(worker);
+
+        let server = Server::new(DEFAULT_TICK_HZ, false, Some(checkpoint_path.clone()));
+        assert_eq!(
+            server.failed_operations.get(&key),
+            Some(&"operation was interrupted before durable completion".to_owned())
+        );
+        drop(server);
+
+        let restarted = Server::new(DEFAULT_TICK_HZ, false, Some(checkpoint_path.clone()));
+        assert_eq!(
+            restarted.failed_operations.get(&key),
+            Some(&"operation was interrupted before durable completion".to_owned())
+        );
+        drop(restarted);
+        let _ = std::fs::remove_file(checkpoint_path);
+        let _ = std::fs::remove_file(journal_path);
     }
 
     #[test]

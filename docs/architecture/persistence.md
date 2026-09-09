@@ -93,7 +93,11 @@ Legacy version-1 records remain readable with revision zero. Without it, the
 cache is process-local. The journal,
 bounded writer, and revision fence demonstrate ownership and retry boundaries,
 but completion still follows live mutation and does not reconcile a crash
-between live mutation and result publication. A successful completion
+between live mutation and result publication. A journal that ends in a
+prepared record is recovered as an explicit interrupted-operation failure
+before that key can be retried; because live mutation is staged until
+completion acknowledgement, this recovery policy does not replay the command.
+A successful completion
 acknowledgement gates success-event publication; store failure currently falls
 back to a discarded staged batch and remains a crash-recovery gap. The
 completion queue reserves capacity for an entire staged batch, and failed

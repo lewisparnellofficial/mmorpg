@@ -47,6 +47,8 @@ durable operation journal.
 - Completed-operation revision test: passed; a version-2 journal record
   preserved the staged world revision, while legacy version-1 records remain
   readable with revision zero.
+- Interrupted-prepare restart test: passed; a journal ending in `prepared` is
+  converted to a durable rejection before the operation key can be retried.
 - Typed gameplay smoke: passed with purchase, loot, and quest completion.
 - Three-client gate: passed; the tank and healer shared one party summary while
   the unrelated damage client received no private party summary.
@@ -84,10 +86,12 @@ cache without reapplying the core command.
   reapplying those operations. Completion-store failure recovery remains an
   explicitly unproven cross-process path; within one live process the
   staged world batch is discarded and the affected clients receive an error.
-- The prototype does not provide cross-process fencing or recovery of in-flight
-  operations after an external process crash. The deterministic shutdown path
-  covers orderly local exit and now drains pending failed-operation records;
-  the bounded timeout path explicitly reports abandoned failures.
+- The prototype does not provide cross-process fencing or replay recovery for
+  a completed record whose live-world application was interrupted after the
+  journal acknowledgement. Prepared-but-not-completed records have an
+  explicit no-replay failure policy. The deterministic shutdown path covers
+  orderly local exit and now drains pending failed-operation records; the
+  bounded timeout path explicitly reports abandoned failures.
 - Failed validation outcomes now carry a durable failed-operation record and
   are replayed as the same error for a duplicate key after restart. Core
   gameplay rejections and a general typed error-result schema remain outside
@@ -101,7 +105,8 @@ cache without reapplying the core command.
   failed states for core gameplay outcomes, not only validation-level
   rejections.
 - Define commit ordering and recovery behavior for crashes between the journal
-  write and live simulation application.
+  write and live simulation application, including reconciliation of completed
+  records against checkpoint state.
 - Add crash-oriented restart and failure-injection tests for the commit-before-
   live-apply boundary, including duplicate retries after an interrupted
   process restart.

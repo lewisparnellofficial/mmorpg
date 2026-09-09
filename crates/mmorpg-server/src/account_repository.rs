@@ -187,6 +187,7 @@ pub struct OperationJournalResult {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PersistedOperation {
+    Prepared(Vec<u8>),
     Completed {
         revision: u64,
         payloads: Vec<Vec<u8>>,
@@ -650,9 +651,17 @@ fn load_operation_journal(
             if version != "version=1" || fields.len() != 6 {
                 return Err("malformed operation journal prepared record".to_owned());
             }
-            if !fields[5].starts_with("command=") {
+            let Some(command) = fields[5].strip_prefix("command=") else {
                 return Err("malformed operation journal command field".to_owned());
-            }
+            };
+            operations.insert(
+                OperationKey {
+                    account_id,
+                    character_id,
+                    operation_id,
+                },
+                PersistedOperation::Prepared(decode_hex(command)?),
+            );
             continue;
         }
         if fields[1] == "failed" {
@@ -1323,6 +1332,44 @@ mod tests {
                 revision: 42,
                 payloads: vec![vec![0xaa, 0xbb]],
             })
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn operation_journal_reloads_interrupted_prepare_records() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("mmorpg-operation-prepared-{unique}.journal"));
+        let key = OperationKey {
+            account_id: DEV_ACCOUNT_ID,
+            character_id: DEV_CHARACTER_ID,
+            operation_id: 101,
+        };
+        let (worker, _) = OperationJournalWorker::new(path.clone()).expect("journal should start");
+        worker
+            .try_enqueue(OperationJournalJob::Prepare {
+                key,
+                command_payload: vec![0x10, 0x20],
+            })
+            .expect("prepared operation should enter bounded queue");
+        let mut prepared = false;
+        for _ in 0..100 {
+            if worker.drain_results().any(|result| result.result.is_ok()) {
+                prepared = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(prepared, "journal should report prepared record");
+        drop(worker);
+
+        let (_worker, loaded) = OperationJournalWorker::new(path.clone()).expect("journal reload");
+        assert_eq!(
+            loaded.get(&key),
+            Some(&PersistedOperation::Prepared(vec![0x10, 0x20]))
         );
         let _ = fs::remove_file(path);
     }
