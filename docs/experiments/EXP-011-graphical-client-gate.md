@@ -55,7 +55,8 @@ encounter, privacy, persistence, or renderer-quality acceptance gate.
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,
   stranger privacy, tank taunt, damage defeat/loot, and two enemy respawn
-  generations. This does not substitute for the graphical run.
+  generations, plus an enemy attack followed by an authoritative healer
+  recovery of the tank. This does not substitute for the graphical run.
 
 ## Interpretation
 
