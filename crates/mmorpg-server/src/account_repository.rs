@@ -169,6 +169,7 @@ pub enum OperationJournalJob {
     },
     Complete {
         key: OperationKey,
+        revision: u64,
         result_payloads: Vec<Vec<u8>>,
     },
     Failed {
@@ -186,7 +187,10 @@ pub struct OperationJournalResult {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PersistedOperation {
-    Completed(Vec<Vec<u8>>),
+    Completed {
+        revision: u64,
+        payloads: Vec<Vec<u8>>,
+    },
     Failed(String),
 }
 
@@ -632,19 +636,29 @@ fn load_operation_journal(
             continue;
         }
         let fields: Vec<_> = line.split('\t').collect();
-        if fields.len() != 6 || fields[0] != "version=1" {
+        if fields.len() != 6 && fields.len() != 7 {
+            return Err("malformed operation journal record".to_owned());
+        }
+        let version = fields[0];
+        if version != "version=1" && version != "version=2" {
             return Err("malformed operation journal record".to_owned());
         }
         let account_id = parse_journal_field(fields[2], "account")?;
         let character_id = parse_journal_field(fields[3], "character")?;
         let operation_id = parse_journal_field(fields[4], "operation")?;
         if fields[1] == "prepared" {
+            if version != "version=1" || fields.len() != 6 {
+                return Err("malformed operation journal prepared record".to_owned());
+            }
             if !fields[5].starts_with("command=") {
                 return Err("malformed operation journal command field".to_owned());
             }
             continue;
         }
         if fields[1] == "failed" {
+            if version != "version=1" || fields.len() != 6 {
+                return Err("malformed operation journal failed record".to_owned());
+            }
             let Some(reason) = fields[5].strip_prefix("reason=") else {
                 return Err("malformed operation journal failure field".to_owned());
             };
@@ -664,7 +678,18 @@ fn load_operation_journal(
         if fields[1] != "completed" {
             return Err("unknown operation journal record kind".to_owned());
         }
-        let payloads = if let Some(encoded) = fields[5].strip_prefix("results=") {
+        let (revision, results_field) = if version == "version=2" {
+            if fields.len() != 7 {
+                return Err("malformed operation journal completed record".to_owned());
+            }
+            (parse_journal_field(fields[5], "revision")?, fields[6])
+        } else {
+            if fields.len() != 6 {
+                return Err("malformed operation journal completed record".to_owned());
+            }
+            (0, fields[5])
+        };
+        let payloads = if let Some(encoded) = results_field.strip_prefix("results=") {
             if encoded.is_empty() {
                 Vec::new()
             } else {
@@ -682,7 +707,7 @@ fn load_operation_journal(
                 character_id,
                 operation_id,
             },
-            PersistedOperation::Completed(payloads),
+            PersistedOperation::Completed { revision, payloads },
         );
     }
     Ok(operations)
@@ -710,6 +735,7 @@ fn append_operation_journal(path: &Path, job: &OperationJournalJob) -> Result<()
         ),
         OperationJournalJob::Complete {
             key,
+            revision,
             result_payloads,
         } => {
             let results = result_payloads
@@ -718,8 +744,8 @@ fn append_operation_journal(path: &Path, job: &OperationJournalJob) -> Result<()
                 .collect::<Vec<_>>()
                 .join(",");
             format!(
-                "version=1\tcompleted\taccount={}\tcharacter={}\toperation={}\tresults={}",
-                key.account_id, key.character_id, key.operation_id, results
+                "version=2\tcompleted\taccount={}\tcharacter={}\toperation={}\trevision={}\tresults={}",
+                key.account_id, key.character_id, key.operation_id, revision, results
             )
         }
         OperationJournalJob::Failed { key, reason } => format!(
@@ -1208,6 +1234,7 @@ mod tests {
         worker
             .try_enqueue(OperationJournalJob::Complete {
                 key,
+                revision: 7,
                 result_payloads: vec![vec![0x01, 0xa5, 0xff]],
             })
             .expect("result should enter bounded queue");
@@ -1254,6 +1281,48 @@ mod tests {
             Some(&PersistedOperation::Failed(
                 "test failure record".to_owned()
             ))
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn operation_journal_preserves_completed_revision_metadata() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("mmorpg-operation-revision-{unique}.journal"));
+        let key = OperationKey {
+            account_id: DEV_ACCOUNT_ID,
+            character_id: DEV_CHARACTER_ID,
+            operation_id: 100,
+        };
+        let (worker, _) = OperationJournalWorker::new(path.clone()).expect("journal should start");
+        worker
+            .try_enqueue(OperationJournalJob::Complete {
+                key,
+                revision: 42,
+                result_payloads: vec![vec![0xaa, 0xbb]],
+            })
+            .expect("completed operation should enter bounded queue");
+        let mut completed = false;
+        for _ in 0..100 {
+            if worker.drain_results().any(|result| result.result.is_ok()) {
+                completed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(completed, "journal should report completion");
+        drop(worker);
+
+        let (_worker, loaded) = OperationJournalWorker::new(path.clone()).expect("journal reload");
+        assert_eq!(
+            loaded.get(&key),
+            Some(&PersistedOperation::Completed {
+                revision: 42,
+                payloads: vec![vec![0xaa, 0xbb]],
+            })
         );
         let _ = fs::remove_file(path);
     }

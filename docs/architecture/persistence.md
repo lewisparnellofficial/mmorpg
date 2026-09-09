@@ -88,7 +88,9 @@ and quest turn-in and keeps a bounded result cache keyed by account,
 character, and operation ID. With `--character-store`, completed result
 payloads are appended by a bounded off-thread operation journal and loaded at
 the next process start; the typed intent is journaled before it enters the
-authoritative queue. Without it, the cache is process-local. The journal,
+authoritative queue, and completed records include the staged world revision.
+Legacy version-1 records remain readable with revision zero. Without it, the
+cache is process-local. The journal,
 bounded writer, and revision fence demonstrate ownership and retry boundaries,
 but completion still follows live mutation and does not reconcile a crash
 between live mutation and result publication. A successful completion

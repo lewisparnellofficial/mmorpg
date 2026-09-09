@@ -258,7 +258,7 @@ impl Server {
         let mut failed_operations = BTreeMap::new();
         for (key, operation) in persisted_operations {
             match operation {
-                PersistedOperation::Completed(payloads) => {
+                PersistedOperation::Completed { payloads, .. } => {
                     let messages = payloads
                         .into_iter()
                         .filter_map(|payload| ServerMessage::decode_payload(&payload).ok())
@@ -1151,6 +1151,7 @@ impl Server {
                 .collect();
             journal_jobs.push(OperationJournalJob::Complete {
                 key,
+                revision: staged_world.tick(),
                 result_payloads: payloads,
             });
             operations.insert(key, origin_client_id(origin));

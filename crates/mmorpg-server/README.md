@@ -105,7 +105,8 @@ command. When
 `--character-store` is enabled, completed result payloads are also appended by
 the off-thread operation journal and reloaded on the next process start. The
 journal records the typed intent before the command enters the authoritative
-queue, but completion is still appended after the live world step. It is a
+queue, and completed records include the staged world revision. Completion is
+still appended after the live world step. It is a
 development boundary, not a complete transaction: it does not yet provide
 crash reconciliation for an operation that fails between live mutation and
 result publication. Successful journal acknowledgements gate the operation's

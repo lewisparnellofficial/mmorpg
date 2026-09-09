@@ -39,11 +39,14 @@ durable operation journal.
 
 ## Measurements
 
-- `cargo test --workspace`: passed, including 31 core tests, 30 server tests,
+- `cargo test --workspace`: passed, including 31 core tests, 33 server tests,
   18 wire tests, and the workspace compatibility fixtures.
 - Retry-specific server test: passed.
 - Rejected-retry restart test: passed; the failed operation reason survived a
   server restart and was available for duplicate-retry rejection.
+- Completed-operation revision test: passed; a version-2 journal record
+  preserved the staged world revision, while legacy version-1 records remain
+  readable with revision zero.
 - Typed gameplay smoke: passed with purchase, loot, and quest completion.
 - Three-client gate: passed; the tank and healer shared one party summary while
   the unrelated damage client received no private party summary.
