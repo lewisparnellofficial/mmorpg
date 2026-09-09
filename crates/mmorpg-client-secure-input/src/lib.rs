@@ -98,7 +98,7 @@ impl NativePress {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct TrustedIntent {
     action: ActionId,
     addon: AddonId,
@@ -330,5 +330,81 @@ mod tests {
             ),
             Err(Denial::UnknownBinding)
         );
+    }
+
+    #[test]
+    fn rejects_invalid_physical_ids_and_duplicate_bindings() {
+        let (addon, node, generation, action) = ids();
+        let mut registry = SecureInputRegistry::new();
+        registry.register(addon, node, generation, action).unwrap();
+        assert_eq!(
+            registry.register(addon, node, generation, action),
+            Err(Denial::InvalidBinding)
+        );
+        assert_eq!(
+            registry.dispatch(
+                addon,
+                node,
+                generation,
+                NativePress::PrimaryPointer {
+                    physical_event_id: 0
+                }
+            ),
+            Err(Denial::InvalidPhysicalEvent)
+        );
+    }
+
+    #[test]
+    fn reloading_a_node_requires_a_new_generation_and_drops_old_input() {
+        let (addon, node, generation, action) = ids();
+        let replacement_generation = Generation::new(7).unwrap();
+        let mut registry = SecureInputRegistry::new();
+        registry.register(addon, node, generation, action).unwrap();
+        registry.unload_addon(addon);
+        registry
+            .register(addon, node, replacement_generation, action)
+            .unwrap();
+        assert_eq!(
+            registry.dispatch(
+                addon,
+                node,
+                generation,
+                NativePress::Key {
+                    physical_event_id: 10,
+                    repeat: false,
+                }
+            ),
+            Err(Denial::StaleNode)
+        );
+        let intent = registry
+            .dispatch(
+                addon,
+                node,
+                replacement_generation,
+                NativePress::Key {
+                    physical_event_id: 11,
+                    repeat: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(intent.consume(), (action, addon, node, 11));
+    }
+
+    #[test]
+    fn a_consumed_intent_is_linear_at_the_rust_type_boundary() {
+        let (addon, node, generation, action) = ids();
+        let mut registry = SecureInputRegistry::new();
+        registry.register(addon, node, generation, action).unwrap();
+        let intent = registry
+            .dispatch(
+                addon,
+                node,
+                generation,
+                NativePress::PrimaryPointer {
+                    physical_event_id: 12,
+                },
+            )
+            .unwrap();
+        assert_eq!(intent.consume(), (action, addon, node, 12));
     }
 }
