@@ -9,7 +9,7 @@ use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 use bevy::render::RenderPlugin;
 use bevy::render::settings::{Backends, RenderCreation, WgpuSettings};
-use bevy::window::{PrimaryWindow, WindowFocused};
+use bevy::window::{PresentMode, PrimaryWindow, WindowFocused};
 use mmorpg_client_adapter::apply_wire_message;
 #[cfg(test)]
 use mmorpg_client_adapter::{
@@ -490,6 +490,7 @@ fn main() {
                     primary_window: Some(Window {
                         title: "MMORPG Client — interactive slice".to_owned(),
                         resolution: (1280, 720).into(),
+                        present_mode: PresentMode::Fifo,
                         ..default()
                     }),
                     ..default()

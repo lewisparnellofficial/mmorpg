@@ -115,11 +115,13 @@ or renderer-quality acceptance gate.
 - **Controlled Wayland backend result (2026-09-09):** Running the graphical
   gameplay smoke with `WINIT_UNIX_BACKEND=wayland` reached the same typed
   gameplay result and created a real Wayland-backed window. A direct seven-
-  second capture isolated six validation reports: the host's broken
+  second capture isolated four validation reports: the host's broken
   Lossless Scaling implicit layer produced two loader-chain errors, while the
   remaining reports were application-visible Vulkan swapchain issues
   (`VK_IMAGE_LAYOUT_UNDEFINED` at present and already-signaled acquire
-  semaphores). Repeating with
+  semaphores). The client now requests explicit FIFO presentation, which
+  reduces the observed report count on this host but does not eliminate the
+  warnings. Repeating with
   `VK_LOADER_LAYERS_DISABLE=VK_LAYER_LSFGVK_frame_generation` removed the
   loader-chain errors but retained the swapchain reports. This identifies a
   host-layer contributor without proving that the remaining wgpu/driver
@@ -136,11 +138,15 @@ or renderer-quality acceptance gate.
   `--frame-time-stats` and samples the real Bevy frame delta for the bounded
   five-second observation. The sampler is capped at 6,000 records and reports
   p50, p95, p99, and maximum values, so it cannot grow without bound. The
-  measured report was `samples=711 p50_ms=6.829 p95_ms=16.634
-  p99_ms=17.580 max_ms=48.413`. This run is within the fixed 16.7 ms p95 and
-  50 ms maximum thresholds on the documented host. It is a release-path
-  observation, not a universal performance guarantee; debug-path Vulkan
-  validation warnings and the physical-input gate remain unresolved.
+  An earlier run reported `samples=711 p50_ms=6.829 p95_ms=16.634
+  p99_ms=17.580 max_ms=48.413`, within the fixed thresholds. After the client
+  began requesting explicit FIFO presentation, a subsequent run reported
+  `samples=711 p50_ms=6.756 p95_ms=16.893 p99_ms=18.088 max_ms=46.820`;
+  maximum time remained within the 50 ms limit, but p95 missed the 16.7 ms
+  limit by 0.193 ms. These are release-path observations, not universal
+  performance guarantees, and the latest result means the frame-time gate is
+  not consistently passing. Debug-path Vulkan validation warnings and the
+  physical-input gate remain unresolved.
 - **Headless companion result:** The typed three-role gate subsequently passed
   with tank player 5, healer player 6, damage player 7, and party 1. It
   verified own-player-only detailed snapshots, member-only party summaries,
