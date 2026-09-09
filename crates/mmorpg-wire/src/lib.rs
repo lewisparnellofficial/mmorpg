@@ -588,8 +588,10 @@ const MAX_SERVER_STRING_BYTES: usize = 4096;
 /// Version of the complete world-snapshot payload, independent of the
 /// surrounding gameplay envelope version. Version 2 makes player inventory
 /// capacity explicit instead of requiring clients to assume the starter
-/// value.
-pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
+/// value. Version 3 adds an optional private party summary containing only
+/// stable member IDs and leadership, never remote inventory or quest state.
+pub const SNAPSHOT_SCHEMA_VERSION: u16 = 3;
+pub const MIN_SUPPORTED_SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 
 /// Wire representation of an entity position.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -734,6 +736,7 @@ pub struct WorldSnapshot {
     pub vendor_count: u32,
     pub players: Vec<PlayerState>,
     pub npcs: Vec<NpcState>,
+    pub party: Option<PartyState>,
 }
 
 /// Server-to-client messages carried in an event envelope.
@@ -1516,7 +1519,9 @@ fn encode_snapshot(
     encoder: &mut ServerEncoder,
     snapshot: &WorldSnapshot,
 ) -> Result<(), ServerCodecError> {
-    if snapshot.version != SNAPSHOT_SCHEMA_VERSION {
+    if !(MIN_SUPPORTED_SNAPSHOT_SCHEMA_VERSION..=SNAPSHOT_SCHEMA_VERSION)
+        .contains(&snapshot.version)
+    {
         return Err(ServerCodecError::UnsupportedSnapshotVersion {
             version: snapshot.version,
             supported: SNAPSHOT_SCHEMA_VERSION,
@@ -1536,12 +1541,21 @@ fn encode_snapshot(
     for npc in &snapshot.npcs {
         encode_npc(encoder, npc)?;
     }
+    if snapshot.version >= 3 {
+        match &snapshot.party {
+            Some(party) => {
+                encoder.put_u8(1);
+                encode_party(encoder, party)?;
+            }
+            None => encoder.put_u8(0),
+        }
+    }
     Ok(())
 }
 
 fn decode_snapshot(decoder: &mut ServerDecoder<'_>) -> Result<WorldSnapshot, ServerCodecError> {
     let version = decoder.take_u16("snapshot_version")?;
-    if version != SNAPSHOT_SCHEMA_VERSION {
+    if !(MIN_SUPPORTED_SNAPSHOT_SCHEMA_VERSION..=SNAPSHOT_SCHEMA_VERSION).contains(&version) {
         return Err(ServerCodecError::UnsupportedSnapshotVersion {
             version,
             supported: SNAPSHOT_SCHEMA_VERSION,
@@ -1562,6 +1576,20 @@ fn decode_snapshot(decoder: &mut ServerDecoder<'_>) -> Result<WorldSnapshot, Ser
     for _ in 0..npc_count_in_payload {
         npcs.push(decode_npc(decoder)?);
     }
+    let party = if version >= 3 {
+        match decoder.take_u8("party_present")? {
+            0 => None,
+            1 => Some(decode_party(decoder)?),
+            value => {
+                return Err(ServerCodecError::InvalidEnum {
+                    field: "party_present",
+                    value,
+                });
+            }
+        }
+    } else {
+        None
+    };
     Ok(WorldSnapshot {
         version,
         tick,
@@ -1571,6 +1599,7 @@ fn decode_snapshot(decoder: &mut ServerDecoder<'_>) -> Result<WorldSnapshot, Ser
         vendor_count,
         players,
         npcs,
+        party,
     })
 }
 
@@ -2826,6 +2855,11 @@ mod tests {
                 health: 25,
                 max_health: 100,
             }],
+            party: Some(PartyState {
+                party_id: 4,
+                leader_id: 7,
+                member_ids: vec![7, 8],
+            }),
         });
 
         let payload = message.encode_payload().expect("snapshot should encode");
@@ -2851,6 +2885,7 @@ mod tests {
             vendor_count: 0,
             players: Vec::new(),
             npcs: Vec::new(),
+            party: None,
         };
         let mut payload = ServerMessage::Snapshot(snapshot)
             .encode_payload()
@@ -2862,6 +2897,38 @@ mod tests {
                 version: 1,
                 supported: SNAPSHOT_SCHEMA_VERSION,
             })
+        );
+    }
+
+    #[test]
+    fn previous_snapshot_version_decodes_without_party_summary() {
+        let message = ServerMessage::Snapshot(WorldSnapshot {
+            version: MIN_SUPPORTED_SNAPSHOT_SCHEMA_VERSION,
+            tick: 9,
+            player_count: 0,
+            npc_count: 0,
+            enemy_count: 0,
+            vendor_count: 0,
+            players: Vec::new(),
+            npcs: Vec::new(),
+            party: Some(PartyState {
+                party_id: 1,
+                leader_id: 1,
+                member_ids: vec![1],
+            }),
+        });
+        let payload = message
+            .encode_payload()
+            .expect("version-2 snapshot encodes");
+        assert_eq!(
+            ServerMessage::decode_payload(&payload),
+            Ok(ServerMessage::Snapshot(WorldSnapshot {
+                party: None,
+                ..match message {
+                    ServerMessage::Snapshot(snapshot) => snapshot,
+                    _ => unreachable!(),
+                }
+            }))
         );
     }
 
@@ -2959,6 +3026,7 @@ mod tests {
             vendor_count: 0,
             players: Vec::new(),
             npcs: Vec::new(),
+            party: None,
         };
         let mut payload = ServerMessage::Snapshot(snapshot).encode_payload().unwrap();
         let count_offset = 1 + 8 + 4 * 4;

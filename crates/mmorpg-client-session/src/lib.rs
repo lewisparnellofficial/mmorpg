@@ -431,6 +431,7 @@ mod tests {
             vendor_count: 0,
             players: vec![],
             npcs: vec![],
+            party: None,
         };
         assert!(
             session
@@ -531,6 +532,7 @@ mod tests {
             vendor_count: 0,
             players: vec![],
             npcs: vec![],
+            party: None,
         };
         session.handle(SessionInput::Sequenced {
             sequence: 10,

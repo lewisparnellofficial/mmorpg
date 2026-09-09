@@ -76,11 +76,13 @@ path used by sequence-aware clients.
 `ServerMessage` encodes welcome, development-authentication,
 character-list/selection, connect/error responses, every current authoritative
 gameplay event, and a bounded bootstrap `WorldSnapshot`. The snapshot has its
-own schema version (`SNAPSHOT_SCHEMA_VERSION`, currently 2) inside the
-protocol envelope. Player state includes an explicit inventory capacity,
-inventory stacks, and quest progress; NPCs, vendor listings, quest offers, and
-party member summaries use explicit bounded collections. Additive party events
-carry invite, membership, leadership, and disband transitions. IDs, enum
+own schema version (`SNAPSHOT_SCHEMA_VERSION`, currently 3) inside the
+protocol envelope. Version 2 remains decodable; version 3 adds an optional
+private party summary containing only party ID, leader ID, and member IDs.
+Player state includes an explicit inventory capacity, inventory stacks, and
+quest progress; NPCs, vendor listings, quest offers, and party member summaries
+use explicit bounded collections. Additive party events carry invite,
+membership, leadership, and disband transitions. IDs, enum
 values, strings, floats,
 collection counts, schema versions, and trailing bytes are validated during
 both encode and decode. `WireConnection::read_server_message` consumes these

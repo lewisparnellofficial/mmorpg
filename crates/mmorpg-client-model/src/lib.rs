@@ -275,6 +275,23 @@ impl ClientWorld {
         self.parties.values()
     }
 
+    /// Replaces the private party summary carried by a complete snapshot.
+    /// The summary contains membership and leadership only; it cannot
+    /// introduce remote inventory, quest, or other private state.
+    pub fn replace_party_snapshot(&mut self, party: Option<(PartyId, EntityId, Vec<EntityId>)>) {
+        self.parties.clear();
+        if let Some((id, leader_id, member_ids)) = party {
+            self.parties.insert(
+                id,
+                ClientParty {
+                    id,
+                    leader_id,
+                    member_ids,
+                },
+            );
+        }
+    }
+
     pub fn party_invite_expires_at(&self, party_id: PartyId, player_id: EntityId) -> Option<u64> {
         self.party_invites.get(&(party_id, player_id)).copied()
     }

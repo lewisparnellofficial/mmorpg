@@ -263,14 +263,16 @@ fn apply_wire_snapshot(
     model: &mut ClientWorld,
     snapshot: &WorldSnapshot,
 ) -> Result<(), AdapterError> {
-    if snapshot.version != mmorpg_wire::SNAPSHOT_SCHEMA_VERSION {
+    if !(mmorpg_wire::MIN_SUPPORTED_SNAPSHOT_SCHEMA_VERSION..=mmorpg_wire::SNAPSHOT_SCHEMA_VERSION)
+        .contains(&snapshot.version)
+    {
         return Err(AdapterError::UnsupportedSnapshotVersion {
             version: u32::from(snapshot.version),
             supported: u32::from(mmorpg_wire::SNAPSHOT_SCHEMA_VERSION),
         });
     }
     let protocol = mmorpg_client_protocol::Snapshot {
-        version: u32::from(snapshot.version),
+        version: mmorpg_client_protocol::TEMP_SNAPSHOT_VERSION,
         world: mmorpg_client_protocol::WorldState {
             tick: snapshot.tick,
             players: u64::from(snapshot.player_count),
@@ -331,7 +333,17 @@ fn apply_wire_snapshot(
             })
             .collect(),
     };
-    apply_snapshot(model, &protocol)
+    let mut projected = model.clone();
+    apply_snapshot(&mut projected, &protocol)?;
+    projected.replace_party_snapshot(snapshot.party.as_ref().map(|party| {
+        (
+            PartyId(party.party_id),
+            CoreEntityId(party.leader_id),
+            party.member_ids.iter().copied().map(CoreEntityId).collect(),
+        )
+    }));
+    *model = projected;
+    Ok(())
 }
 
 fn wire_player(player: &WirePlayerState) -> mmorpg_client_protocol::PlayerState {
@@ -1171,12 +1183,21 @@ mod tests {
                 health: 100,
                 max_health: 100,
             }],
+            party: Some(mmorpg_wire::PartyState {
+                party_id: 1,
+                leader_id: 5,
+                member_ids: vec![5, 6],
+            }),
         });
 
         apply_wire_message(&mut model, &message).expect("valid typed snapshot");
 
         assert_eq!(model.world_tick(), Some(12));
         assert_eq!(model.player(EntityId(5)).unwrap().gold, 20);
+        assert_eq!(
+            model.party(PartyId(1)).unwrap().member_ids,
+            vec![CoreEntityId(5), CoreEntityId(6)]
+        );
         assert_eq!(model.player(EntityId(5)).unwrap().inventory.capacity(), 24);
         assert_eq!(
             model

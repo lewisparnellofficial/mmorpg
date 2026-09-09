@@ -1467,6 +1467,7 @@ fn wire_snapshot(world: &World) -> WorldSnapshot {
         vendor_count: summary.vendor_count as u32,
         players: world.players().map(wire_live_player).collect(),
         npcs: world.npcs().map(wire_npc).collect(),
+        party: None,
     }
 }
 
@@ -1476,6 +1477,14 @@ fn wire_snapshot_for_player(world: &World, player_id: EntityId) -> WorldSnapshot
         .players
         .retain(|player| player.player_id == player_id.0);
     snapshot.player_count = snapshot.players.len() as u32;
+    snapshot.party = world
+        .party_for_player(player_id)
+        .and_then(|party_id| world.party(party_id))
+        .map(|party| mmorpg_wire::PartyState {
+            party_id: party.id.0,
+            leader_id: party.leader_id.0,
+            member_ids: party.member_ids.iter().map(|id| id.0).collect(),
+        });
     snapshot
 }
 

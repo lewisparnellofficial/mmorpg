@@ -40,9 +40,11 @@ stale in-flight TCP window is not silently reordered.
 
 ## Remaining uncertainty
 
-Snapshots still expose only the bound player's detailed player record, and the
-wire schema does not yet carry a separate remote-party-summary record.
-Production spatial indexing, delta snapshots, bandwidth budgets, slow-client
-eviction policy, and TCP in-flight reliability windows require the later
-replication and capacity work. Durable disconnect grace remains an identity
-and persistence concern.
+Snapshots still expose only the bound player's detailed player record. The
+version-3 wire snapshot now carries an optional private party summary with
+membership and leadership IDs only; it does not widen remote inventory, quest,
+gold, or other private fields. Production spatial indexing, delta snapshots,
+bandwidth budgets, slow-client eviction policy, and TCP in-flight reliability
+windows require the later replication and capacity work. Durable disconnect
+grace remains a development-session identity boundary rather than production
+session resume.
