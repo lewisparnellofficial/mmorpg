@@ -3199,6 +3199,48 @@ mod tests {
         assert!(parse_line("accept-quest 1 nope", own).is_err());
     }
 
+    #[test]
+    fn line_and_typed_adapters_preserve_the_starter_transcript() {
+        let player_id = EntityId(7);
+        let transcript = [
+            ("move 1.5 -2", WireCommand::Move { dx: 1.5, dy: -2.0 }),
+            ("target 12", WireCommand::SelectTarget { target_id: 12 }),
+            ("attack", WireCommand::BasicAttack),
+            ("vendor 1", WireCommand::ListVendor { vendor_id: 1 }),
+            (
+                "buy 1 2 3",
+                WireCommand::BuyItem {
+                    vendor_id: 1,
+                    item_id: 2,
+                    quantity: 3,
+                },
+            ),
+            ("loot 12", WireCommand::LootEnemy { enemy_id: 12 }),
+            ("quest-offers 1", WireCommand::ListQuestOffers { npc_id: 1 }),
+            (
+                "accept-quest 1 1",
+                WireCommand::AcceptQuest {
+                    npc_id: 1,
+                    quest_id: 1,
+                },
+            ),
+            (
+                "turn-in-quest 1 1",
+                WireCommand::TurnInQuest {
+                    npc_id: 1,
+                    quest_id: 1,
+                },
+            ),
+        ];
+
+        for (line, typed) in transcript {
+            let line_command = parse_line(line, Some(player_id)).unwrap_command();
+            let typed_command =
+                wire_command_to_core(typed, player_id).expect("typed transcript should adapt");
+            assert_eq!(line_command, typed_command, "transcript diverged at {line}");
+        }
+    }
+
     trait ParsedLineExt {
         fn unwrap_command(self) -> Command;
     }

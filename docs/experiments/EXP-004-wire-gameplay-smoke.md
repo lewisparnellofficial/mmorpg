@@ -53,6 +53,16 @@ The three-client gate additionally passes only when it observes the shared
 party/privacy, role authority, recovery, and repeated-generation checks across
 all three sessions.
 
+The server test `line_and_typed_adapters_preserve_the_starter_transcript`
+drives a fixed starter command transcript through both the retained line
+parser and the typed command adapter. Movement, targeting, combat, vendor,
+loot, quest-offer, quest-acceptance, and quest-turn-in commands must produce
+identical authoritative `Command` values for the same bound player. This is
+the equivalence evidence for retaining line data as inert test-only
+compatibility coverage while removing its runtime mutation path; it does not
+treat line output as a production protocol or claim byte-identical wire
+transcripts.
+
 The server's listener admission is independently bounded at 256 simultaneous
 wire clients; the focused server test fills that bound and confirms the next
 accepted socket is rejected before a `WireClient` session is allocated. This
@@ -64,6 +74,8 @@ is a local resource-bound test, not evidence for the 5,000-client target.
   framing, or server-session failure.
 - Project-specific inference: the current starter loop is reachable through
   the same typed intent and event boundary that the client uses in wire mode.
+- Measured contract test: the retained line and typed adapters produce the
+  same normalized authoritative commands for the fixed starter transcript.
 - Not demonstrated: thousands of connected clients, 200-player activity,
   production authentication, encryption, interest management, or production
   backpressure. The development authentication path is covered only as a
