@@ -33,7 +33,9 @@ before atomic host commit. Within the adapter prototype, each callback is a
 host-state transaction: if the callback fails, host-owned panel mutations from
 that dispatch are rolled back before the addon is disabled and the failure is
 recorded. Manifest validation and bounded storage are now adapter entry points;
-repository loading and durable off-thread storage remain separate work.
+the adapter now also has a bounded filesystem package repository that reads a
+TOML manifest and source entry before VM creation, with path containment and
+integrity checks. Durable off-thread storage remains separate work.
 
 The implementation is in
 [`experiments/ui-scripting`](../../experiments/ui-scripting/README.md). It uses
@@ -103,8 +105,9 @@ mode, because sandbox mode makes the global table read-only.
 
 ## Limitations and follow-up
 
-- The spike has no package manifest/signature verifier, persistent saved-data
-  store, dependency resolver, or bytecode compatibility policy.
+- The spike has no signature verifier, persistent saved-data store, or
+  bytecode compatibility policy. Its package repository validates manifest
+  dependency IDs but does not yet resolve or order a multi-package graph.
 - It does not provide process-level isolation from a compromised native
   runtime or binding.
 - The host integration covers one real Bevy secure-action presentation and
@@ -122,8 +125,8 @@ mode, because sandbox mode makes the global table read-only.
   account/package/schema storage. It does not yet load packages from a
   repository or provide an off-thread durable storage worker.
 - The Bevy client currently constructs the two integration runners from
-  built-in source strings; package repository loading and durable off-thread
-  storage remain intentionally outside this proof.
+  built-in source strings; package repository loading is tested in the
+  adapter, but is not yet the client package-discovery path.
 
 Next work should add manifest/value-boundary fuzzing, calibrate quotas on the
 minimum supported Linux client, and compare the same language-neutral contract

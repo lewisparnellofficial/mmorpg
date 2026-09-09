@@ -8,7 +8,9 @@
 //! native host operation and is never exposed as a script function.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{
     Arc,
@@ -22,6 +24,7 @@ use mmorpg_ui_contract::{
     Storage, StorageNamespace, StoredValue, UiEvent, UiLimits, UiOperation, validate_manifest,
     validate_operations,
 };
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 pub const DEFAULT_MAX_NODES: usize = 64;
@@ -93,6 +96,8 @@ pub enum AddonError {
     IntegrityMismatch { expected: String, actual: String },
     Runtime(String),
     Disabled(String),
+    PackageIo(String),
+    PackageParse(String),
 }
 
 impl std::fmt::Display for AddonError {
@@ -111,11 +116,137 @@ impl std::fmt::Display for AddonError {
             ),
             Self::Runtime(message) => write!(formatter, "addon runtime error: {message}"),
             Self::Disabled(message) => write!(formatter, "addon is disabled: {message}"),
+            Self::PackageIo(message) => write!(formatter, "addon package I/O error: {message}"),
+            Self::PackageParse(message) => {
+                write!(formatter, "addon manifest parse error: {message}")
+            }
         }
     }
 }
 
 impl std::error::Error for AddonError {}
+
+const MAX_MANIFEST_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Deserialize)]
+struct ManifestFile {
+    package_id: u64,
+    name: String,
+    version: String,
+    manifest_schema: u32,
+    api_range: String,
+    runtime_range: String,
+    entry: String,
+    load_order: i32,
+    #[serde(default)]
+    dependencies: Vec<u64>,
+    #[serde(default)]
+    capabilities: BTreeSet<String>,
+    #[serde(default)]
+    saved_data: bool,
+    #[serde(default)]
+    asset_ids: Vec<String>,
+    integrity_sha256: String,
+}
+
+impl TryFrom<ManifestFile> for Manifest {
+    type Error = AddonError;
+
+    fn try_from(file: ManifestFile) -> Result<Self, Self::Error> {
+        let package_id = PackageId::new(file.package_id)
+            .ok_or_else(|| AddonError::PackageParse("package_id must be non-zero".into()))?;
+        let dependencies = file
+            .dependencies
+            .into_iter()
+            .map(|value| {
+                PackageId::new(value).ok_or_else(|| {
+                    AddonError::PackageParse("dependency IDs must be non-zero".into())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Manifest {
+            package_id,
+            name: file.name,
+            version: file.version,
+            manifest_schema: file.manifest_schema,
+            api_range: file.api_range,
+            runtime_range: file.runtime_range,
+            entry: file.entry,
+            load_order: file.load_order,
+            dependencies,
+            capabilities: file.capabilities,
+            saved_data: file.saved_data,
+            asset_ids: file.asset_ids,
+            integrity_sha256: file.integrity_sha256,
+        })
+    }
+}
+
+/// Bounded source-package loader. The repository layout is one directory per
+/// numeric package ID containing `manifest.toml` and the manifest's source
+/// entry. It performs all filesystem access before VM creation.
+#[derive(Clone, Debug)]
+pub struct PackageRepository {
+    root: PathBuf,
+}
+
+impl PackageRepository {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn load(
+        &self,
+        package_id: PackageId,
+        policy: AddonPolicy,
+        known_capabilities: &BTreeSet<String>,
+        package_ids: &BTreeSet<PackageId>,
+    ) -> Result<AddonRunner, AddonError> {
+        let package_dir = self.root.join(package_id.get().to_string());
+        let manifest_path = package_dir.join("manifest.toml");
+        let manifest_source = read_bounded(&manifest_path, MAX_MANIFEST_BYTES)?;
+        let file: ManifestFile = toml::from_str(&manifest_source)
+            .map_err(|error| AddonError::PackageParse(error.to_string()))?;
+        let manifest = Manifest::try_from(file)?;
+        if manifest.package_id != package_id {
+            return Err(AddonError::PackageParse(
+                "directory and manifest package IDs differ".into(),
+            ));
+        }
+        let entry = safe_entry_path(&package_dir, &manifest.entry)?;
+        let source = read_bounded(&entry, policy.max_script_bytes)?;
+        AddonRunner::load_from_manifest(&manifest, &source, policy, known_capabilities, package_ids)
+    }
+}
+
+fn read_bounded(path: &Path, maximum: usize) -> Result<String, AddonError> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| AddonError::PackageIo(format!("{}: {error}", path.display())))?;
+    if !metadata.is_file() || metadata.len() > maximum as u64 {
+        return Err(AddonError::PackageIo(format!(
+            "{} exceeds the bounded package file limit",
+            path.display()
+        )));
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| AddonError::PackageIo(format!("{}: {error}", path.display())))?;
+    String::from_utf8(bytes)
+        .map_err(|_| AddonError::PackageParse(format!("{} is not UTF-8", path.display())))
+}
+
+fn safe_entry_path(package_dir: &Path, entry: &str) -> Result<PathBuf, AddonError> {
+    let entry_path = Path::new(entry);
+    if entry_path.is_absolute()
+        || entry_path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::RootDir))
+    {
+        return Err(AddonError::PackageParse(
+            "manifest entry escapes its package directory".into(),
+        ));
+    }
+    Ok(package_dir.join(entry_path))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DispatchResult {
@@ -1170,6 +1301,51 @@ mod tests {
             ),
             Err(AddonError::IntegrityMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn package_repository_loads_bounded_manifest_and_source_before_vm_creation() {
+        let root = std::env::temp_dir().join(format!(
+            "mmorpg-ui-package-repository-{}",
+            std::process::id()
+        ));
+        let package_dir = root.join("9003");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        let source = "ui.create_panel(\"from repository\")";
+        let manifest = format!(
+            "package_id = 9003\nname = \"repository-addon\"\nversion = \"1.0.0\"\nmanifest_schema = 1\napi_range = \"ui.v1\"\nruntime_range = \"luau-0.12\"\nentry = \"main.lua\"\nload_order = 0\ncapabilities = [\"ui.panel\"]\nintegrity_sha256 = \"{}\"\n",
+            source_sha256(source)
+        );
+        std::fs::write(package_dir.join("manifest.toml"), &manifest).unwrap();
+        std::fs::write(package_dir.join("main.lua"), source).unwrap();
+
+        let known = ["ui.panel".to_owned()].into_iter().collect();
+        let packages = [PackageId::new(9003).unwrap()].into_iter().collect();
+        let runner = PackageRepository::new(&root)
+            .load(
+                PackageId::new(9003).unwrap(),
+                AddonPolicy::default(),
+                &known,
+                &packages,
+            )
+            .unwrap();
+        assert_eq!(runner.snapshot().nodes[0].text, "from repository");
+
+        std::fs::write(
+            package_dir.join("manifest.toml"),
+            manifest.replace("entry = \"main.lua\"", "entry = \"../escape.lua\""),
+        )
+        .unwrap();
+        assert!(matches!(
+            PackageRepository::new(&root).load(
+                PackageId::new(9003).unwrap(),
+                AddonPolicy::default(),
+                &known,
+                &packages,
+            ),
+            Err(AddonError::InvalidManifest(_)) | Err(AddonError::PackageParse(_))
+        ));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

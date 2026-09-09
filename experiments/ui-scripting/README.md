@@ -34,8 +34,10 @@ Panel mutations are staged as the contract crate's `UiOperation` values and
 validated with the addon package/generation before atomic host commit.
 Subscription registration made during a callback is committed with the same
 transaction. The standalone contract crate's package manifest is now used by
-the adapter's pre-VM load entry point; repository loading and durable storage
-lifecycle remain separate work. The
+the adapter's pre-VM load entry point. `PackageRepository` adds bounded TOML
+manifest/source loading from a numeric package directory, rejects path escapes
+and directory/manifest ID mismatches, and verifies the declared source hash
+before VM creation. Durable storage lifecycle remains separate work. The
 `load_from_manifest` entry point validates the manifest, capability set,
 dependency IDs, source entry path, and SHA-256 source integrity before VM
 construction. `storage.get`, `storage.set`, and `storage.delete` use the
