@@ -52,6 +52,19 @@ tablet run, event capture, latency distribution, or physical replay
 equivalence has been recorded yet. The process bridge is a local proof rather
 than a production editor IPC protocol.
 
+## 2026-09-09 hardware-gate audit
+
+The current Wayland session was inspected before attempting the physical gate.
+The host is CachyOS Linux on kernel `7.2.2-1-cachyos`, running `kwin_wayland`
+with Qt `6.11.2` and an NVIDIA GeForce RTX 5070. The authoritative
+`/proc/bus/input/devices` inventory contained two keyboard-class devices,
+two mouse devices, virtual keyboard/pointer devices, and audio controls, but
+no stylus, tablet, Wacom, or other pressure-sensitive input device. Therefore
+no physical pen event was generated or counted, and the fixed latency,
+duplicate-stroke, axis-availability, and physical replay gates remain
+**pending**. Mouse fallback and the synthetic/headless bridge tests are not
+substitutes for this requirement.
+
 ## Reproduction
 
 Headless configure/build:
