@@ -190,6 +190,7 @@ struct Server {
     wire_clients: Vec<WireClient>,
     detached_characters: BTreeMap<(u64, u64), DetachedCharacter>,
     commands: VecDeque<PendingCommand>,
+    prepared_operations: BTreeMap<OperationKey, (u64, Command)>,
     completed_operations: BTreeMap<OperationKey, Vec<ServerMessage>>,
     operation_journal_worker: OperationJournalWorker,
     account_repository: Arc<dyn AccountCharacterRepository>,
@@ -239,6 +240,7 @@ impl Server {
             wire_clients: Vec::new(),
             detached_characters: BTreeMap::new(),
             commands: VecDeque::new(),
+            prepared_operations: BTreeMap::new(),
             completed_operations: completed_operations
                 .into_iter()
                 .map(|(key, payloads)| {
@@ -663,6 +665,33 @@ impl Server {
                 return;
             }
         };
+        if let Some(key) = operation
+            && self.operation_journal_worker.enabled()
+        {
+            if self.prepared_operations.contains_key(&key) {
+                return;
+            }
+            let command_payload = match command_to_wire_payload(&command) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    self.queue_wire_error(client_id, error);
+                    return;
+                }
+            };
+            self.prepared_operations.insert(key, (client_id, command));
+            if self
+                .operation_journal_worker
+                .try_enqueue(OperationJournalJob::Prepare {
+                    key,
+                    command_payload,
+                })
+                .is_err()
+            {
+                self.prepared_operations.remove(&key);
+                self.queue_wire_error(client_id, "operation journal queue is full".to_owned());
+            }
+            return;
+        }
         self.enqueue_pending_wire_command_with_operation(client_id, command, operation);
     }
 
@@ -938,6 +967,7 @@ impl Server {
             return;
         }
 
+        self.poll_operation_journal();
         self.expire_detached_characters();
         let pending: Vec<_> = self.commands.drain(..).collect();
         let operation_commands: Vec<_> = pending
@@ -983,7 +1013,7 @@ impl Server {
             self.completed_operations.insert(key, result);
             if self
                 .operation_journal_worker
-                .try_enqueue(OperationJournalJob {
+                .try_enqueue(OperationJournalJob::Complete {
                     key,
                     result_payloads: journal_payloads,
                 })
@@ -1042,6 +1072,29 @@ impl Server {
         self.next_tick += self.tick_interval;
         if self.next_tick <= Instant::now() {
             self.next_tick = Instant::now() + self.tick_interval;
+        }
+    }
+
+    fn poll_operation_journal(&mut self) {
+        let results: Vec<_> = self.operation_journal_worker.drain_results().collect();
+        for result in results {
+            if let Err(error) = result.result {
+                self.prepared_operations.remove(&result.key);
+                eprintln!(
+                    "operation_journal_error account={} character={} operation={} error={error}",
+                    result.key.account_id, result.key.character_id, result.key.operation_id
+                );
+                continue;
+            }
+            if result.prepared
+                && let Some((client_id, command)) = self.prepared_operations.remove(&result.key)
+            {
+                self.enqueue_pending_wire_command_with_operation(
+                    client_id,
+                    command,
+                    Some(result.key),
+                );
+            }
         }
     }
 
@@ -2313,6 +2366,34 @@ fn is_retryable_core_command(command: &WireCommand) -> bool {
             | WireCommand::LootEnemy { .. }
             | WireCommand::TurnInQuest { .. }
     )
+}
+
+fn command_to_wire_payload(command: &Command) -> Result<Vec<u8>, String> {
+    let wire_command = match command {
+        Command::BuyItem {
+            vendor_id,
+            item_id,
+            quantity,
+            ..
+        } => WireCommand::BuyItem {
+            vendor_id: vendor_id.0,
+            item_id: item_id.0,
+            quantity: *quantity,
+        },
+        Command::LootEnemy { enemy_id, .. } => WireCommand::LootEnemy {
+            enemy_id: enemy_id.0,
+        },
+        Command::TurnInQuest {
+            npc_id, quest_id, ..
+        } => WireCommand::TurnInQuest {
+            npc_id: npc_id.0,
+            quest_id: quest_id.0,
+        },
+        _ => return Err("operation is not a durable command".to_owned()),
+    };
+    wire_command
+        .encode_payload()
+        .map_err(|error| format!("cannot encode operation journal command: {error}"))
 }
 
 fn command_player_id(command: &Command) -> Option<EntityId> {

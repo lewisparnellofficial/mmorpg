@@ -161,18 +161,25 @@ pub struct OperationKey {
 }
 
 #[derive(Debug)]
-pub struct OperationJournalJob {
-    pub key: OperationKey,
-    pub result_payloads: Vec<Vec<u8>>,
+pub enum OperationJournalJob {
+    Prepare {
+        key: OperationKey,
+        command_payload: Vec<u8>,
+    },
+    Complete {
+        key: OperationKey,
+        result_payloads: Vec<Vec<u8>>,
+    },
 }
 
 pub struct OperationJournalResult {
     pub key: OperationKey,
+    pub prepared: bool,
     pub result: Result<(), String>,
 }
 
 enum OperationJournalMessage {
-    Complete(OperationJournalJob),
+    Job(OperationJournalJob),
     Stop,
 }
 
@@ -203,10 +210,17 @@ impl OperationJournalWorker {
             .spawn(move || {
                 while let Ok(message) = receiver.recv() {
                     match message {
-                        OperationJournalMessage::Complete(job) => {
-                            let key = job.key;
+                        OperationJournalMessage::Job(job) => {
+                            let (key, prepared) = match &job {
+                                OperationJournalJob::Prepare { key, .. } => (*key, true),
+                                OperationJournalJob::Complete { key, .. } => (*key, false),
+                            };
                             let result = append_operation_journal(&path, &job);
-                            let _ = result_sender.send(OperationJournalResult { key, result });
+                            let _ = result_sender.send(OperationJournalResult {
+                                key,
+                                prepared,
+                                result,
+                            });
                         }
                         OperationJournalMessage::Stop => break,
                     }
@@ -227,13 +241,17 @@ impl OperationJournalWorker {
         let Some(sender) = &self.sender else {
             return Err(job);
         };
-        match sender.try_send(OperationJournalMessage::Complete(job)) {
+        match sender.try_send(OperationJournalMessage::Job(job)) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(OperationJournalMessage::Complete(job)))
-            | Err(TrySendError::Disconnected(OperationJournalMessage::Complete(job))) => Err(job),
+            Err(TrySendError::Full(OperationJournalMessage::Job(job)))
+            | Err(TrySendError::Disconnected(OperationJournalMessage::Job(job))) => Err(job),
             Err(TrySendError::Full(OperationJournalMessage::Stop))
             | Err(TrySendError::Disconnected(OperationJournalMessage::Stop)) => unreachable!(),
         }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.sender.is_some()
     }
 
     pub fn drain_results(&self) -> impl Iterator<Item = OperationJournalResult> + '_ {
@@ -529,12 +547,21 @@ fn load_operation_journal(path: &Path) -> Result<BTreeMap<OperationKey, Vec<Vec<
             continue;
         }
         let fields: Vec<_> = line.split('\t').collect();
-        if fields.len() != 6 || fields[0] != "version=1" || fields[1] != "completed" {
+        if fields.len() != 6 || fields[0] != "version=1" {
             return Err("malformed operation journal record".to_owned());
         }
         let account_id = parse_journal_field(fields[2], "account")?;
         let character_id = parse_journal_field(fields[3], "character")?;
         let operation_id = parse_journal_field(fields[4], "operation")?;
+        if fields[1] == "prepared" {
+            if !fields[5].starts_with("command=") {
+                return Err("malformed operation journal command field".to_owned());
+            }
+            continue;
+        }
+        if fields[1] != "completed" {
+            return Err("unknown operation journal record kind".to_owned());
+        }
         let payloads = if let Some(encoded) = fields[5].strip_prefix("results=") {
             if encoded.is_empty() {
                 Vec::new()
@@ -568,18 +595,34 @@ fn append_operation_journal(path: &Path, job: &OperationJournalJob) -> Result<()
         .append(true)
         .open(path)
         .map_err(|error| format!("cannot open operation journal: {error}"))?;
-    let results = job
-        .result_payloads
-        .iter()
-        .map(|payload| encode_hex(payload))
-        .collect::<Vec<_>>()
-        .join(",");
-    writeln!(
-        file,
-        "version=1\tcompleted\taccount={}\tcharacter={}\toperation={}\tresults={}",
-        job.key.account_id, job.key.character_id, job.key.operation_id, results
-    )
-    .map_err(|error| format!("cannot append operation journal: {error}"))?;
+    let record = match job {
+        OperationJournalJob::Prepare {
+            key,
+            command_payload,
+        } => format!(
+            "version=1\tprepared\taccount={}\tcharacter={}\toperation={}\tcommand={}",
+            key.account_id,
+            key.character_id,
+            key.operation_id,
+            encode_hex(command_payload)
+        ),
+        OperationJournalJob::Complete {
+            key,
+            result_payloads,
+        } => {
+            let results = result_payloads
+                .iter()
+                .map(|payload| encode_hex(payload))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "version=1\tcompleted\taccount={}\tcharacter={}\toperation={}\tresults={}",
+                key.account_id, key.character_id, key.operation_id, results
+            )
+        }
+    };
+    writeln!(file, "{record}")
+        .map_err(|error| format!("cannot append operation journal: {error}"))?;
     file.sync_all()
         .map_err(|error| format!("cannot sync operation journal: {error}"))
 }
@@ -1039,9 +1082,9 @@ mod tests {
             OperationJournalWorker::new(path.clone()).expect("journal should start");
         assert!(initially_loaded.is_empty());
         worker
-            .try_enqueue(OperationJournalJob {
+            .try_enqueue(OperationJournalJob::Prepare {
                 key,
-                result_payloads: vec![vec![0x01, 0xa5, 0xff]],
+                command_payload: vec![0x09, 0x08],
             })
             .expect("operation should enter bounded queue");
         let mut completed = false;
@@ -1053,6 +1096,21 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(completed, "journal should report completion");
+        worker
+            .try_enqueue(OperationJournalJob::Complete {
+                key,
+                result_payloads: vec![vec![0x01, 0xa5, 0xff]],
+            })
+            .expect("result should enter bounded queue");
+        let mut completed = false;
+        for _ in 0..100 {
+            if worker.drain_results().any(|result| result.result.is_ok()) {
+                completed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(completed, "journal result should report completion");
         drop(worker);
 
         let (_worker, loaded) = OperationJournalWorker::new(path.clone()).expect("journal reload");

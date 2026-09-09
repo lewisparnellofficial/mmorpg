@@ -95,9 +95,11 @@ results per instance, scoped by account and character, and returns the cached
 event on a duplicate instead of reapplying the command. When
 `--character-store` is enabled, completed result payloads are also appended by
 the off-thread operation journal and reloaded on the next process start. The
-journal is still a development boundary: it does not yet provide
-commit-before-live-apply ordering or crash reconciliation for an operation
-that fails between live mutation and result publication.
+journal records the typed intent before the command enters the authoritative
+queue, but completion is still appended after the live world step. It is a
+development boundary, not a complete transaction: it does not yet provide
+crash reconciliation for an operation that fails between live mutation and
+result publication.
 
 The typed gameplay vocabulary includes authoritative BasicAttack, party
 membership, and Heal { target_id } intents. Party invites and membership are

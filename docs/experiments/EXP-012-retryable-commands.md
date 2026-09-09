@@ -46,8 +46,10 @@ durable operation journal.
 
 ## Result
 
-The hypothesis is supported for the bounded process-local prototype. The
-wire codec accepts an additive `Retryable` wrapper, and duplicate operation
+The hypothesis is supported for the bounded prototype. With the opt-in
+character store, the journal records the typed intent before it enters the
+authoritative command queue and persists the completed result for restart
+loading. The wire codec accepts an additive `Retryable` wrapper, and duplicate operation
 keys for the same account and character are served from the bounded result
 cache without reapplying the core command.
 
@@ -55,8 +57,9 @@ cache without reapplying the core command.
 
 - Without `--character-store`, the result cache is process-local and is lost on
   restart.
-- Journal insertion currently follows successful world-step application; it
-  is not a commit-before-live-apply transaction boundary.
+- The prepared intent is journaled before live apply, but completion insertion
+  follows successful world-step application; the pair is not yet one atomic
+  commit-before-live-apply transaction.
 - The prototype does not provide pending/failed journal states, cross-process
   fencing, or recovery of in-flight operations.
 - Rejected operations do not yet carry a durable typed result record suitable

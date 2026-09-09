@@ -81,14 +81,17 @@ combat timing state is reset.
 This is deliberately **not** production persistence: it has no database
 transaction, concurrent external writers, multi-character account store,
 migration system, credential persistence, or durable transactional
-economy/reward operation log with commit-before-live-apply semantics. The
+economy/reward operation log with complete commit-before-live-apply semantics.
+The
 server now accepts an additive retryable command wrapper for purchase, loot,
 and quest turn-in and keeps a bounded result cache keyed by account,
 character, and operation ID. With `--character-store`, completed result
 payloads are appended by a bounded off-thread operation journal and loaded at
-the next process start; without it, the cache is process-local. The journal,
+the next process start; the typed intent is journaled before it enters the
+authoritative queue. Without it, the cache is process-local. The journal,
 bounded writer, and revision fence demonstrate ownership and retry boundaries,
-but do not reconcile a crash between live mutation and result publication. The
+but completion still follows live mutation and does not reconcile a crash
+between live mutation and result publication. The
 repeatable evidence is recorded in
 [`EXP-005`](../experiments/EXP-005-durable-character-checkpoint.md).
 
