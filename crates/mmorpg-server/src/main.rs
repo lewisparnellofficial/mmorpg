@@ -3168,6 +3168,85 @@ mod tests {
     }
 
     #[test]
+    fn journal_completion_failure_discards_staged_world_without_publishing_success() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let checkpoint_path =
+            std::env::temp_dir().join(format!("mmorpg-journal-failure-{unique}.state"));
+        let journal_path = checkpoint_path.with_extension("operations");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let _peer = TcpStream::connect(address).expect("connect test peer");
+        let (stream, _) = listener.accept().expect("accept test peer");
+        let mut server = Server::new(DEFAULT_TICK_HZ, false, Some(checkpoint_path.clone()));
+        let player_id = server
+            .world
+            .step([Command::JoinPlayer {
+                name: "Aria".to_owned(),
+                role: Role::DamageDealer,
+            }])
+            .into_iter()
+            .find_map(|event| match event {
+                Event::PlayerJoined { player } => Some(player.id),
+                _ => None,
+            })
+            .expect("test player should join");
+        let mut client = WireClient::new(1, stream);
+        client.authenticated = Some(AuthenticatedSession {
+            account_id: 1,
+            session_id: 1,
+        });
+        client.selected_character_id = Some(1);
+        client.content_compatible = true;
+        client.player_id = Some(player_id);
+        server.wire_clients.push(client);
+        let initial_gold = server.world.player(player_id).unwrap().gold;
+        let key = OperationKey {
+            account_id: 1,
+            character_id: 1,
+            operation_id: 701,
+        };
+
+        // The journal worker has already opened the path during Server::new.
+        // Replacing it with a directory makes the completion append fail
+        // deterministically without injecting a test-only branch into the
+        // persistence implementation.
+        std::fs::create_dir(&journal_path).expect("journal failure directory should be created");
+        server.handle_wire_command(
+            1,
+            WireCommand::Retryable {
+                operation_id: key.operation_id,
+                command: Box::new(WireCommand::BuyItem {
+                    vendor_id: 1,
+                    item_id: ItemId::TOWN_RATION.0,
+                    quantity: 1,
+                }),
+            },
+        );
+
+        for _ in 0..200 {
+            server.next_tick = Instant::now() - Duration::from_millis(1);
+            server.advance_if_due();
+            if server.staged_operation_batch.is_none()
+                && !server.prepared_operations.contains_key(&key)
+                && server.commands.is_empty()
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(server.staged_operation_batch.is_none());
+        assert!(!server.completed_operations.contains_key(&key));
+        assert_eq!(server.world.player(player_id).unwrap().gold, initial_gold);
+        drop(server);
+        let _ = std::fs::remove_file(checkpoint_path);
+        std::fs::remove_dir(journal_path).expect("journal failure directory should be removed");
+    }
+
+    #[test]
     fn shutdown_drains_commands_and_checkpoints_before_releasing_players() {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

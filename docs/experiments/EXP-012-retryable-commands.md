@@ -65,6 +65,9 @@ cache without reapplying the core command.
 - Completion queue capacity is reserved for the full staged batch before any
   completion record is submitted, and journal parsing preserves explicit
   failed-operation records without treating them as successful results.
+- A failure-injection test replaces the journal path with a directory and
+  verifies that completion-store failure discards the staged world, leaves the
+  live economy unchanged, and does not populate the completed-operation cache.
 - The journal restart test appends a torn final record and confirms earlier
   complete results remain loadable.
 - The restart smoke repeats the same wrapped operation IDs after process
