@@ -45,6 +45,8 @@ fn adversarial_gate() {
     let state = VisibleState::new("Aria", Some("Field Wolf".into()), 2, 1);
     let mut load_ns = Vec::with_capacity(ITERATIONS);
     let mut callback_ns = Vec::with_capacity(ITERATIONS);
+    let rss_baseline_kib = process_rss_kib();
+    let mut rss_peak_kib = rss_baseline_kib;
     for index in 0..ITERATIONS {
         let start = Instant::now();
         let mut runner = AddonRunner::load(
@@ -63,12 +65,17 @@ fn adversarial_gate() {
             );
         }
         callback_ns.push(start.elapsed().as_nanos() / 10);
+        if let Some(rss) = process_rss_kib() {
+            rss_peak_kib = Some(rss_peak_kib.unwrap_or(rss).max(rss));
+        }
     }
     load_ns.sort_unstable();
     callback_ns.sort_unstable();
+    let rss_after_load_kib = process_rss_kib();
     let (storage_us, reload_us) = storage_latency_sample();
+    let rss_after_storage_kib = process_rss_kib();
     println!(
-        "ui adversarial gate: iterations={ITERATIONS} load_ns={} callback_ns={} load_p50_ns={} load_p95_ns={} load_max_ns={} callback_p50_ns={} callback_p95_ns={} callback_max_ns={} storage_p50_us={} storage_p95_us={} storage_max_us={} storage_reload_us={}",
+        "ui adversarial gate: iterations={ITERATIONS} load_ns={} callback_ns={} load_p50_ns={} load_p95_ns={} load_max_ns={} callback_p50_ns={} callback_p95_ns={} callback_max_ns={} rss_baseline_kib={:?} rss_peak_kib={:?} rss_after_load_kib={:?} rss_after_storage_kib={:?} storage_p50_us={} storage_p95_us={} storage_max_us={} storage_reload_us={}",
         load_ns.len(),
         callback_ns.len(),
         percentile(&load_ns, 50),
@@ -77,11 +84,23 @@ fn adversarial_gate() {
         percentile(&callback_ns, 50),
         percentile(&callback_ns, 95),
         callback_ns[callback_ns.len() - 1],
+        rss_baseline_kib,
+        rss_peak_kib,
+        rss_after_load_kib,
+        rss_after_storage_kib,
         percentile(&storage_us, 50),
         percentile(&storage_us, 95),
         storage_us[storage_us.len() - 1],
         reload_us,
     );
+}
+
+fn process_rss_kib() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status.lines().find_map(|line| {
+        let value = line.strip_prefix("VmRSS:")?.split_whitespace().next()?;
+        value.parse().ok()
+    })
 }
 
 fn storage_latency_sample() -> (Vec<u128>, u128) {

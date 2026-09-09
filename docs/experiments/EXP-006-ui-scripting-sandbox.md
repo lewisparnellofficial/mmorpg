@@ -129,15 +129,27 @@ percentiles. The 2026-09-09 run on CachyOS Linux, kernel
 
 ```text
 iterations=100
-load p50=583019 ns, p95=1191466 ns, max=1564640 ns
-callback p50=31884 ns, p95=64099 ns, max=67341 ns
+load p50=560036 ns, p95=1186908 ns, max=1668757 ns
+callback p50=31534 ns, p95=63767 ns, max=82957 ns
 ```
 
 The current aggregate run also reported storage-worker timing:
 
 ```text
-storage_p50_us=174 storage_p95_us=250 storage_max_us=250 storage_reload_us=702
+storage_p50_us=280 storage_p95_us=417 storage_max_us=417 storage_reload_us=697
 ```
+
+The same run sampled Linux process RSS around the repeated addon load/drop
+cycle and the storage-worker sample:
+
+```text
+rss_baseline_kib=7096 rss_peak_kib=8584 rss_after_load_kib=8892
+rss_after_storage_kib=9676
+```
+
+RSS is an operating-system observation that includes allocator and runtime
+behavior; it is evidence of this process run, not proof that every allocation
+was returned to the OS.
 
 The storage sample performs ten successful bounded commits, respecting the
 per-minute quota, then measures reopening the persisted namespace. The
