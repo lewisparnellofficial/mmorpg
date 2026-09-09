@@ -32,7 +32,10 @@ Panel mutations are staged as the contract crate's `UiOperation` values and
 validated with the addon package/generation before atomic host commit.
 Subscription registration made during a callback is committed with the same
 transaction. The standalone contract crate's package manifest and storage
-lifecycle are not yet the implementation behind this Luau adapter.
+lifecycle are not yet the implementation behind this Luau adapter. The
+`load_from_manifest` entry point validates the manifest, capability set,
+dependency IDs, source entry path, and SHA-256 source integrity before VM
+construction.
 
 This is evidence for a Luau embedding direction, not a security certification.
 The remaining production questions include package/signature policy, exact

@@ -60,7 +60,7 @@ cargo run --quiet --manifest-path experiments/ui-scripting/Cargo.toml
 
 ## Measured local results
 
-The standalone test suite completed with **12 passed, 0 failed**. The tests
+The standalone test suite completed with **13 passed, 0 failed**. The tests
 covered:
 
 - the default UI and an addon using the same public functions;
@@ -76,7 +76,8 @@ covered:
 - rollback of all host-owned panel mutations from a failed callback; and
 - contract-queue coalescing before Luau dispatch; and
 - contract validation rejecting an invalid operation batch atomically; and
-- rollback of callback registrations made by a failed callback.
+- rollback of callback registrations made by a failed callback; and
+- pre-VM manifest and source-integrity rejection.
 
 The demo process also completed and reported one created panel, one registered
 event, zero secure intents, and zero errors after a normal event dispatch.
@@ -108,7 +109,8 @@ mode, because sandbox mode makes the global table read-only.
   registrations made during callbacks; initial script-load registration still
   uses the adapter's direct setup path.
 - The adapter now consumes the contract event queue and operation validator, but
-  does not yet expose manifest validation or the storage API to Luau.
+  validates source-only manifests before VM creation, but does not yet expose
+  the storage API to Luau or load packages from a repository.
 
 Next work should add manifest/value-boundary fuzzing, calibrate quotas on the
 minimum supported Linux client, and compare the same language-neutral contract

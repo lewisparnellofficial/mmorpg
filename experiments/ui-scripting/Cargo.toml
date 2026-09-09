@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 mlua = { version = "0.12.1", features = ["luau", "vendored"] }
 mmorpg-ui-contract = { path = "../../crates/mmorpg-ui-contract" }
+sha2 = "0.10"
 
 [lints.rust]
 unsafe_code = "forbid"

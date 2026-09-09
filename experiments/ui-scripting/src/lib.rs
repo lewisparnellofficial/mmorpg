@@ -18,9 +18,10 @@ use std::sync::{
 use mlua::{Function, Lua, Result as LuaResult, VmState};
 pub use mmorpg_ui_contract::ViewRecord;
 use mmorpg_ui_contract::{
-    EventQueue, Generation, Handle, NodeId, PackageId, Property, QueueOutcome, UiEvent, UiLimits,
-    UiOperation, validate_operations,
+    EventQueue, Generation, Handle, Manifest, NodeId, PackageId, Property, QueueOutcome, UiEvent,
+    UiLimits, UiOperation, validate_manifest, validate_operations,
 };
+use sha2::{Digest, Sha256};
 
 pub const DEFAULT_MAX_NODES: usize = 64;
 pub const DEFAULT_MAX_EVENTS: usize = 16;
@@ -87,6 +88,8 @@ pub struct HostSnapshot {
 pub enum AddonError {
     ScriptTooLarge { bytes: usize, maximum: usize },
     InvalidPolicy,
+    InvalidManifest(String),
+    IntegrityMismatch { expected: String, actual: String },
     Runtime(String),
     Disabled(String),
 }
@@ -98,6 +101,13 @@ impl std::fmt::Display for AddonError {
                 write!(formatter, "script has {bytes} bytes; maximum is {maximum}")
             }
             Self::InvalidPolicy => formatter.write_str("addon policy limits must be positive"),
+            Self::InvalidManifest(message) => {
+                write!(formatter, "invalid addon manifest: {message}")
+            }
+            Self::IntegrityMismatch { expected, actual } => write!(
+                formatter,
+                "addon source integrity mismatch: expected {expected}, got {actual}"
+            ),
             Self::Runtime(message) => write!(formatter, "addon runtime error: {message}"),
             Self::Disabled(message) => write!(formatter, "addon is disabled: {message}"),
         }
@@ -239,6 +249,40 @@ impl AddonRunner {
         source: &str,
         policy: AddonPolicy,
     ) -> Result<Self, AddonError> {
+        let package_id = PackageId::new(NEXT_PACKAGE_ID.fetch_add(1, Ordering::Relaxed))
+            .expect("package IDs cannot be zero");
+        Self::load_internal(addon_id.into(), package_id, source, policy)
+    }
+
+    /// Validates a source-only package completely before constructing its VM.
+    /// The manifest remains an adapter entry point until package loading gains
+    /// a filesystem/package repository; callers provide the already-read
+    /// source and the known package/capability catalog explicitly.
+    pub fn load_from_manifest(
+        manifest: &Manifest,
+        source: &str,
+        policy: AddonPolicy,
+        known_capabilities: &std::collections::BTreeSet<String>,
+        package_ids: &std::collections::BTreeSet<PackageId>,
+    ) -> Result<Self, AddonError> {
+        validate_manifest(manifest, known_capabilities, package_ids)
+            .map_err(|error| AddonError::InvalidManifest(error.to_string()))?;
+        let actual = source_sha256(source);
+        if !manifest.integrity_sha256.eq_ignore_ascii_case(&actual) {
+            return Err(AddonError::IntegrityMismatch {
+                expected: manifest.integrity_sha256.clone(),
+                actual,
+            });
+        }
+        Self::load_internal(manifest.name.clone(), manifest.package_id, source, policy)
+    }
+
+    fn load_internal(
+        addon_id: String,
+        package_id: PackageId,
+        source: &str,
+        policy: AddonPolicy,
+    ) -> Result<Self, AddonError> {
         validate_policy(&policy)?;
         if source.len() > policy.max_script_bytes {
             return Err(AddonError::ScriptTooLarge {
@@ -277,9 +321,8 @@ impl AddonRunner {
         });
 
         let host = Rc::new(RefCell::new(HostState {
-            addon_id: addon_id.into(),
-            package_id: PackageId::new(NEXT_PACKAGE_ID.fetch_add(1, Ordering::Relaxed))
-                .expect("package IDs cannot be zero"),
+            addon_id,
+            package_id,
             generation: Generation::new(1).expect("initial generation cannot be zero"),
             policy,
             nodes: BTreeMap::new(),
@@ -484,6 +527,11 @@ fn submit_operation(
     } else {
         host.borrow_mut().apply_operations(&[operation])
     }
+}
+
+fn source_sha256(source: &str) -> String {
+    let digest = Sha256::digest(source.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn validate_policy(policy: &AddonPolicy) -> Result<(), AddonError> {
@@ -893,5 +941,50 @@ mod tests {
             DispatchResult::Disabled(_)
         ));
         assert_eq!(runner.snapshot().registered_events, 1);
+    }
+
+    #[test]
+    fn manifest_and_source_integrity_are_checked_before_vm_load() {
+        let source = "ui.create_panel(\"manifested\")";
+        let package = PackageId::new(9_000).unwrap();
+        let manifest = Manifest {
+            package_id: package,
+            name: "manifested-addon".into(),
+            version: "1.0.0".into(),
+            manifest_schema: 1,
+            api_range: "ui.v1".into(),
+            runtime_range: "luau-0.12".into(),
+            entry: "main.lua".into(),
+            load_order: 0,
+            dependencies: vec![],
+            capabilities: ["ui.panel".to_owned()].into_iter().collect(),
+            saved_data: false,
+            asset_ids: vec![],
+            integrity_sha256: source_sha256(source),
+        };
+        let known = ["ui.panel".to_owned()].into_iter().collect();
+        let packages = [package].into_iter().collect();
+        let runner = AddonRunner::load_from_manifest(
+            &manifest,
+            source,
+            AddonPolicy::default(),
+            &known,
+            &packages,
+        )
+        .unwrap();
+        assert_eq!(runner.snapshot().nodes[0].text, "manifested");
+
+        let mut tampered = manifest;
+        tampered.integrity_sha256 = "0".repeat(64);
+        assert!(matches!(
+            AddonRunner::load_from_manifest(
+                &tampered,
+                source,
+                AddonPolicy::default(),
+                &known,
+                &packages,
+            ),
+            Err(AddonError::IntegrityMismatch { .. })
+        ));
     }
 }
