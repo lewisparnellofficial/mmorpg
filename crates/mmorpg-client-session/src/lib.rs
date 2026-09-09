@@ -13,6 +13,8 @@ use mmorpg_wire::{ClientCommand, ServerEvent, ServerMessage, WorldSnapshot};
 
 pub const MAX_PENDING_COMMANDS: usize = 64;
 pub const MAX_PENDING_COMMAND_BYTES: usize = 64 * 1024;
+pub const MAX_BOOTSTRAP_BUFFERED_EVENTS: usize = 128;
+pub const MAX_BOOTSTRAP_BUFFERED_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionState {
@@ -33,6 +35,10 @@ pub enum SessionInput {
     Connect,
     Authenticated,
     Server(ServerMessage),
+    Sequenced {
+        sequence: u64,
+        message: ServerMessage,
+    },
     Disconnected,
     SelectCharacter(u64),
     Intent(ClientCommand),
@@ -50,6 +56,7 @@ pub enum SessionOutput {
     WorldReset,
     Bootstrap(WorldSnapshot),
     Event(ServerEvent),
+    RequestBootstrap,
     Rejected {
         reason: RejectReason,
     },
@@ -81,6 +88,9 @@ pub struct Session {
     selected_character: Option<u64>,
     bootstrap: Option<WorldSnapshot>,
     content_digest: [u8; 32],
+    last_sequence: Option<u64>,
+    buffered_messages: VecDeque<(u64, ServerMessage, usize)>,
+    buffered_bytes: usize,
 }
 
 impl Session {
@@ -96,6 +106,9 @@ impl Session {
             selected_character: None,
             bootstrap: None,
             content_digest,
+            last_sequence: None,
+            buffered_messages: VecDeque::new(),
+            buffered_bytes: 0,
         }
     }
     pub fn state(&self) -> SessionState {
@@ -133,6 +146,9 @@ impl Session {
             {
                 self.transition(SessionState::AwaitingCharacterList, &mut output);
                 self.enqueue(ClientCommand::ListCharacters, &mut output);
+            }
+            SessionInput::Sequenced { sequence, message } => {
+                self.handle_sequenced(sequence, message, &mut output);
             }
             SessionInput::Server(ServerMessage::CharacterList {
                 account_id,
@@ -206,6 +222,9 @@ impl Session {
                 self.pending_bytes = 0;
                 self.selected_character = None;
                 self.bootstrap = None;
+                self.last_sequence = None;
+                self.buffered_messages.clear();
+                self.buffered_bytes = 0;
                 output.push(SessionOutput::WorldReset);
                 self.transition(SessionState::Backoff, &mut output);
             }
@@ -221,6 +240,76 @@ impl Session {
             }),
         }
         output
+    }
+
+    fn handle_sequenced(
+        &mut self,
+        sequence: u64,
+        message: ServerMessage,
+        output: &mut Vec<SessionOutput>,
+    ) {
+        if sequence == 0 {
+            output.push(SessionOutput::RequestBootstrap);
+            return;
+        }
+        if let ServerMessage::Snapshot(snapshot) = message {
+            if self.state != SessionState::AwaitingBootstrap && self.state != SessionState::Ready {
+                output.push(SessionOutput::Rejected {
+                    reason: RejectReason::InvalidTransition,
+                });
+                return;
+            }
+            self.bootstrap = Some(snapshot.clone());
+            self.last_sequence = Some(sequence);
+            self.transition(SessionState::Ready, output);
+            output.push(SessionOutput::Bootstrap(snapshot));
+            let mut buffered: Vec<_> = self.buffered_messages.drain(..).collect();
+            self.buffered_bytes = 0;
+            buffered.sort_by_key(|(queued_sequence, _, _)| *queued_sequence);
+            for (queued_sequence, queued_message, _) in buffered {
+                self.handle_sequenced(queued_sequence, queued_message, output);
+                if self.state != SessionState::Ready {
+                    break;
+                }
+            }
+            return;
+        }
+        if self.state == SessionState::AwaitingBootstrap {
+            let bytes = message
+                .encode_payload()
+                .map(|payload| payload.len())
+                .unwrap_or(usize::MAX);
+            if bytes == usize::MAX
+                || self.buffered_messages.len() >= MAX_BOOTSTRAP_BUFFERED_EVENTS
+                || self.buffered_bytes.saturating_add(bytes) > MAX_BOOTSTRAP_BUFFERED_BYTES
+            {
+                self.buffered_messages.clear();
+                self.buffered_bytes = 0;
+                output.push(SessionOutput::RequestBootstrap);
+                return;
+            }
+            self.buffered_bytes += bytes;
+            self.buffered_messages.push_back((sequence, message, bytes));
+            return;
+        }
+        let Some(last_sequence) = self.last_sequence else {
+            output.push(SessionOutput::RequestBootstrap);
+            self.state = SessionState::AwaitingBootstrap;
+            return;
+        };
+        if sequence <= last_sequence {
+            return;
+        }
+        if sequence != last_sequence.saturating_add(1) {
+            self.buffered_messages.clear();
+            self.buffered_bytes = 0;
+            self.state = SessionState::AwaitingBootstrap;
+            output.push(SessionOutput::StateChanged(SessionState::AwaitingBootstrap));
+            output.push(SessionOutput::RequestBootstrap);
+            return;
+        }
+        self.last_sequence = Some(sequence);
+        output.extend(self.handle(SessionInput::Server(message)));
     }
 
     fn transition(&mut self, state: SessionState, output: &mut Vec<SessionOutput>) {
@@ -387,5 +476,115 @@ mod tests {
                 ))
         );
         assert_eq!(session.state(), SessionState::EnteringWorld);
+    }
+
+    #[test]
+    fn sequenced_bootstrap_applies_contiguous_events_and_requests_resync_on_gap() {
+        let mut session = Session::new("token");
+        session.handle(SessionInput::Connect);
+        session.handle(SessionInput::Server(ServerMessage::Authenticated {
+            account_id: 1,
+            session_id: 1,
+        }));
+        session.handle(SessionInput::Server(ServerMessage::CharacterList {
+            account_id: 1,
+            characters: vec![CharacterSummary {
+                character_id: 7,
+                name: "Aria".into(),
+                role: RoleCode::DamageDealer,
+            }],
+        }));
+        session.handle(SessionInput::SelectCharacter(7));
+        session.handle(SessionInput::Server(ServerMessage::CharacterSelected {
+            character_id: 7,
+            name: "Aria".into(),
+            role: RoleCode::DamageDealer,
+        }));
+        session.handle(SessionInput::Server(ServerMessage::ContentAccepted {
+            digest: [0; 32],
+        }));
+        session.handle(SessionInput::Server(ServerMessage::Connected {
+            player_id: 7,
+            role: RoleCode::DamageDealer,
+        }));
+        let snapshot = WorldSnapshot {
+            version: 2,
+            tick: 1,
+            player_count: 0,
+            npc_count: 0,
+            enemy_count: 0,
+            vendor_count: 0,
+            players: vec![],
+            npcs: vec![],
+        };
+        session.handle(SessionInput::Sequenced {
+            sequence: 10,
+            message: ServerMessage::Snapshot(snapshot),
+        });
+        assert_eq!(session.state(), SessionState::Ready);
+        let applied = session.handle(SessionInput::Sequenced {
+            sequence: 11,
+            message: ServerMessage::Event(ServerEvent::EnemyDefeated { enemy_id: 9 }),
+        });
+        assert!(
+            applied
+                .iter()
+                .any(|item| matches!(item, SessionOutput::Event(_)))
+        );
+        assert!(
+            session
+                .handle(SessionInput::Sequenced {
+                    sequence: 11,
+                    message: ServerMessage::Event(ServerEvent::EnemyDefeated { enemy_id: 9 }),
+                })
+                .is_empty()
+        );
+        let gap = session.handle(SessionInput::Sequenced {
+            sequence: 13,
+            message: ServerMessage::Event(ServerEvent::EnemyDefeated { enemy_id: 10 }),
+        });
+        assert!(
+            gap.iter()
+                .any(|item| matches!(item, SessionOutput::RequestBootstrap))
+        );
+        assert_eq!(session.state(), SessionState::AwaitingBootstrap);
+    }
+
+    #[test]
+    fn bootstrap_event_buffer_overflow_requests_a_new_bootstrap() {
+        let mut session = Session::new("token");
+        session.handle(SessionInput::Connect);
+        session.handle(SessionInput::Server(ServerMessage::Authenticated {
+            account_id: 1,
+            session_id: 1,
+        }));
+        session.handle(SessionInput::Server(ServerMessage::CharacterList {
+            account_id: 1,
+            characters: vec![],
+        }));
+        session.state = SessionState::AwaitingBootstrap;
+        for sequence in 1..=MAX_BOOTSTRAP_BUFFERED_EVENTS {
+            assert!(
+                session
+                    .handle(SessionInput::Sequenced {
+                        sequence: sequence as u64,
+                        message: ServerMessage::Error {
+                            message: "queued".into()
+                        },
+                    })
+                    .is_empty()
+            );
+        }
+        let overflow = session.handle(SessionInput::Sequenced {
+            sequence: (MAX_BOOTSTRAP_BUFFERED_EVENTS + 1) as u64,
+            message: ServerMessage::Error {
+                message: "overflow".into(),
+            },
+        });
+        assert!(
+            overflow
+                .iter()
+                .any(|item| matches!(item, SessionOutput::RequestBootstrap))
+        );
     }
 }

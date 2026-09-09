@@ -138,6 +138,13 @@ development session and requires explicit selection again. Commands submitted
 before `Ready` are rejected, and command output is bounded by count and encoded
 payload bytes.
 
-This is an implementation step toward the session policy in `PLAN.md`; it does
-not yet provide sequence numbers, gap recovery, content-digest negotiation,
-or production session resume.
+This is an implementation step toward the session policy in `PLAN.md`; the
+live development wire path does not yet carry sequence numbers or gap-recovery
+metadata, and it does not provide production session resume.
+
+The session boundary now also exposes a sequenced-message policy for the
+schema migration: complete snapshots establish the baseline atomically,
+contiguous events advance it, duplicates are ignored, and gaps or bounded
+bootstrap-buffer overflow request a fresh snapshot. The live development
+listener remains unsequenced until the wire schema and retained fixtures are
+migrated together.
