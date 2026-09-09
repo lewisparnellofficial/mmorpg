@@ -1,0 +1,15 @@
+[package]
+name = "server-tick-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+mmorpg-core = { path = "../../crates/mmorpg-core" }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"

@@ -113,6 +113,9 @@ run_manifest_checks experiments/client-presentation-replay/Cargo.toml "presentat
 run_manifest_checks experiments/ai-respawn/Cargo.toml "AI respawn"
 run_manifest_checks experiments/layer-manager/Cargo.toml "layer manager"
 run_manifest_checks experiments/rust-region-bench/Cargo.toml "region benchmark"
+run_step "authoritative tick benchmark: fmt" cargo fmt --manifest-path experiments/server-tick-bench/Cargo.toml -- --check
+run_step "authoritative tick benchmark: test" cargo test --manifest-path experiments/server-tick-bench/Cargo.toml
+run_step "authoritative tick benchmark: run" cargo run --quiet --release --manifest-path experiments/server-tick-bench/Cargo.toml
 
 run_step "replication model: compile" python3 -m py_compile experiments/replication-model/model.py
 run_step "diff: whitespace" git diff --check
