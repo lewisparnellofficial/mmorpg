@@ -27,10 +27,11 @@ Native protected-action provenance is kept in the dependency-light
 `mmorpg-client-secure-input` crate. It rejects repeats, replayed physical event
 IDs, stale focus/node generations, and unloaded addons before yielding a
 single-use trusted intent. The graphical client now routes its default Space
-attack through that registry before queuing the ordinary typed attack intent.
-Pointer hit-testing, focus-generation wiring, scripted action presentation,
-and the physical Wayland proof remain Milestone 4 work; this integration is not
-evidence that scripts can activate protected actions.
+attack through that registry before queuing the ordinary typed attack intent
+and refreshes the binding across native window focus transitions. Pointer
+hit-testing, scripted action presentation, and the physical Wayland proof
+remain Milestone 4 work; this integration is not evidence that scripts can
+activate protected actions.
 
 These are policy tests and a host-adapter foundation. They do not yet prove
 that a Luau VM, renderer, filesystem adapter, or native input path enforces

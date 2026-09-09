@@ -5,7 +5,9 @@
 //! frames and typed server messages feed the renderer-independent presentation
 //! model.
 
+use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
+use bevy::window::WindowFocused;
 use mmorpg_client_adapter::apply_wire_message;
 #[cfg(test)]
 use mmorpg_client_adapter::{
@@ -178,6 +180,18 @@ impl SecureInputState {
         self.next_physical_event_id = self.next_physical_event_id.saturating_add(1).max(1);
         self.next_physical_event_id
     }
+
+    fn refresh_default_binding(&mut self) {
+        self.registry.unload_addon(self.default_addon);
+        self.registry
+            .register(
+                self.default_addon,
+                self.default_node,
+                self.node_generation,
+                self.attack_action,
+            )
+            .expect("default secure attack binding must be valid after focus change");
+    }
 }
 
 fn main() {
@@ -232,6 +246,7 @@ fn main() {
             Update,
             (
                 consume_network_events,
+                secure_window_focus,
                 keyboard_input,
                 sync_authoritative_presentation,
                 update_status_text,
@@ -239,6 +254,22 @@ fn main() {
                 .chain(),
         )
         .run();
+}
+
+fn secure_window_focus(
+    mut focus_events: MessageReader<WindowFocused>,
+    mut secure_input: ResMut<SecureInputState>,
+) {
+    for event in focus_events.read() {
+        // Any native focus transition invalidates bindings minted against the
+        // previous focused surface. The registry deliberately does not
+        // distinguish focus gain from loss; the next presentation commit must
+        // re-register a binding before it can be activated.
+        secure_input.registry.focus_changed();
+        if event.focused {
+            secure_input.refresh_default_binding();
+        }
+    }
 }
 
 fn setup_scene(
@@ -1266,6 +1297,69 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
+
+    #[test]
+    fn secure_attack_binding_rejects_replay_and_refreshes_after_focus_change() {
+        let mut secure = SecureInputState::new();
+        let first = secure
+            .registry
+            .dispatch(
+                secure.default_addon,
+                secure.default_node,
+                secure.node_generation,
+                NativePress::Key {
+                    physical_event_id: 1,
+                    repeat: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(first.consume().0, secure.attack_action);
+        assert!(
+            secure
+                .registry
+                .dispatch(
+                    secure.default_addon,
+                    secure.default_node,
+                    secure.node_generation,
+                    NativePress::Key {
+                        physical_event_id: 1,
+                        repeat: false,
+                    },
+                )
+                .is_err()
+        );
+
+        secure.registry.focus_changed();
+        assert!(
+            secure
+                .registry
+                .dispatch(
+                    secure.default_addon,
+                    secure.default_node,
+                    secure.node_generation,
+                    NativePress::Key {
+                        physical_event_id: 2,
+                        repeat: false,
+                    },
+                )
+                .is_err()
+        );
+        secure.refresh_default_binding();
+        assert!(
+            secure
+                .registry
+                .dispatch(
+                    secure.default_addon,
+                    secure.default_node,
+                    secure.node_generation,
+                    NativePress::Key {
+                        physical_event_id: 2,
+                        repeat: false,
+                    },
+                )
+                .is_ok()
+        );
+    }
 
     #[test]
     fn projects_player_and_npc_state_only_from_server_lines() {
