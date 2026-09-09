@@ -190,6 +190,9 @@ pub enum ClientCommand {
         target_id: u64,
     },
     BasicAttack,
+    Heal {
+        target_id: u64,
+    },
     ListVendor {
         vendor_id: u64,
     },
@@ -251,6 +254,9 @@ impl ClientCommand {
                 put_nonzero_u64(&mut payload, 3, *target_id, "target_id")?;
             }
             Self::BasicAttack => payload.push(4),
+            Self::Heal { target_id } => {
+                put_nonzero_u64(&mut payload, 18, *target_id, "target_id")?;
+            }
             Self::ListVendor { vendor_id } => {
                 put_nonzero_u64(&mut payload, 5, *vendor_id, "vendor_id")?;
             }
@@ -316,6 +322,9 @@ impl ClientCommand {
                 target_id: decoder.take_nonzero_u64("target_id")?,
             },
             4 => Self::BasicAttack,
+            18 => Self::Heal {
+                target_id: decoder.take_nonzero_u64("target_id")?,
+            },
             5 => Self::ListVendor {
                 vendor_id: decoder.take_nonzero_u64("vendor_id")?,
             },
@@ -730,6 +739,12 @@ pub enum ServerEvent {
         player_id: u64,
         target_id: u64,
         damage: u32,
+        target_health: u32,
+    },
+    HealResolved {
+        player_id: u64,
+        target_id: u64,
+        amount: u32,
         target_health: u32,
     },
     EnemyDefeated {
@@ -1522,6 +1537,18 @@ fn encode_server_event(
             encoder.put_u32(*damage);
             encoder.put_u32(*target_health);
         }
+        ServerEvent::HealResolved {
+            player_id,
+            target_id,
+            amount,
+            target_health,
+        } => {
+            encoder.put_u8(18);
+            encoder.put_u64(*player_id, "player_id")?;
+            encoder.put_u64(*target_id, "target_id")?;
+            encoder.put_u32(*amount);
+            encoder.put_u32(*target_health);
+        }
         ServerEvent::EnemyDefeated { enemy_id } => {
             encoder.put_u8(6);
             encoder.put_u64(*enemy_id, "enemy_id")?;
@@ -1685,6 +1712,12 @@ fn decode_server_event(decoder: &mut ServerDecoder<'_>) -> Result<ServerEvent, S
             damage: decoder.take_u32("damage")?,
             target_health: decoder.take_u32("target_health")?,
         }),
+        18 => Ok(ServerEvent::HealResolved {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+            target_id: decoder.take_nonzero_u64("target_id")?,
+            amount: decoder.take_u32("amount")?,
+            target_health: decoder.take_u32("target_health")?,
+        }),
         6 => Ok(ServerEvent::EnemyDefeated {
             enemy_id: decoder.take_nonzero_u64("enemy_id")?,
         }),
@@ -1812,7 +1845,7 @@ pub fn decode_framed_server_event(input: &[u8]) -> Result<FramedServerEvent, Ser
             available: input.len() - 5,
         });
     }
-    let known = (1..=17).contains(&opcode);
+    let known = (1..=18).contains(&opcode);
     if !known {
         return Ok(FramedServerEvent::SkippedUnknown { opcode, length });
     }
@@ -2286,6 +2319,7 @@ mod tests {
             ClientCommand::Move { dx: -2.5, dy: 4.0 },
             ClientCommand::SelectTarget { target_id: 9 },
             ClientCommand::BasicAttack,
+            ClientCommand::Heal { target_id: 1 },
             ClientCommand::ListVendor { vendor_id: 1 },
             ClientCommand::BuyItem {
                 vendor_id: 1,

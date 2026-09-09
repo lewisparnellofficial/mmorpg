@@ -107,6 +107,7 @@ enum ClientCommand {
     },
     Target(EntityId),
     Attack,
+    Heal(EntityId),
     ListVendor(EntityId),
     ListQuestOffers(EntityId),
     BuyItem {
@@ -534,6 +535,7 @@ fn client_command_to_wire(command: ClientCommand) -> WireCommand {
         ClientCommand::Move { dx, dy } => WireCommand::Move { dx, dy },
         ClientCommand::Target(EntityId(target_id)) => WireCommand::SelectTarget { target_id },
         ClientCommand::Attack => WireCommand::BasicAttack,
+        ClientCommand::Heal(EntityId(target_id)) => WireCommand::Heal { target_id },
         ClientCommand::ListVendor(EntityId(vendor_id)) => WireCommand::ListVendor { vendor_id },
         ClientCommand::ListQuestOffers(EntityId(npc_id)) => WireCommand::ListQuestOffers { npc_id },
         ClientCommand::BuyItem {
@@ -607,6 +609,9 @@ fn queue_command_bounded(outgoing: &mut VecDeque<Vec<u8>>, command: ClientComman
             queue_command_line(outgoing, &format!("target {id}"));
         }
         ClientCommand::Attack => queue_command_line(outgoing, "attack"),
+        ClientCommand::Heal(EntityId(id)) => {
+            queue_command_line(outgoing, &format!("heal {id}"));
+        }
         ClientCommand::ListVendor(EntityId(id)) => {
             queue_command_line(outgoing, &format!("vendor {id}"));
         }

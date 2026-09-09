@@ -74,6 +74,11 @@ It emits typed server-message payloads for welcome/connect/error responses,
 gameplay events, and the bootstrap snapshot. The line parser remains only as
 inert compatibility data for equivalence tests.
 
+The typed gameplay vocabulary includes authoritative `BasicAttack` and
+`Heal { target_id }` intents. Healing is restricted by the core to healer
+players with a living, nearby player target and is capped at the target's
+maximum health; rejected intents emit the normal command-rejection event.
+
 Typed intake is bounded before commands reach the simulation owner: each
 session contributes at most 32 decoded frames per poll, the server accepts at
 most 256 decoded frames per poll, and the pending authoritative command queue

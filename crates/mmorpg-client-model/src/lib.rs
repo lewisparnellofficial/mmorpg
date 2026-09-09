@@ -446,6 +446,17 @@ impl ClientWorld {
                 }
                 ApplyEventResult::Applied
             }
+            Event::HealResolved {
+                target_id,
+                target_health,
+                ..
+            } => {
+                let Some(ClientEntity::Player(target)) = self.entities.get_mut(target_id) else {
+                    return ApplyEventResult::Ignored;
+                };
+                target.health = *target_health;
+                ApplyEventResult::Applied
+            }
             Event::EnemyDefeated { enemy_id } => {
                 let Some(ClientEntity::Npc(npc)) = self.entities.get_mut(enemy_id) else {
                     return ApplyEventResult::Ignored;

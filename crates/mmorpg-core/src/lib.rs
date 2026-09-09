@@ -15,6 +15,8 @@ use mmorpg_content::{NpcTemplateId, ObjectiveDefinition, starter_catalog};
 
 const MAX_MOVE_PER_COMMAND: f32 = 10.0;
 const ATTACK_RANGE: f32 = 32.0;
+const HEAL_RANGE: f32 = 32.0;
+const HEAL_AMOUNT: u32 = 30;
 const VENDOR_INTERACTION_RANGE: f32 = 12.0;
 const STARTER_GOLD: u32 = 20;
 const STARTER_INVENTORY_CAPACITY: usize = 16;
@@ -423,6 +425,10 @@ pub enum Command {
     BasicAttack {
         player_id: EntityId,
     },
+    Heal {
+        player_id: EntityId,
+        target_id: EntityId,
+    },
     ListVendor {
         player_id: EntityId,
         vendor_id: EntityId,
@@ -476,6 +482,12 @@ pub enum Event {
         player_id: EntityId,
         target_id: EntityId,
         damage: u32,
+        target_health: u32,
+    },
+    HealResolved {
+        player_id: EntityId,
+        target_id: EntityId,
+        amount: u32,
         target_health: u32,
     },
     EnemyDefeated {
@@ -1100,6 +1112,58 @@ impl World {
                 if defeated {
                     self.advance_kill_quests(player_id, target_template_id, events);
                 }
+            }
+            Command::Heal {
+                player_id,
+                target_id,
+            } => {
+                let Some(healer) = self.players.get(&player_id) else {
+                    Self::reject(events, format!("unknown player {player_id}"));
+                    return;
+                };
+                if healer.role != Role::Healer {
+                    Self::reject(events, "only healers can use heal");
+                    return;
+                }
+                if healer.health == 0 {
+                    Self::reject(events, "dead players cannot heal");
+                    return;
+                }
+                let healer_position = healer.position;
+                let Some(target) = self.players.get(&target_id) else {
+                    Self::reject(events, "heal target is not a player");
+                    return;
+                };
+                if target.health == 0 {
+                    Self::reject(events, "cannot heal a defeated player");
+                    return;
+                }
+                if healer_position.distance_squared(target.position) > HEAL_RANGE * HEAL_RANGE {
+                    Self::reject(events, "heal target is out of range");
+                    return;
+                }
+                if target.health >= target.max_health {
+                    Self::reject(events, "heal target is already at full health");
+                    return;
+                }
+                let target_health = {
+                    let target = self
+                        .players
+                        .get_mut(&target_id)
+                        .expect("heal target was checked above");
+                    let before = target.health;
+                    target.health = target
+                        .health
+                        .saturating_add(HEAL_AMOUNT)
+                        .min(target.max_health);
+                    target.health - before
+                };
+                events.push(Event::HealResolved {
+                    player_id,
+                    target_id,
+                    amount: target_health,
+                    target_health: self.players[&target_id].health,
+                });
             }
             Command::ListVendor {
                 player_id,
@@ -2155,6 +2219,108 @@ mod tests {
                 reason: "enemy reward was already claimed".to_owned(),
             }]
         );
+    }
+
+    #[test]
+    fn healer_restores_a_nearby_player_and_caps_at_max_health() {
+        let mut world = World::new_starter_zone();
+        let healer_id = join(&mut world, "Healer", Role::Healer);
+        let target_id = join(&mut world, "Tank", Role::Tank);
+        world.players.get_mut(&target_id).unwrap().health = 20;
+
+        let events = world.step([Command::Heal {
+            player_id: healer_id,
+            target_id,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::HealResolved {
+                player_id: healer_id,
+                target_id,
+                amount: 30,
+                target_health: 50,
+            }]
+        );
+
+        world.players.get_mut(&target_id).unwrap().health = 90;
+        let events = world.step([Command::Heal {
+            player_id: healer_id,
+            target_id,
+        }]);
+        assert_eq!(
+            events,
+            vec![Event::HealResolved {
+                player_id: healer_id,
+                target_id,
+                amount: 10,
+                target_health: 100,
+            }]
+        );
+    }
+
+    #[test]
+    fn non_healers_and_invalid_heal_targets_are_rejected_without_mutation() {
+        let mut world = World::new_starter_zone();
+        let tank_id = join(&mut world, "Tank", Role::Tank);
+        let target_id = join(&mut world, "Target", Role::DamageDealer);
+        world.players.get_mut(&target_id).unwrap().health = 40;
+
+        assert_eq!(
+            world.step([Command::Heal {
+                player_id: tank_id,
+                target_id,
+            }]),
+            vec![Event::CommandRejected {
+                reason: "only healers can use heal".to_owned(),
+            }]
+        );
+        assert_eq!(world.player(target_id).unwrap().health, 40);
+
+        let healer_id = join(&mut world, "Healer", Role::Healer);
+        assert_eq!(
+            world.step([Command::Heal {
+                player_id: healer_id,
+                target_id: first_enemy(&world),
+            }]),
+            vec![Event::CommandRejected {
+                reason: "heal target is not a player".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn out_of_range_or_full_health_heals_are_rejected() {
+        let mut world = World::new_starter_zone();
+        let healer_id = join(&mut world, "Healer", Role::Healer);
+        let target_id = join(&mut world, "Target", Role::Tank);
+        assert_eq!(
+            world.step([Command::Heal {
+                player_id: healer_id,
+                target_id,
+            }]),
+            vec![Event::CommandRejected {
+                reason: "heal target is already at full health".to_owned(),
+            }]
+        );
+
+        world.players.get_mut(&target_id).unwrap().health = 40;
+        for _ in 0..4 {
+            world.step([Command::Move {
+                player_id: target_id,
+                dx: 10.0,
+                dy: 0.0,
+            }]);
+        }
+        assert_eq!(
+            world.step([Command::Heal {
+                player_id: healer_id,
+                target_id,
+            }]),
+            vec![Event::CommandRejected {
+                reason: "heal target is out of range".to_owned(),
+            }]
+        );
+        assert_eq!(world.player(target_id).unwrap().health, 40);
     }
 
     #[test]

@@ -428,6 +428,17 @@ fn wire_event(event: &WireServerEvent) -> Result<Event, AdapterError> {
             damage: *damage,
             target_health: *target_health,
         },
+        WireServerEvent::HealResolved {
+            player_id,
+            target_id,
+            amount,
+            target_health,
+        } => Event::HealResolved {
+            player_id: CoreEntityId(*player_id),
+            target_id: CoreEntityId(*target_id),
+            amount: *amount,
+            target_health: *target_health,
+        },
         WireServerEvent::EnemyDefeated { enemy_id } => Event::EnemyDefeated {
             enemy_id: CoreEntityId(*enemy_id),
         },

@@ -8,8 +8,9 @@ directional light, draw a primitive town and field, and instantiate the NPC
 placements from the shared `mmorpg-content` starter catalog. It connects to
 the local development server on a background TCP worker, requests the bounded
 `snapshot` bootstrap response, and supports keyboard movement, target cycling,
-loot, vendor, and quest intents, and server-authoritative basic attacks. The
-vendor and enemy markers use different colors. Startup logs also identify the
+loot, vendor, and quest intents, server-authoritative basic attacks, and the
+typed healer ability. The vendor and enemy markers use different colors.
+Startup logs also identify the
 content definitions and placements that were instantiated.
 
 Decoded snapshots and events are also projected through the standalone
@@ -58,7 +59,9 @@ running in another terminal, press `Enter` at the character-selection prompt,
 then use `WASD` to move, `Tab` to select the next known NPC, `Space` to attack,
 and `L` to loot the selected target. `V` lists vendor stock, `B` buys one unit
 of the first listing, `O` requests quest offers, `E` accepts the first offer,
-and `R` attempts to turn in the first quest. The first build may take several
+and `R` attempts to turn in the first quest. The typed healer ability is
+available to healer characters through the typed command path; the graphical
+spike does not yet bind it to a keyboard shortcut. The first build may take several
 minutes because Bevy and its graphics
 dependencies are compiled locally.
 
