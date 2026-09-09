@@ -44,8 +44,8 @@ The tool passes only when it decodes and validates:
 
 ## Classification
 
-- Directly measured: the local command completed over TCP without a typed
-  protocol, framing, or server-session failure.
+- Directly measured: the local command completed over TCP without a protocol,
+  framing, or server-session failure.
 - Project-specific inference: the current starter loop is reachable through
   the same typed intent and event boundary that the client uses in wire mode.
 - Not demonstrated: thousands of connected clients, 200-player activity,

@@ -1622,7 +1622,7 @@ mod tests {
     }
 
     #[test]
-    fn wire_worker_reconnects_through_user_character_selection() {
+    fn wire_worker_reconnects_through_preferred_character_selection() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
         let address = listener
             .local_addr()
@@ -1643,13 +1643,10 @@ mod tests {
 
         let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let (event_tx, event_rx) = mpsc::channel();
-        spawn_wire_network_worker(address, None, command_rx, event_tx);
+        spawn_wire_network_worker(address, Some(7), command_rx, event_tx);
 
         let character_list = wait_for_test_character_list(&event_rx);
         assert_eq!(character_list[0].character_id, 7);
-        command_tx
-            .send(ClientCommand::SelectCharacter { character_id: 7 })
-            .expect("selection intent should queue");
 
         assert_eq!(wait_for_test_connected(&event_rx), 5);
         snapshot_rx
@@ -1658,9 +1655,6 @@ mod tests {
 
         let character_list = wait_for_test_character_list(&event_rx);
         assert_eq!(character_list[0].character_id, 7);
-        command_tx
-            .send(ClientCommand::SelectCharacter { character_id: 7 })
-            .expect("reconnect selection intent should queue");
         assert_eq!(wait_for_test_connected(&event_rx), 6);
         snapshot_rx
             .recv_timeout(Duration::from_secs(2))

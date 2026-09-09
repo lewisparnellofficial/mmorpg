@@ -185,11 +185,11 @@ packaging and isolation policy.
 
 The timing, AI, wire-envelope, and development-transport additions are still
 prototypes. They do not yet provide async backpressure, production
-authentication,
-encryption, interest-managed replication, or a graphical-client migration to
-production-grade reconnection, or a production replication protocol. The
-graphical client now has an opt-in typed server-message path, but the line mode
-remains the default until the two modes are behaviorally equivalent.
+authentication, encryption, interest-managed replication, or a production
+replication protocol. The typed wire listener is now the default and only
+runtime gameplay listener; retained line parsing and fixtures are compiled for
+tests and equivalence coverage only. The graphical client uses the typed
+listener by default, while production-grade reconnection remains future work.
 
 ### Batch 4: real simulation scheduling
 
