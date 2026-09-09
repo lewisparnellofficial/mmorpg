@@ -86,6 +86,12 @@ intents; and the healer accepts the invite and submits recovery. Those fixed
 character and entity IDs are local development-smoke assumptions, not a
 general client targeting contract.
 
+The renderer backend can be requested explicitly for a controlled diagnostic:
+`--render-backend auto` (the default), `--render-backend vulkan`, or
+`--render-backend gl`. The request is applied to Bevy's wgpu initialization and
+is reported as `render_backend_request=...`; a backend that has no usable
+adapter fails at startup rather than silently being reported as validated.
+
 On Linux, the host needs a working desktop session and graphics stack. Bevy's
 window and renderer may require distribution-specific X11/Wayland, Vulkan,
 OpenGL, audio, or input development libraries. The exact package names are

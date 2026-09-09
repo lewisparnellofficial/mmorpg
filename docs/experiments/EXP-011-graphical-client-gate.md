@@ -55,6 +55,16 @@ or renderer-quality acceptance gate.
   `--character-id <id>` argument. The worker selects that character only after
   receiving the authoritative character list; without the option, the
   existing Enter-key flow remains unchanged.
+- **Backend diagnostic update:** The client now accepts
+  `--render-backend auto|vulkan|gl` and reports the requested backend before
+  Bevy initialization. This prevents a fallback run from being mistaken for
+  an explicit backend result.
+- **Measured backend result:** On the documented host, an explicit
+  `--render-backend gl` request reported `render_backend_request=gl` and then
+  failed during Bevy adapter creation with `Unable to find a GPU`. OpenGL/GLES
+  is therefore not a validated fallback on this host; the existing successful
+  graphical runs use the automatic Vulkan path and retain its validation
+  warnings.
 - **Presentation update:** The graphical HUD now displays the authoritative
   player role, health, target health, and private party membership summary in
   addition to inventory, quest, vendor, server notification state, and the

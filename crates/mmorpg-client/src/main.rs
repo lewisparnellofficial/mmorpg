@@ -7,6 +7,8 @@
 
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
+use bevy::render::RenderPlugin;
+use bevy::render::settings::{Backends, RenderCreation, WgpuSettings};
 use bevy::window::{PrimaryWindow, WindowFocused};
 use mmorpg_client_adapter::apply_wire_message;
 #[cfg(test)]
@@ -47,6 +49,49 @@ const MAX_OUTGOING_LINES: usize = 64;
 const MAX_WIRE_INPUT_BYTES: usize = mmorpg_wire::MAX_FRAME_SIZE * 2;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const RECONNECT_DELAY: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RenderBackendChoice {
+    Automatic,
+    Vulkan,
+    Gl,
+}
+
+impl RenderBackendChoice {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Automatic),
+            "vulkan" | "vk" => Some(Self::Vulkan),
+            "gl" | "opengl" | "gles" => Some(Self::Gl),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Automatic => "auto",
+            Self::Vulkan => "vulkan",
+            Self::Gl => "gl",
+        }
+    }
+}
+
+fn render_plugin(choice: RenderBackendChoice) -> RenderPlugin {
+    let Some(backends) = (match choice {
+        RenderBackendChoice::Automatic => None,
+        RenderBackendChoice::Vulkan => Some(Backends::VULKAN),
+        RenderBackendChoice::Gl => Some(Backends::GL),
+    }) else {
+        return RenderPlugin::default();
+    };
+    RenderPlugin {
+        render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
+            backends: Some(backends),
+            ..default()
+        })),
+        ..default()
+    }
+}
 
 #[derive(Component)]
 struct StarterNpc {
@@ -287,6 +332,7 @@ fn main() {
     let mut wire_address = None;
     let mut preferred_character_id = None;
     let mut acceptance_smoke = false;
+    let mut render_backend = RenderBackendChoice::Automatic;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--wire-address" => {
@@ -318,6 +364,17 @@ fn main() {
                 }
             }
             "--acceptance-smoke" => acceptance_smoke = true,
+            "--render-backend" => {
+                let Some(value) = arguments.next() else {
+                    eprintln!("--render-backend requires auto, vulkan, or gl");
+                    return;
+                };
+                let Some(choice) = RenderBackendChoice::parse(&value) else {
+                    eprintln!("--render-backend must be auto, vulkan, or gl (got {value})");
+                    return;
+                };
+                render_backend = choice;
+            }
             _ => {
                 eprintln!("unknown argument '{argument}'");
                 return;
@@ -325,6 +382,7 @@ fn main() {
         }
     }
     let typed_address = wire_address.unwrap_or_else(|| server_address.clone());
+    println!("render_backend_request={}", render_backend.label());
     let scripted_ui = build_scripted_ui_presentation();
     let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel();
@@ -336,14 +394,18 @@ fn main() {
     );
 
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "MMORPG Client — interactive slice".to_owned(),
-                resolution: (1280, 720).into(),
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(render_plugin(render_backend))
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "MMORPG Client — interactive slice".to_owned(),
+                        resolution: (1280, 720).into(),
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        )
         .insert_resource(ClearColor(Color::srgb(0.08, 0.12, 0.18)))
         .insert_resource(ClientState::new(typed_address))
         .insert_resource(scripted_ui.clone())
@@ -2031,6 +2093,24 @@ mod tests {
                 quantity: 2,
             })
         );
+    }
+
+    #[test]
+    fn render_backend_selector_accepts_only_documented_values() {
+        assert_eq!(
+            RenderBackendChoice::parse("auto"),
+            Some(RenderBackendChoice::Automatic)
+        );
+        assert_eq!(
+            RenderBackendChoice::parse("vk"),
+            Some(RenderBackendChoice::Vulkan)
+        );
+        assert_eq!(
+            RenderBackendChoice::parse("opengl"),
+            Some(RenderBackendChoice::Gl)
+        );
+        assert_eq!(RenderBackendChoice::parse("metal"), None);
+        assert_eq!(RenderBackendChoice::Gl.label(), "gl");
     }
 
     #[test]
