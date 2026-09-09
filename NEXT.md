@@ -29,9 +29,10 @@ minimum-hardware evidence are available.
 
 The authoritative three-role encounter, party privacy, recovery, loot
 generations, typed reconnect, persistence, retry, slow-client, and release
-graphical smokes pass. Complete the remaining graphical/physical evidence
-required by Milestone 13, including durable progress across restart and the
-documented renderer-quality limitation.
+graphical smokes pass. The graphical restart-persistence smoke now also
+observes durable rewarded-quest progress after a server restart. The remaining
+Milestone 13 evidence is the physical tablet run and the documented debug
+renderer-quality limitation.
 
 ## 5. Return to post-slice production work
 

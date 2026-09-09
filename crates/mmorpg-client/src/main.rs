@@ -1713,6 +1713,7 @@ fn apply_server_line(state: &mut ClientState, line: &str) {
 }
 
 fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
+    let is_snapshot = matches!(message, ServerMessage::Snapshot(_));
     match message {
         ServerMessage::Response { message, .. } => return apply_server_message(state, message),
         ServerMessage::Welcome { server } => state.log(format!("server greeted {server}")),
@@ -1756,7 +1757,29 @@ fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
     }
     if let Err(error) = apply_wire_message(&mut state.presentation, message) {
         state.log(format!("authoritative presentation rejected: {error}"));
+    } else if is_snapshot {
+        log_graphical_bootstrap(state);
     }
+}
+
+fn log_graphical_bootstrap(state: &ClientState) {
+    let Some(player_id) = state.player_id else {
+        return;
+    };
+    let Some(player) = state.presentation.player(player_id) else {
+        return;
+    };
+    let quest = player
+        .quests
+        .iter()
+        .find(|quest| quest.quest_id == QuestId::CLEAR_THE_FIELD);
+    let (progress, status) = quest.map_or((0, "None".to_owned()), |quest| {
+        (quest.progress, format!("{:?}", quest.status))
+    });
+    println!(
+        "GRAPHICAL_BOOTSTRAP player={} gold={} clear_field_progress={} status={}",
+        player_id.0, player.gold, progress, status
+    );
 }
 
 #[cfg(test)]

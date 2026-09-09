@@ -25,6 +25,7 @@ For the opt-in three-window startup smoke, use:
 
 ```bash
 ./scripts/smoke-graphical-three-client.sh
+./scripts/smoke-graphical-restart-persistence.sh
 ```
 
 The script launches three real clients with `--character-id 1`, `2`, and `3`,
@@ -159,6 +160,15 @@ or renderer-quality acceptance gate.
   `PresentMode::Fifo` reproduced those reports. The warnings therefore are not
   resolved by present-mode selection; this change improves fallback behavior but
   does not close the debug renderer gate.
+- **Graphical restart-persistence result (2026-09-09):** The new bounded smoke
+  ran the real Bevy client through the purchase, quest acceptance, three-kill
+  loot, and quest-reward flow, closed the client, allowed the server's
+  off-thread checkpoint to commit, restarted the server with the same
+  character store, and entered the world again. The second authoritative
+  bootstrap reported `gold=28`, `clear_field_progress=3`, and
+  `status=Rewarded`. This verifies the graphical presentation path observes
+  durable town progress across restart; the wire-level retry and exactly-once
+  operation evidence remains covered by the separate restart smoke.
 - **Bound enforcement:** `smoke-graphical-release.sh` now parses the measured
   p95 and maximum values and fails aggregate validation if p95 exceeds 16.7 ms
   or maximum reaches 50 ms. A report is no longer treated as passing merely
