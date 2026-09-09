@@ -129,12 +129,20 @@ percentiles. The 2026-09-09 run on CachyOS Linux, kernel
 
 ```text
 iterations=100
-load p50=639026 ns, p95=997021 ns, max=1351470 ns
-callback p50=36484 ns, p95=55596 ns, max=67734 ns
+load p50=583019 ns, p95=1191466 ns, max=1564640 ns
+callback p50=31884 ns, p95=64099 ns, max=67341 ns
 ```
 
-The callback measurement is the average of ten dispatches within each sample;
-the load measurement includes VM construction and source execution. These are
+The current aggregate run also reported storage-worker timing:
+
+```text
+storage_p50_us=174 storage_p95_us=250 storage_max_us=250 storage_reload_us=702
+```
+
+The storage sample performs ten successful bounded commits, respecting the
+per-minute quota, then measures reopening the persisted namespace. The
+callback measurement is the average of ten dispatches within each sample; the
+load measurement includes VM construction and source execution. These are
 repeatable local observations for quota calibration, not a universal
 performance guarantee. The gate now has an optional coverage-guided fuzz
 target; renderer frame-time data, OS/process isolation, and minimum-hardware

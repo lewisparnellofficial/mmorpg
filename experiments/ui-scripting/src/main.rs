@@ -1,6 +1,7 @@
 use std::time::Instant;
 
-use ui_scripting_spike::{AddonPolicy, AddonRunner, DispatchResult, VisibleState};
+use mmorpg_ui_contract::{AccountId, PackageId, StorageNamespace, StoredValue};
+use ui_scripting_spike::{AddonPolicy, AddonRunner, DispatchResult, StorageWorker, VisibleState};
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--adversarial-gate") {
@@ -65,8 +66,9 @@ fn adversarial_gate() {
     }
     load_ns.sort_unstable();
     callback_ns.sort_unstable();
+    let (storage_us, reload_us) = storage_latency_sample();
     println!(
-        "ui adversarial gate: iterations={ITERATIONS} load_ns={} callback_ns={} load_p50_ns={} load_p95_ns={} load_max_ns={} callback_p50_ns={} callback_p95_ns={} callback_max_ns={}",
+        "ui adversarial gate: iterations={ITERATIONS} load_ns={} callback_ns={} load_p50_ns={} load_p95_ns={} load_max_ns={} callback_p50_ns={} callback_p95_ns={} callback_max_ns={} storage_p50_us={} storage_p95_us={} storage_max_us={} storage_reload_us={}",
         load_ns.len(),
         callback_ns.len(),
         percentile(&load_ns, 50),
@@ -75,7 +77,57 @@ fn adversarial_gate() {
         percentile(&callback_ns, 50),
         percentile(&callback_ns, 95),
         callback_ns[callback_ns.len() - 1],
+        percentile(&storage_us, 50),
+        percentile(&storage_us, 95),
+        storage_us[storage_us.len() - 1],
+        reload_us,
     );
+}
+
+fn storage_latency_sample() -> (Vec<u128>, u128) {
+    const COMMITS: u64 = 10;
+    let path = std::env::temp_dir().join(format!(
+        "mmorpg-ui-storage-benchmark-{}.state",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let namespace = StorageNamespace {
+        account_id: AccountId::new(7001).expect("benchmark account must be non-zero"),
+        package_id: PackageId::new(7002).expect("benchmark package must be non-zero"),
+        schema_version: 1,
+    };
+    let worker = StorageWorker::open(path.clone(), namespace.clone())
+        .expect("storage benchmark worker must open");
+    let mut latencies = Vec::with_capacity(COMMITS as usize);
+    for request_id in 1..=COMMITS {
+        let start = Instant::now();
+        worker
+            .set(
+                request_id,
+                format!("benchmark-{request_id}"),
+                StoredValue::Integer(request_id as i64),
+            )
+            .expect("storage benchmark request must be admitted");
+        loop {
+            if let Some(result) = worker.try_result() {
+                assert_eq!(result.request_id, request_id);
+                assert!(result.result.is_ok(), "storage benchmark commit failed");
+                latencies.push(start.elapsed().as_micros());
+                break;
+            }
+            std::thread::yield_now();
+        }
+    }
+    drop(worker);
+
+    let start = Instant::now();
+    let reloaded =
+        StorageWorker::open(path.clone(), namespace).expect("storage benchmark restart must open");
+    let reload_us = start.elapsed().as_micros();
+    drop(reloaded);
+    let _ = std::fs::remove_file(path);
+    latencies.sort_unstable();
+    (latencies, reload_us)
 }
 
 fn percentile(samples: &[u128], percentile: usize) -> u128 {
