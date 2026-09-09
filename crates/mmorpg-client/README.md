@@ -38,7 +38,7 @@ cargo run --manifest-path crates/mmorpg-client/Cargo.toml -- \
 The background worker sends the loopback-only development token,
 waits for the typed `Authenticated` response, lists available characters,
 displays the account's available characters, waits for the user to press
-`Enter` to select the displayed development character, enters the world,
+`Enter` to select the highlighted development character, enters the world,
 requests a typed bootstrap snapshot, and passes typed
 `ServerMessage` values through `mmorpg-client-adapter`. This handshake is
 not production authentication or an internet-safe credential flow. If the

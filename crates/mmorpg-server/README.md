@@ -95,11 +95,11 @@ Connected { player_id: <server-assigned>, ... }
 
 The server rejects unauthenticated commands and the legacy wire `Join` command.
 The `dev-local` token is accepted only on a loopback-bound typed listener. The
-development account currently exposes one static `Aria` damage-dealer
-character, but the client must list and explicitly select it before entering
-the world. This is intentionally a local protocol smoke-test handshake; it is
-not production authentication, authorization, encryption, or account/character
-persistence.
+development account currently exposes three stable starter characters (`Aria`
+damage, `Borin` tank, and `Celia` healer), but the client must list and
+explicitly select one before entering the world. This is intentionally a local
+protocol smoke-test handshake; it is not production authentication,
+authorization, encryption, or account/character persistence.
 
 The current server resolves the development token and character catalog through
 its `AccountCharacterRepository` boundary. `DevelopmentAccountRepository` is

@@ -16,9 +16,8 @@ use std::path::{Path, PathBuf};
 
 const DEV_AUTH_TOKEN: &str = "dev-local";
 const DEV_ACCOUNT_ID: u64 = 1;
+#[cfg(test)]
 const DEV_CHARACTER_ID: u64 = 1;
-const DEV_CHARACTER_NAME: &str = "Aria";
-const DEV_CHARACTER_ROLE: Role = Role::DamageDealer;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CharacterRecord {
@@ -102,13 +101,27 @@ impl DevelopmentAccountRepository {
         }
     }
 
-    fn development_character() -> CharacterRecord {
-        CharacterRecord {
-            character_id: DEV_CHARACTER_ID,
-            account_id: DEV_ACCOUNT_ID,
-            name: DEV_CHARACTER_NAME.to_owned(),
-            role: DEV_CHARACTER_ROLE,
-        }
+    fn development_characters() -> [CharacterRecord; 3] {
+        [
+            CharacterRecord {
+                character_id: 1,
+                account_id: DEV_ACCOUNT_ID,
+                name: "Aria".to_owned(),
+                role: Role::DamageDealer,
+            },
+            CharacterRecord {
+                character_id: 2,
+                account_id: DEV_ACCOUNT_ID,
+                name: "Borin".to_owned(),
+                role: Role::Tank,
+            },
+            CharacterRecord {
+                character_id: 3,
+                account_id: DEV_ACCOUNT_ID,
+                name: "Celia".to_owned(),
+                role: Role::Healer,
+            },
+        ]
     }
 }
 
@@ -124,17 +137,18 @@ impl AccountCharacterRepository for DevelopmentAccountRepository {
     }
 
     fn list_characters(&self, account_id: u64) -> Vec<CharacterRecord> {
-        let character = Self::development_character();
-        (account_id == character.account_id)
-            .then_some(character)
+        Self::development_characters()
             .into_iter()
+            .filter(|character| character.account_id == account_id)
             .collect()
     }
 
     fn find_character(&self, account_id: u64, character_id: u64) -> Option<CharacterRecord> {
-        let character = Self::development_character();
-        (account_id == character.account_id && character_id == character.character_id)
-            .then_some(character)
+        Self::development_characters()
+            .into_iter()
+            .find(|character| {
+                account_id == character.account_id && character_id == character.character_id
+            })
     }
 
     fn load_checkpoint(
@@ -145,9 +159,9 @@ impl AccountCharacterRepository for DevelopmentAccountRepository {
         if self.find_character(account_id, character_id).is_none() {
             return Ok(None);
         }
-        self.checkpoint_store
-            .as_ref()
-            .map_or(Ok(None), LocalCheckpointStore::load)
+        self.checkpoint_store.as_ref().map_or(Ok(None), |store| {
+            LocalCheckpointStore::new(store.path_for_character(account_id, character_id)).load()
+        })
     }
 
     fn save_checkpoint(
@@ -159,9 +173,10 @@ impl AccountCharacterRepository for DevelopmentAccountRepository {
         if self.find_character(account_id, character_id).is_none() {
             return Err("unknown character".to_owned());
         }
-        self.checkpoint_store
-            .as_ref()
-            .map_or(Ok(()), |store| store.save(state))
+        self.checkpoint_store.as_ref().map_or(Ok(()), |store| {
+            LocalCheckpointStore::new(store.path_for_character(account_id, character_id))
+                .save(state)
+        })
     }
 }
 
@@ -172,6 +187,18 @@ struct LocalCheckpointStore {
 impl LocalCheckpointStore {
     fn new(path: PathBuf) -> Self {
         Self { path }
+    }
+
+    fn path_for_character(&self, account_id: u64, character_id: u64) -> PathBuf {
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        let stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("character.state");
+        parent.join(format!(
+            "{stem}.account-{account_id}.character-{character_id}"
+        ))
     }
 
     fn load(&self) -> Result<Option<DurablePlayerState>, String> {
@@ -385,7 +412,7 @@ mod tests {
     fn development_repository_scopes_characters_to_the_authenticated_account() {
         let repository = DevelopmentAccountRepository::new(true);
 
-        assert_eq!(repository.list_characters(DEV_ACCOUNT_ID).len(), 1);
+        assert_eq!(repository.list_characters(DEV_ACCOUNT_ID).len(), 3);
         assert!(repository.list_characters(2).is_empty());
 
         let character = repository
@@ -393,12 +420,16 @@ mod tests {
             .expect("development character should exist");
         assert_eq!(character.name, "Aria");
         assert_eq!(character.role, Role::DamageDealer);
-        assert!(repository.find_character(2, DEV_CHARACTER_ID).is_none());
-        assert!(
-            repository
-                .find_character(DEV_ACCOUNT_ID, DEV_CHARACTER_ID + 1)
-                .is_none()
+        assert_eq!(
+            repository.find_character(DEV_ACCOUNT_ID, 2).unwrap().role,
+            Role::Tank
         );
+        assert_eq!(
+            repository.find_character(DEV_ACCOUNT_ID, 3).unwrap().role,
+            Role::Healer
+        );
+        assert!(repository.find_character(2, DEV_CHARACTER_ID).is_none());
+        assert!(repository.find_character(DEV_ACCOUNT_ID, 4).is_none());
     }
 
     #[test]
@@ -409,6 +440,16 @@ mod tests {
             .as_nanos();
         let path = std::env::temp_dir().join(format!("mmorpg-checkpoint-{unique}.state"));
         let repository = DevelopmentAccountRepository::with_checkpoint_store(true, path.clone());
+        let character_path = repository
+            .checkpoint_store
+            .as_ref()
+            .unwrap()
+            .path_for_character(DEV_ACCOUNT_ID, DEV_CHARACTER_ID);
+        let other_character_path = repository
+            .checkpoint_store
+            .as_ref()
+            .unwrap()
+            .path_for_character(DEV_ACCOUNT_ID, 2);
         let state = DurablePlayerState {
             name: "Aria".to_owned(),
             role: Role::DamageDealer,
@@ -435,16 +476,38 @@ mod tests {
             repository
                 .load_checkpoint(DEV_ACCOUNT_ID, DEV_CHARACTER_ID)
                 .expect("checkpoint should load"),
-            Some(state)
+            Some(state.clone())
         );
-        fs::write(&path, "not a checkpoint\n").expect("malformed fixture should write");
+        let mut other_character = state.clone();
+        other_character.name = "Borin".to_owned();
+        other_character.role = Role::Tank;
+        repository
+            .save_checkpoint(DEV_ACCOUNT_ID, 2, &other_character)
+            .expect("second character checkpoint should save");
+        assert_eq!(
+            repository
+                .load_checkpoint(DEV_ACCOUNT_ID, 2)
+                .expect("second character checkpoint should load")
+                .expect("second character checkpoint should exist")
+                .name,
+            "Borin"
+        );
+        assert_eq!(
+            repository
+                .load_checkpoint(DEV_ACCOUNT_ID, DEV_CHARACTER_ID)
+                .expect("first character checkpoint should remain")
+                .expect("first character checkpoint should exist")
+                .name,
+            "Aria"
+        );
+        fs::write(&character_path, "not a checkpoint\n").expect("malformed fixture should write");
         assert!(
             repository
                 .load_checkpoint(DEV_ACCOUNT_ID, DEV_CHARACTER_ID)
                 .is_err()
         );
         fs::write(
-            &path,
+            &character_path,
             "name=Aria\nrole=damage\nx=0\ny=0\ngold=0\ncapacity=0\n",
         )
         .expect("unversioned fixture should write");
@@ -454,7 +517,7 @@ mod tests {
                 .is_err()
         );
         fs::write(
-            &path,
+            &character_path,
             "version=1\nname=Aria\nname=Other\nrole=damage\nx=0\ny=0\ngold=0\ncapacity=0\n",
         )
         .expect("duplicate fixture should write");
@@ -463,6 +526,7 @@ mod tests {
                 .load_checkpoint(DEV_ACCOUNT_ID, DEV_CHARACTER_ID)
                 .is_err()
         );
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(character_path);
+        let _ = fs::remove_file(other_character_path);
     }
 }
