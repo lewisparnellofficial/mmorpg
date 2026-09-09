@@ -161,6 +161,14 @@ or renderer-quality acceptance gate.
   reproduced those reports. The warnings therefore are not resolved by
   present-mode selection; this change improves fallback behavior but does not
   close the debug renderer gate.
+- **Upstream correlation:** wgpu issue [#9213](https://github.com/gfx-rs/wgpu/issues/9213)
+  reports the same `VK_IMAGE_LAYOUT_UNDEFINED` presentation validation on a
+  Bevy/wgpu Vulkan path, while wgpu issue
+  [#7957](https://github.com/gfx-rs/wgpu/issues/7957) documents the related
+  swapchain-semaphore reuse class. These reports support treating the current
+  result as a wgpu/driver integration limitation rather than evidence that the
+  project should suppress validation output; they do not independently clear
+  this host's renderer gate.
 - **Graphical restart-persistence result (2026-09-09):** The new bounded smoke
   ran the real Bevy client through the purchase, quest acceptance, three-kill
   loot, and quest-reward flow, closed the client, allowed the server's
