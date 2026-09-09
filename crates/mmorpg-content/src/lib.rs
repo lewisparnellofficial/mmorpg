@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::fmt::Write as _;
 
 /// Stable identifier for an item definition.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -236,6 +237,135 @@ impl ContentCatalog {
             Err(errors)
         }
     }
+
+    /// Returns the canonical semantic representation used for compatibility
+    /// checks. Records are sorted by stable IDs rather than source order, and
+    /// floating-point spawn coordinates are represented by their exact IEEE
+    /// bits. Runtime stock, player state, and other mutable values are not
+    /// included.
+    pub fn canonical_bytes(self) -> Vec<u8> {
+        let mut output = String::new();
+        let mut items: Vec<_> = self.items.iter().collect();
+        items.sort_by_key(|item| item.id);
+        for item in items {
+            let _ = writeln!(
+                output,
+                "item|{}|{}|{}",
+                item.id.0, item.name, item.max_stack
+            );
+        }
+        let mut npcs: Vec<_> = self.npcs.iter().collect();
+        npcs.sort_by_key(|npc| npc.id);
+        for npc in npcs {
+            let archetype = match npc.archetype {
+                NpcArchetype::Vendor => "vendor",
+                NpcArchetype::Enemy => "enemy",
+                NpcArchetype::QuestGiver => "quest_giver",
+            };
+            let _ = writeln!(
+                output,
+                "npc|{}|{}|{}|{}",
+                npc.id.0, npc.name, archetype, npc.max_health
+            );
+        }
+        let mut listings: Vec<_> = self.vendor_listings.iter().collect();
+        listings.sort_by_key(|listing| listing.item_id);
+        for listing in listings {
+            let _ = writeln!(
+                output,
+                "vendor_listing|{}|{}|{}",
+                listing.item_id.0, listing.unit_price, listing.initial_quantity
+            );
+        }
+        let mut quests: Vec<_> = self.quests.iter().collect();
+        quests.sort_by_key(|quest| quest.id);
+        for quest in quests {
+            let _ = writeln!(
+                output,
+                "quest|{}|{}|{}|{}|{}|{}|{}|{}",
+                quest.id.0,
+                quest.name,
+                quest.description,
+                quest.giver.0,
+                quest.reward.gold,
+                quest.reward.item_id.map_or(0, |item| item.0),
+                quest.reward.item_quantity,
+                quest.objectives.len()
+            );
+            for objective in quest.objectives {
+                match objective {
+                    ObjectiveDefinition::KillNpc {
+                        npc_template_id,
+                        required_count,
+                    } => {
+                        let _ = writeln!(
+                            output,
+                            "objective|kill_npc|{}|{}",
+                            npc_template_id.0, required_count
+                        );
+                    }
+                }
+            }
+        }
+        let mut zones: Vec<_> = self.zones.iter().collect();
+        zones.sort_by_key(|zone| zone.id);
+        for zone in zones {
+            let _ = writeln!(
+                output,
+                "zone|{}|{}|{}",
+                zone.id.0,
+                zone.name,
+                zone.spawns.len()
+            );
+            let mut spawns: Vec<_> = zone.spawns.iter().collect();
+            spawns
+                .sort_by_key(|spawn| (spawn.npc_template_id, spawn.x.to_bits(), spawn.y.to_bits()));
+            for spawn in spawns {
+                let _ = writeln!(
+                    output,
+                    "spawn|{}|{}|{}",
+                    spawn.npc_template_id.0,
+                    spawn.x.to_bits(),
+                    spawn.y.to_bits()
+                );
+            }
+        }
+        output.into_bytes()
+    }
+
+    /// Computes a deterministic 256-bit compatibility digest without pulling
+    /// a cryptographic dependency into this static content crate. This digest
+    /// detects semantic catalog disagreement; it is not an authenticity or
+    /// tamper-proof signature and must not replace package integrity checks.
+    pub fn content_digest(self) -> [u8; 32] {
+        let bytes = self.canonical_bytes();
+        let seeds = [
+            0xcbf29ce484222325_u64,
+            0x84222325cbf29ce4_u64,
+            0x9e3779b185ebca87_u64,
+            0xd6e8feb86659fd93_u64,
+        ];
+        let mut lanes = seeds;
+        for byte in bytes {
+            for (index, lane) in lanes.iter_mut().enumerate() {
+                *lane ^= u64::from(byte).wrapping_add((index as u64) << 8);
+                *lane = lane.wrapping_mul(0x100000001b3);
+                *lane ^= *lane >> 29;
+            }
+        }
+        let mut digest = [0_u8; 32];
+        for (index, lane) in lanes.into_iter().enumerate() {
+            digest[index * 8..(index + 1) * 8].copy_from_slice(&lane.to_be_bytes());
+        }
+        digest
+    }
+
+    pub fn content_digest_hex(self) -> String {
+        self.content_digest()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
 }
 
 fn validate_unique_ids<T>(ids: impl Iterator<Item = T>, kind: &str, errors: &mut Vec<ContentError>)
@@ -449,5 +579,38 @@ mod tests {
         assert!(errors.contains(&ContentError::ZeroNpcHealth(NpcTemplateId(999))));
         assert!(errors.contains(&ContentError::ZeroObjectiveCount(QuestId(1))));
         assert!(errors.contains(&ContentError::ZeroRewardQuantity(QuestId(1))));
+    }
+
+    #[test]
+    fn content_digest_is_stable_under_source_order_changes() {
+        const REVERSED_ITEMS: &[ItemDefinition] =
+            &[STARTER_ITEMS[2], STARTER_ITEMS[1], STARTER_ITEMS[0]];
+        let mut reordered = starter_catalog();
+        reordered.items = REVERSED_ITEMS;
+        assert_eq!(
+            starter_catalog().canonical_bytes(),
+            reordered.canonical_bytes()
+        );
+        assert_eq!(
+            starter_catalog().content_digest(),
+            reordered.content_digest()
+        );
+        assert_eq!(starter_catalog().content_digest_hex().len(), 64);
+    }
+
+    #[test]
+    fn content_digest_changes_for_semantic_content_changes() {
+        const CHANGED_ITEMS: &[ItemDefinition] = &[
+            ItemDefinition {
+                id: ItemId::FIELD_WOLF_PELT,
+                name: "Field Wolf Pelt",
+                max_stack: 19,
+            },
+            STARTER_ITEMS[1],
+            STARTER_ITEMS[2],
+        ];
+        let mut changed = starter_catalog();
+        changed.items = CHANGED_ITEMS;
+        assert_ne!(starter_catalog().content_digest(), changed.content_digest());
     }
 }

@@ -1,5 +1,21 @@
 # `mmorpg-wire`
 
+## Compatibility and additive events
+
+The gameplay envelope remains protocol version `1`, while a frozen
+version-independent control profile (`version = 0`, `MessageKind::Control`)
+can carry `VersionRejected { supported_min, supported_max }`. Use
+`encode_compatibility_control` and `decode_compatibility_control` for this
+profile; the ordinary `decode_one` path intentionally continues to reject the
+version-independent frame as a gameplay envelope.
+
+New server events may use `encode_framed_server_event` and
+`decode_framed_server_event`. The five-byte event prefix declares the opcode
+and body length. A well-formed unknown opcode becomes `SkippedUnknown`; a
+length mismatch is a fatal `MalformedEventLength` error. This is an additive
+compatibility helper and does not silently reinterpret the existing unframed
+v1 payload fixtures.
+
 This crate is a prototype for the production protocol boundary. It
 defines a small, transport-independent envelope for versioned commands and
 events. The envelope remains independent of sockets and the simulation, while
@@ -13,7 +29,7 @@ Each frame is encoded in network byte order as:
 u32 body_length
 u8[4] magic             "MMOW"
 u16 protocol_version   1
-u8 message_kind        1 = command, 2 = event
+u8 message_kind        1 = command, 2 = event, 3 = control
 u8 flags               reserved; must be 0
 u32 payload_length
 u8[payload_length] payload
@@ -26,8 +42,10 @@ when multiple frames share a stream and to identify a partial frame without
 guessing where a message ends. `decode_one` returns the number of consumed
 bytes, leaving any following frame available to the caller.
 
-The current implementation accepts only protocol version 1, command/event
-message kinds 1 and 2, and zero flags. These explicit rejection rules are
+The current gameplay implementation accepts protocol version 1, command,
+event, or control message kinds, and zero flags. The compatibility profile
+uses version 0 only for its separately decoded control frame. These explicit
+rejection rules are
 intentional: a future protocol can add negotiated versions or flags behind a
 deliberate compatibility decision instead of silently interpreting unknown
 bytes.
@@ -38,8 +56,8 @@ bytes.
 first structured application payload above the envelope. The schema currently
 covers development authentication, character listing/selection, world entry,
 join compatibility decoding, movement, target selection, attack, vendor
-listing and purchase, loot, quest offers/acceptance/turn-in, and snapshot
-request. Numeric IDs are
+listing and purchase, loot, quest offers/acceptance/turn-in, snapshot request,
+and pre-entry content digest exchange. Numeric IDs are
 big-endian, movement values are IEEE-754 `f32` bit patterns, names are bounded
 UTF-8 strings, and zero IDs/quantities or non-finite movement values are
 rejected. The server session adapter now consumes these commands on its

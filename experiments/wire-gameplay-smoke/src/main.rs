@@ -6,6 +6,7 @@
 //! authoritative world, and client-facing typed payloads together.
 
 use mmorpg_client_transport::{WireConnection, WireConnectionConfig};
+use mmorpg_content::starter_catalog;
 use mmorpg_wire::{ClientCommand, ServerEvent, ServerMessage, WorldSnapshot};
 use std::env;
 
@@ -109,6 +110,16 @@ fn main() {
             assert_eq!(role, mmorpg_wire::RoleCode::DamageDealer);
         }
         _ => unreachable!("predicate selected character-selected message"),
+    }
+    let digest = starter_catalog().content_digest();
+    connection
+        .send_typed_command(&ClientCommand::ContentDigest { digest })
+        .expect("content digest command should encode and send");
+    match expect_message(&mut connection, "content accepted", |message| {
+        matches!(message, ServerMessage::ContentAccepted { .. })
+    }) {
+        ServerMessage::ContentAccepted { digest: accepted } => assert_eq!(accepted, digest),
+        _ => unreachable!("predicate selected content acceptance"),
     }
     connection
         .send_typed_command(&ClientCommand::EnterWorld)

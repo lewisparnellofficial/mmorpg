@@ -7,6 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
+mmorpg-content = { path = "../../crates/mmorpg-content" }
 mmorpg-client-transport = { path = "../../crates/mmorpg-client-transport" }
 mmorpg-wire = { path = "../../crates/mmorpg-wire" }
 

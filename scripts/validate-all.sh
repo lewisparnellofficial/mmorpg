@@ -74,6 +74,12 @@ run_step "root workspace: fmt" cargo fmt --all -- --check
 run_step "root workspace: check" cargo check --workspace
 run_step "root workspace: test" cargo test --workspace
 
+# The language-neutral addon host is part of the root workspace. Keep an
+# explicit focused invocation here so the aggregate output names this new
+# integration gate and its contract tests remain visible in CI logs.
+run_step "UI contract: test" cargo test --manifest-path "$repo_root/crates/mmorpg-ui-contract/Cargo.toml"
+run_step "client session: test" cargo test --manifest-path "$repo_root/crates/mmorpg-client-session/Cargo.toml"
+
 # The Bevy client is intentionally checked rather than run: it requires a
 # Linux desktop session and graphics stack, while compilation still verifies
 # its protocol/model integration in the aggregate gate.

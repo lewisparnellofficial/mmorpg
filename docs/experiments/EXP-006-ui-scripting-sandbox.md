@@ -1,7 +1,7 @@
 # EXP-006: Luau UI scripting sandbox
 
-**Status:** Measured local technology spike; production decision remains
-provisional
+**Status:** Measured local technology spike plus a provisional language-neutral
+host contract; production decision remains provisional
 
 **Date:** 2026-09-07
 
@@ -20,6 +20,14 @@ UI and player addons without exposing OS access, gameplay commands, or another
 addon's UI handles.
 
 ## Implementation and configuration
+
+The language-neutral portion is implemented in
+[`mmorpg-ui-contract`](../../crates/mmorpg-ui-contract/). It has no runtime,
+renderer, socket, filesystem, or authoritative-core dependency. Its focused
+tests cover bounded event coalescing/FIFO behavior, operation validation,
+manifest rejection, and account/package-scoped storage failure atomicity.
+The Luau experiment remains an adapter prototype and has not yet been moved to
+this contract.
 
 The implementation is in
 [`experiments/ui-scripting`](../../experiments/ui-scripting/README.md). It uses

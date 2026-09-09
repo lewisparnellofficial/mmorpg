@@ -2,6 +2,8 @@
 members = [
     "crates/mmorpg-content",
     "crates/mmorpg-client-model",
+    "crates/mmorpg-client-session",
+    "crates/mmorpg-ui-contract",
     "crates/mmorpg-wire",
     "crates/mmorpg-core",
     "crates/mmorpg-server",

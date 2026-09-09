@@ -3429,6 +3429,7 @@ dependencies = [
  "mmorpg-client-adapter",
  "mmorpg-client-model",
  "mmorpg-client-protocol",
+ "mmorpg-client-session",
  "mmorpg-content",
  "mmorpg-wire",
 ]
@@ -3457,6 +3458,13 @@ name = "mmorpg-client-protocol"
 version = "0.1.0"
 dependencies = [
  "mmorpg-core",
+]
+
+[[package]]
+name = "mmorpg-client-session"
+version = "0.1.0"
+dependencies = [
+ "mmorpg-wire",
 ]
 
 [[package]]

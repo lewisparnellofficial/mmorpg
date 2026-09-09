@@ -252,6 +252,8 @@ pub fn apply_wire_message(
         | ServerMessage::CharacterList { .. }
         | ServerMessage::CharacterSelected { .. }
         | ServerMessage::Connected { .. }
+        | ServerMessage::ContentAccepted { .. }
+        | ServerMessage::ContentMismatch { .. }
         | ServerMessage::Error { .. } => Ok(()),
     }
 }

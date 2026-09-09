@@ -10,6 +10,7 @@ publish = false
 bevy = { version = "0.19.1", default-features = true }
 mmorpg-client-adapter = { path = "../mmorpg-client-adapter" }
 mmorpg-client-model = { path = "../mmorpg-client-model" }
+mmorpg-client-session = { path = "../mmorpg-client-session" }
 mmorpg-content = { path = "../mmorpg-content" }
 mmorpg-client-protocol = { path = "../mmorpg-client-protocol" }
 mmorpg-wire = { path = "../mmorpg-wire" }

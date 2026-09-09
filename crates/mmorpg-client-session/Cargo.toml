@@ -1,12 +1,10 @@
 [package]
-name = "mmorpg-server"
+name = "mmorpg-client-session"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [dependencies]
-mmorpg-content = { path = "../mmorpg-content" }
-mmorpg-core = { path = "../mmorpg-core" }
 mmorpg-wire = { path = "../mmorpg-wire" }
 
 [lints.rust]

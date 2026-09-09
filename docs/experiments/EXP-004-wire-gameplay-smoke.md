@@ -1,5 +1,11 @@
 # EXP-004: typed wire gameplay smoke test
 
+The wire boundary also has deterministic codec tests for the Milestone 2
+compatibility gates: a version-independent `VersionRejected` control frame,
+unknown length-delimited additive-event skipping, and malformed event-length
+rejection. These tests are protocol evidence only; they do not yet prove a
+running old-client/server interoperability exchange.
+
 ## Purpose
 
 Verify that the versioned wire listener and the typed client-facing payloads

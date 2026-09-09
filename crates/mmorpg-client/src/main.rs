@@ -12,6 +12,7 @@ use mmorpg_client_adapter::{
     apply_wire_message,
 };
 use mmorpg_client_model::{ClientEntity, ClientWorld};
+use mmorpg_client_session::{Session as TypedSession, SessionInput, SessionOutput, SessionState};
 use mmorpg_client_protocol::{
     EntityId, NpcKind, ServerEvent, ServerLine, Snapshot, SnapshotAssembler, decode_server_line,
 };
@@ -493,29 +494,25 @@ fn spawn_wire_network_worker(
                 return;
             }
             let mut outgoing = VecDeque::<Vec<u8>>::new();
-            queue_wire_command(
-                &mut outgoing,
-                WireCommand::Authenticate {
-                    token: DEV_AUTH_TOKEN.to_owned(),
-                },
+            let mut session = TypedSession::with_content_digest(
+                DEV_AUTH_TOKEN,
+                starter_catalog().content_digest(),
             );
+            queue_session_outputs(&mut outgoing, session.handle(SessionInput::Connect));
             let mut incoming = Vec::new();
-            let mut session_ready = false;
-            let mut selection_ready = false;
 
             'connection: loop {
                 match command_rx.try_recv() {
                     Err(TryRecvError::Disconnected) => return,
-                    Ok(ClientCommand::SelectCharacter { character_id }) if selection_ready => {
-                        queue_wire_command(
+                    Ok(ClientCommand::SelectCharacter { character_id }) => queue_session_outputs(
+                        &mut outgoing,
+                        session.handle(SessionInput::SelectCharacter(character_id)),
+                    ),
+                    Ok(command) if session.state() == SessionState::Ready => {
+                        queue_session_outputs(
                             &mut outgoing,
-                            WireCommand::SelectCharacter { character_id },
+                            session.handle(SessionInput::Intent(client_command_to_wire(command))),
                         );
-                        selection_ready = false;
-                    }
-                    Ok(ClientCommand::SelectCharacter { .. }) => {}
-                    Ok(command) if session_ready => {
-                        queue_wire_command(&mut outgoing, client_command_to_wire(command))
                     }
                     Ok(command) if deferred_commands.len() < MAX_DEFERRED_COMMANDS => {
                         deferred_commands.push_back(command)
@@ -589,26 +586,29 @@ fn spawn_wire_network_worker(
                             break 'connection;
                         }
                     };
-                    if let ServerMessage::Authenticated { .. } = message {
-                        queue_wire_command(&mut outgoing, WireCommand::ListCharacters);
-                    }
-                    if let ServerMessage::CharacterList { characters, .. } = &message {
-                        if characters.is_empty() {
-                            let _ = event_tx.send(NetworkEvent::Status(
-                                "authenticated account has no characters".to_owned(),
-                            ));
-                            continue;
+                    let session_outputs = session.handle(SessionInput::Server(message.clone()));
+                    if session_outputs.iter().any(|output| {
+                        matches!(output, SessionOutput::Rejected { .. })
+                    }) {
+                        if let ServerMessage::Error { message } = &message {
+                            let _ = event_tx.send(NetworkEvent::Status(format!(
+                                "typed wire session rejected message: {message}"
+                            )));
                         }
-                        selection_ready = true;
                     }
-                    if let ServerMessage::CharacterSelected { .. } = message {
-                        queue_wire_command(&mut outgoing, WireCommand::EnterWorld);
+                    queue_session_outputs(&mut outgoing, session_outputs);
+                    if matches!(message, ServerMessage::CharacterList { ref characters, .. } if characters.is_empty()) {
+                        let _ = event_tx.send(NetworkEvent::Status(
+                            "authenticated account has no characters".to_owned(),
+                        ));
+                        continue;
                     }
-                    if let ServerMessage::Connected { .. } = message {
-                        session_ready = true;
-                        queue_wire_command(&mut outgoing, WireCommand::Snapshot);
+                    if matches!(message, ServerMessage::Snapshot(_)) {
                         while let Some(command) = deferred_commands.pop_front() {
-                            queue_wire_command(&mut outgoing, client_command_to_wire(command));
+                            queue_session_outputs(
+                                &mut outgoing,
+                                session.handle(SessionInput::Intent(client_command_to_wire(command))),
+                            );
                         }
                     }
                     if event_tx.send(NetworkEvent::ServerMessage(message)).is_err() {
@@ -618,6 +618,8 @@ fn spawn_wire_network_worker(
 
                 thread::sleep(Duration::from_millis(5));
             }
+            let _ = session.handle(SessionInput::Disconnected);
+            deferred_commands.clear();
             thread::sleep(RECONNECT_DELAY);
         }
     });
@@ -673,6 +675,14 @@ fn queue_wire_command(outgoing: &mut VecDeque<Vec<u8>>, command: WireCommand) {
         return;
     };
     outgoing.push_back(frame);
+}
+
+fn queue_session_outputs(outgoing: &mut VecDeque<Vec<u8>>, outputs: Vec<SessionOutput>) {
+    for output in outputs {
+        if let SessionOutput::Send(command) = output {
+            queue_wire_command(outgoing, command);
+        }
+    }
 }
 
 fn queue_command_line(outgoing: &mut VecDeque<Vec<u8>>, command: &str) {
@@ -1214,6 +1224,14 @@ fn apply_server_message(state: &mut ClientState, message: &ServerMessage) {
             state.player_id = Some(EntityId(*player_id));
             state.connection_status = "authenticated typed development session".to_owned();
             state.log(format!("connected as {player_id}"));
+        }
+        ServerMessage::ContentAccepted { .. } => {
+            state.connection_status = "content compatible; entering world".to_owned();
+            state.log("content compatibility accepted".to_owned());
+        }
+        ServerMessage::ContentMismatch { .. } => {
+            state.connection_status = "content mismatch".to_owned();
+            state.log("content compatibility rejected".to_owned());
         }
         ServerMessage::Error { message } => state.log(format!("rejected: {message}")),
         ServerMessage::Event(_) | ServerMessage::Snapshot(_) => {}

@@ -1,6 +1,31 @@
 # Client UI Scripting and Addon Sandbox
 
-**Status:** Proposed; security experiment required
+**Status:** Proposed; language-neutral `ui.v1` contract implemented, runtime
+and secure-input evidence still required
+
+## Contract boundary
+
+The dependency-light [`mmorpg-ui-contract`](../../crates/mmorpg-ui-contract/)
+crate is the canonical host boundary. It is deliberately independent of the
+Luau experiment and of the renderer. The default UI and player addons must
+eventually use the same operations and immutable view records through runtime
+adapters.
+
+The contract currently defines:
+
+- stable package, account, node, generation, and timer IDs;
+- immutable presentation view records;
+- replaceable/coalesced state events and ordered FIFO events with bounded
+  count/byte queues;
+- owner- and generation-checked handles and all-or-nothing operation-batch
+  validation;
+- manifest checks for source-only packages, dependencies, capabilities, and
+  integrity hashes; and
+- bounded, finite `storage.v1` values scoped by account, package, and schema.
+
+These are policy tests and a host-adapter foundation. They do not yet prove
+that a Luau VM, renderer, filesystem adapter, or native input path enforces
+the contract under hostile load.
 
 ## Goals
 

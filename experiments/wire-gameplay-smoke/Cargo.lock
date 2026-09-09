@@ -37,5 +37,6 @@ name = "wire-gameplay-smoke"
 version = "0.1.0"
 dependencies = [
  "mmorpg-client-transport",
+ "mmorpg-content",
  "mmorpg-wire",
 ]

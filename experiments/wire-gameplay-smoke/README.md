@@ -8,6 +8,10 @@ development character, verifies the typed bootstrap snapshot, buys from the
 vendor, accepts the starter quest, defeats and loots all three field wolves,
 and turns the quest in.
 
+Before entering the world it computes the canonical compiled-catalog digest,
+sends `ContentDigest`, and requires `ContentAccepted`; a mismatched catalog is
+therefore rejected before the character is bound to the simulation.
+
 It is an integration smoke test, not a benchmark. It uses one client and one
 development server process and does not measure capacity, latency, persistence,
 production authentication, or production backpressure. The development auth

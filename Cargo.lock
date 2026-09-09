@@ -11,6 +11,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mmorpg-client-session"
+version = "0.1.0"
+dependencies = [
+ "mmorpg-wire",
+]
+
+[[package]]
 name = "mmorpg-content"
 version = "0.1.0"
 
@@ -25,9 +32,14 @@ dependencies = [
 name = "mmorpg-server"
 version = "0.1.0"
 dependencies = [
+ "mmorpg-content",
  "mmorpg-core",
  "mmorpg-wire",
 ]
+
+[[package]]
+name = "mmorpg-ui-contract"
+version = "0.1.0"
 
 [[package]]
 name = "mmorpg-wire"

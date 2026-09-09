@@ -2,6 +2,12 @@
 
 **Status:** Proposed; experiment required
 
+The current wire crate now has a compatibility-only control profile for
+version rejection and a length-delimited additive-event helper. These are
+validated codec boundaries; server/client cutover, retained previous-client
+fixtures, content-digest negotiation, and sequence-aware resync are still
+required before the gameplay protocol version can change.
+
 ## Core model
 
 The server is authoritative. Clients send input or intent, and the server sends authoritative state and event results.
@@ -118,3 +124,20 @@ The client must not decide:
 ## Initial networking experiment
 
 Create a headless simulated-client test that can maintain 5,000 mostly idle connections and separately drive 200 active players in one world-boss scenario. Record the results in `docs/experiments/` before accepting a production network design.
+# Typed client session boundary
+
+The renderer-independent [`mmorpg-client-session`](../../crates/mmorpg-client-session/)
+crate owns the typed development handshake: authentication, character-list
+receipt, explicit character selection, world entry, bootstrap, and ready
+state. Socket workers submit decoded `mmorpg-wire` messages to this boundary;
+the renderer does not decide whether gameplay intent is legal.
+
+Disconnect clears the presented-world marker, selected character, bootstrap,
+and pending gameplay intents. Reconnect therefore starts a new authenticated
+development session and requires explicit selection again. Commands submitted
+before `Ready` are rejected, and command output is bounded by count and encoded
+payload bytes.
+
+This is an implementation step toward the session policy in `PLAN.md`; it does
+not yet provide sequence numbers, gap recovery, content-digest negotiation,
+or production session resume.

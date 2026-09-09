@@ -11,6 +11,9 @@ const MAX_COMMAND_NAME_BYTES: usize = 64;
 
 /// The only protocol version understood by this prototype.
 pub const PROTOCOL_VERSION: u16 = 1;
+/// Version-independent control profile version. Control frames are used to
+/// explain incompatibility before a gameplay-version decoder is available.
+pub const COMPATIBILITY_PROFILE_VERSION: u16 = 0;
 
 /// Four bytes at the beginning of every envelope body.
 pub const MAGIC: [u8; 4] = *b"MMOW";
@@ -32,6 +35,108 @@ const MAX_PAYLOAD_SIZE: usize = MAX_FRAME_SIZE - HEADER_LEN;
 pub enum MessageKind {
     Command = 1,
     Event = 2,
+    Control = 3,
+}
+
+/// The frozen, version-independent control profile carried by a compatibility
+/// frame. It intentionally contains no gameplay data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompatibilityControl {
+    VersionRejected {
+        supported_min: u16,
+        supported_max: u16,
+    },
+}
+
+impl CompatibilityControl {
+    pub fn encode_payload(&self) -> Vec<u8> {
+        match self {
+            Self::VersionRejected {
+                supported_min,
+                supported_max,
+            } => {
+                let mut payload = vec![1];
+                payload.extend_from_slice(&supported_min.to_be_bytes());
+                payload.extend_from_slice(&supported_max.to_be_bytes());
+                payload
+            }
+        }
+    }
+
+    pub fn decode_payload(payload: &[u8]) -> Result<Self, CompatibilityDecodeError> {
+        if payload.len() != 5 {
+            return Err(CompatibilityDecodeError::MalformedPayload);
+        }
+        if payload[0] != 1 {
+            return Err(CompatibilityDecodeError::UnknownOpcode(payload[0]));
+        }
+        let supported_min = u16::from_be_bytes([payload[1], payload[2]]);
+        let supported_max = u16::from_be_bytes([payload[3], payload[4]]);
+        if supported_min > supported_max {
+            return Err(CompatibilityDecodeError::MalformedPayload);
+        }
+        Ok(Self::VersionRejected {
+            supported_min,
+            supported_max,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompatibilityDecodeError {
+    Truncated,
+    InvalidMagic,
+    InvalidKind,
+    MalformedPayload,
+    UnknownOpcode(u8),
+}
+
+/// Encode a compatibility control frame without requiring the peer to
+/// understand the gameplay protocol version.
+pub fn encode_compatibility_control(control: &CompatibilityControl) -> Vec<u8> {
+    let payload = control.encode_payload();
+    let body_len = HEADER_LEN + payload.len();
+    let mut frame = Vec::with_capacity(LENGTH_PREFIX_LEN + body_len);
+    frame.extend_from_slice(&(body_len as u32).to_be_bytes());
+    frame.extend_from_slice(&MAGIC);
+    frame.extend_from_slice(&COMPATIBILITY_PROFILE_VERSION.to_be_bytes());
+    frame.push(MessageKind::Control as u8);
+    frame.push(0);
+    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&payload);
+    frame
+}
+
+/// Decode a compatibility frame independently of the gameplay version.
+pub fn decode_compatibility_control(
+    input: &[u8],
+) -> Result<(CompatibilityControl, usize), CompatibilityDecodeError> {
+    if input.len() < LENGTH_PREFIX_LEN + HEADER_LEN {
+        return Err(CompatibilityDecodeError::Truncated);
+    }
+    let body_len = u32::from_be_bytes(input[..4].try_into().unwrap()) as usize;
+    let total = LENGTH_PREFIX_LEN
+        .checked_add(body_len)
+        .ok_or(CompatibilityDecodeError::MalformedPayload)?;
+    if input.len() < total || body_len < HEADER_LEN {
+        return Err(CompatibilityDecodeError::Truncated);
+    }
+    let body = &input[4..total];
+    if body[..4] != MAGIC || u16::from_be_bytes([body[4], body[5]]) != COMPATIBILITY_PROFILE_VERSION
+    {
+        return Err(CompatibilityDecodeError::InvalidMagic);
+    }
+    if body[6] != MessageKind::Control as u8 || body[7] != 0 {
+        return Err(CompatibilityDecodeError::InvalidKind);
+    }
+    let payload_len = u32::from_be_bytes(body[8..12].try_into().unwrap()) as usize;
+    if payload_len != body_len - HEADER_LEN {
+        return Err(CompatibilityDecodeError::MalformedPayload);
+    }
+    Ok((
+        CompatibilityControl::decode_payload(&body[HEADER_LEN..])?,
+        total,
+    ))
 }
 
 /// Role values used by the first typed command payload schema.
@@ -73,6 +178,9 @@ pub enum ClientCommand {
     ListCharacters,
     SelectCharacter {
         character_id: u64,
+    },
+    ContentDigest {
+        digest: [u8; 32],
     },
     Move {
         dx: f32,
@@ -127,6 +235,10 @@ impl ClientCommand {
             Self::ListCharacters => payload.push(14),
             Self::SelectCharacter { character_id } => {
                 put_nonzero_u64(&mut payload, 15, *character_id, "character_id")?;
+            }
+            Self::ContentDigest { digest } => {
+                payload.push(16);
+                payload.extend_from_slice(digest);
             }
             Self::Move { dx, dy } => {
                 validate_finite(*dx, "dx")?;
@@ -189,6 +301,13 @@ impl ClientCommand {
             15 => Self::SelectCharacter {
                 character_id: decoder.take_nonzero_u64("character_id")?,
             },
+            16 => {
+                let digest = decoder
+                    .take(32, "content_digest")?
+                    .try_into()
+                    .expect("content digest is exactly 32 bytes");
+                Self::ContentDigest { digest }
+            }
             2 => Self::Move {
                 dx: f32::from_bits(decoder.take_u32("dx")?),
                 dy: f32::from_bits(decoder.take_u32("dy")?),
@@ -572,6 +691,13 @@ pub enum ServerMessage {
         name: String,
         role: RoleCode,
     },
+    ContentAccepted {
+        digest: [u8; 32],
+    },
+    ContentMismatch {
+        expected: [u8; 32],
+        received: [u8; 32],
+    },
 }
 
 /// Typed authoritative event payloads corresponding to the current core
@@ -740,6 +866,15 @@ impl ServerMessage {
                 encoder.put_string(name, "character_name")?;
                 encoder.put_u8(*role as u8);
             }
+            Self::ContentAccepted { digest } => {
+                encoder.put_u8(9);
+                encoder.bytes.extend_from_slice(digest);
+            }
+            Self::ContentMismatch { expected, received } => {
+                encoder.put_u8(10);
+                encoder.bytes.extend_from_slice(expected);
+                encoder.bytes.extend_from_slice(received);
+            }
         }
         Ok(encoder.bytes)
     }
@@ -783,6 +918,22 @@ impl ServerMessage {
                 character_id: decoder.take_nonzero_u64("character_id")?,
                 name: decoder.take_string("character_name")?,
                 role: decode_role(&mut decoder)?,
+            },
+            9 => Self::ContentAccepted {
+                digest: decoder
+                    .take(32, "content_digest")?
+                    .try_into()
+                    .expect("content digest is exactly 32 bytes"),
+            },
+            10 => Self::ContentMismatch {
+                expected: decoder
+                    .take(32, "expected_digest")?
+                    .try_into()
+                    .expect("content digest is exactly 32 bytes"),
+                received: decoder
+                    .take(32, "received_digest")?
+                    .try_into()
+                    .expect("content digest is exactly 32 bytes"),
             },
             opcode => return Err(ServerCodecError::UnknownOpcode(opcode)),
         };
@@ -1553,6 +1704,70 @@ fn decode_server_event(decoder: &mut ServerDecoder<'_>) -> Result<ServerEvent, S
     }
 }
 
+/// A length-delimited event variant. Unknown additive events can be skipped
+/// safely because their declared body is bounded before decoding; malformed
+/// lengths remain fatal and are never treated as unknown events.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FramedServerEvent {
+    Known(ServerEvent),
+    SkippedUnknown { opcode: u8, length: usize },
+}
+
+/// Encode one event using the additive length-delimited event profile.
+pub fn encode_framed_server_event(event: &ServerEvent) -> Result<Vec<u8>, ServerCodecError> {
+    let mut encoder = ServerEncoder::default();
+    encode_server_event(&mut encoder, event)?;
+    let Some((&opcode, body)) = encoder.bytes.split_first() else {
+        return Err(ServerCodecError::Empty);
+    };
+    let length = u32::try_from(body.len()).map_err(|_| ServerCodecError::CountTooLarge {
+        field: "event",
+        count: body.len(),
+        maximum: u32::MAX as usize,
+    })?;
+    let mut framed = Vec::with_capacity(1 + 4 + body.len());
+    framed.push(opcode);
+    framed.extend_from_slice(&length.to_be_bytes());
+    framed.extend_from_slice(body);
+    Ok(framed)
+}
+
+/// Decode one complete length-delimited event. The input must contain exactly
+/// one event record; callers can use the returned length in a stream parser.
+pub fn decode_framed_server_event(input: &[u8]) -> Result<FramedServerEvent, ServerCodecError> {
+    if input.len() < 5 {
+        return Err(ServerCodecError::Truncated {
+            field: "event_length",
+        });
+    }
+    let opcode = input[0];
+    let length = u32::from_be_bytes(input[1..5].try_into().unwrap()) as usize;
+    if input.len() - 5 != length {
+        return Err(ServerCodecError::MalformedEventLength {
+            declared: length,
+            available: input.len() - 5,
+        });
+    }
+    let known = (1..=17).contains(&opcode);
+    if !known {
+        return Ok(FramedServerEvent::SkippedUnknown { opcode, length });
+    }
+    let mut payload = Vec::with_capacity(1 + length);
+    payload.push(opcode);
+    payload.extend_from_slice(&input[5..]);
+    let mut decoder = ServerDecoder {
+        payload: &payload,
+        offset: 0,
+    };
+    let event = decode_server_event(&mut decoder)?;
+    if decoder.offset != payload.len() {
+        return Err(ServerCodecError::TrailingBytes {
+            count: payload.len() - decoder.offset,
+        });
+    }
+    Ok(FramedServerEvent::Known(event))
+}
+
 /// Errors found while encoding or decoding typed server payloads.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServerCodecError {
@@ -1580,6 +1795,10 @@ pub enum ServerCodecError {
     },
     InvalidUtf8 {
         field: &'static str,
+    },
+    MalformedEventLength {
+        declared: usize,
+        available: usize,
     },
     CountTooLarge {
         field: &'static str,
@@ -1619,6 +1838,13 @@ impl fmt::Display for ServerCodecError {
             Self::InvalidUtf8 { field } => {
                 write!(formatter, "server field '{field}' is not UTF-8")
             }
+            Self::MalformedEventLength {
+                declared,
+                available,
+            } => write!(
+                formatter,
+                "event length declares {declared} bytes but record contains {available}"
+            ),
             Self::CountTooLarge {
                 field,
                 count,
@@ -1907,6 +2133,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compatibility_version_rejection_is_decodable_without_gameplay_version() {
+        let frame = encode_compatibility_control(&CompatibilityControl::VersionRejected {
+            supported_min: 1,
+            supported_max: 2,
+        });
+        let (control, consumed) = decode_compatibility_control(&frame).unwrap();
+        assert_eq!(consumed, frame.len());
+        assert_eq!(
+            control,
+            CompatibilityControl::VersionRejected {
+                supported_min: 1,
+                supported_max: 2,
+            }
+        );
+        assert!(matches!(
+            decode_one(&frame),
+            Err(DecodeError::UnsupportedVersion { version: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn framed_events_skip_unknown_additions_but_reject_bad_lengths() {
+        let event = ServerEvent::EnemyDefeated { enemy_id: 9 };
+        let framed = encode_framed_server_event(&event).unwrap();
+        assert_eq!(
+            decode_framed_server_event(&framed),
+            Ok(FramedServerEvent::Known(event))
+        );
+
+        let unknown = [250, 0, 0, 0, 2, 0xaa, 0xbb];
+        assert_eq!(
+            decode_framed_server_event(&unknown),
+            Ok(FramedServerEvent::SkippedUnknown {
+                opcode: 250,
+                length: 2,
+            })
+        );
+
+        let malformed = [250, 0, 0, 0, 4, 0xaa, 0xbb];
+        assert_eq!(
+            decode_framed_server_event(&malformed),
+            Err(ServerCodecError::MalformedEventLength {
+                declared: 4,
+                available: 2,
+            })
+        );
+    }
+
+    #[test]
     fn command_round_trips_and_reports_consumed_length() {
         let envelope = Envelope::new(MessageKind::Command, b"move 1 2".to_vec()).unwrap();
         let encoded = envelope.encode().unwrap();
@@ -1929,6 +2204,7 @@ mod tests {
             ClientCommand::EnterWorld,
             ClientCommand::ListCharacters,
             ClientCommand::SelectCharacter { character_id: 1 },
+            ClientCommand::ContentDigest { digest: [7; 32] },
             ClientCommand::Move { dx: -2.5, dy: 4.0 },
             ClientCommand::SelectTarget { target_id: 9 },
             ClientCommand::BasicAttack,
@@ -2105,6 +2381,11 @@ mod tests {
                 character_id: 1,
                 name: "Aria".to_owned(),
                 role: RoleCode::DamageDealer,
+            },
+            ServerMessage::ContentAccepted { digest: [7; 32] },
+            ServerMessage::ContentMismatch {
+                expected: [1; 32],
+                received: [2; 32],
             },
             ServerMessage::Error {
                 message: "connect first".to_owned(),

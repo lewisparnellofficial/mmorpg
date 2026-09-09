@@ -1,6 +1,7 @@
 mod account_repository;
 
 use crate::account_repository::{AccountCharacterRepository, DevelopmentAccountRepository};
+use mmorpg_content::starter_catalog;
 use mmorpg_core::{Command, EntityId, Event, ItemId, QuestId, Role, World};
 use mmorpg_wire::{
     ClientCommand as WireCommand, DecodeError as WireDecodeError, Envelope, ItemStackState,
@@ -56,6 +57,7 @@ struct WireClient {
     output: VecDeque<u8>,
     authenticated: Option<AuthenticatedSession>,
     selected_character_id: Option<u64>,
+    content_compatible: bool,
     player_id: Option<EntityId>,
     closed: bool,
 }
@@ -69,6 +71,7 @@ impl WireClient {
             output: VecDeque::new(),
             authenticated: None,
             selected_character_id: None,
+            content_compatible: false,
             player_id: None,
             closed: false,
         }
@@ -390,6 +393,32 @@ impl Server {
             );
             return;
         }
+        if let WireCommand::ContentDigest { digest } = command {
+            if self.wire_clients[client_index]
+                .selected_character_id
+                .is_none()
+            {
+                self.queue_wire_error(
+                    client_id,
+                    "select a character before checking content".to_owned(),
+                );
+                return;
+            }
+            let expected = starter_catalog().content_digest();
+            if digest == expected {
+                self.wire_clients[client_index].content_compatible = true;
+                self.wire_clients[client_index]
+                    .queue_server_message(&ServerMessage::ContentAccepted { digest });
+            } else {
+                self.wire_clients[client_index].queue_server_message(
+                    &ServerMessage::ContentMismatch {
+                        expected,
+                        received: digest,
+                    },
+                );
+            }
+            return;
+        }
         if matches!(command, WireCommand::EnterWorld) {
             let already_pending = self.commands.iter().any(|pending| {
                 pending.origin == ClientOrigin::Wire(client_id)
@@ -406,6 +435,13 @@ impl Server {
                 );
                 return;
             };
+            if !self.wire_clients[client_index].content_compatible {
+                self.queue_wire_error(
+                    client_id,
+                    "content compatibility check required before entering world".to_owned(),
+                );
+                return;
+            }
             let account_id = self.wire_clients[client_index]
                 .authenticated
                 .expect("authenticated state checked above")
@@ -1604,6 +1640,7 @@ fn wire_command_to_core(command: WireCommand, player_id: EntityId) -> Result<Com
         | WireCommand::EnterWorld
         | WireCommand::ListCharacters
         | WireCommand::SelectCharacter { .. }
+        | WireCommand::ContentDigest { .. }
         | WireCommand::Snapshot => {
             return Err("command is not valid in a bound session".to_owned());
         }
