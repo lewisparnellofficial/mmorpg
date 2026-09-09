@@ -218,6 +218,10 @@ fn build_scripted_ui_presentation(
         if runners.len() < 2 {
             return Err("addon repository must contain at least two packages".to_owned());
         }
+        println!(
+            "SCRIPTED_UI source=repository root={}",
+            addon_root.display()
+        );
         let mut default_ui = runners.remove(0);
         let mut addon = runners.remove(0);
         return scripted_ui_from_runners(&mut default_ui, &mut addon);
@@ -425,6 +429,9 @@ fn main() {
             return;
         }
     };
+    if addon_root.is_none() {
+        println!("SCRIPTED_UI source=built-in");
+    }
     let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel();
     spawn_wire_network_worker(
