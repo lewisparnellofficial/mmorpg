@@ -108,6 +108,7 @@ run_manifest_checks experiments/wire-gameplay-smoke/Cargo.toml "wire gameplay sm
 run_step "restart persistence smoke" "$repo_root/scripts/smoke-restart-persistence.sh"
 run_step "slow-client smoke" "$repo_root/scripts/smoke-slow-client.sh"
 run_step "graphical slow-client smoke" "$repo_root/scripts/smoke-graphical-slow-client.sh"
+run_step "graphical release smoke" "$repo_root/scripts/smoke-graphical-release.sh"
 run_step "graphical gameplay smoke" "$repo_root/scripts/smoke-graphical-gameplay.sh"
 run_step "graphical three-role smoke" "$repo_root/scripts/smoke-graphical-three-role.sh"
 run_step "graphical reconnect smoke" "$repo_root/scripts/smoke-graphical-three-client.sh"

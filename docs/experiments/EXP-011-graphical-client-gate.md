@@ -79,6 +79,12 @@ or renderer-quality acceptance gate.
 - **Aggregate gate:** `scripts/validate-all.sh` now invokes the three-window
   reconnect smoke after the renderer-active gameplay and role smokes, so the
   reconnect evidence is part of the repeatable graphical validation boundary.
+- **Optimized release smoke:** `scripts/validate-all.sh` also runs
+  `scripts/smoke-graphical-release.sh`. It builds the release client, forces
+  the Wayland backend, disables the known-broken optional Lossless Scaling
+  layer, and requires typed startup with no Vulkan validation or loader
+  diagnostics. This is an operational renderer smoke, not the fixed
+  frame-time or physical-input acceptance gate.
 - **Headless slow-client result:** A real TCP gate sent 12,800 snapshot
   requests from a non-reading client while a second client remained able to
   receive a snapshot. The server recorded bounded output saturation and
