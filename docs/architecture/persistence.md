@@ -1,6 +1,7 @@
 # Persistence and Recovery
 
-**Status:** Proposed (with a local development checkpoint prototype)
+**Status:** Accepted for the current development slice; production persistence
+remains proposed
 
 ## State categories
 
@@ -92,8 +93,9 @@ authoritative queue, and completed records include the staged world revision.
 Legacy version-1 records remain readable with revision zero. Without it, the
 cache is process-local. The journal,
 bounded writer, and revision fence demonstrate ownership and retry boundaries,
-but completion still follows live mutation and does not reconcile a crash
-between live mutation and result publication. A journal that ends in a
+and the accepted bounded durable-operation boundary is recorded in
+[`ADR-009`](../decisions/ADR-009-bounded-durable-operation-boundary.md). A
+journal that ends in a
 prepared record is recovered as an explicit interrupted-operation failure
 before that key can be retried; because live mutation is staged until
 completion acknowledgement, this recovery policy does not replay the command.
