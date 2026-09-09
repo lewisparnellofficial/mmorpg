@@ -13,6 +13,9 @@ Current experiment records:
 - [EXP-006: Luau UI scripting sandbox](EXP-006-ui-scripting-sandbox.md)
 - [EXP-007: Qt Wayland tablet shell](EXP-007-qt-tablet-shell.md)
 - [EXP-008: Authoritative enemy respawn generation](EXP-008-enemy-respawn.md)
+- [EXP-009: Party ownership, eligibility, and generation loot](EXP-009-party-loot.md)
+- [EXP-010: Minimum addressed delivery and interest filtering](EXP-010-addressed-delivery.md)
+- [EXP-011: Graphical client runtime gate](EXP-011-graphical-client-gate.md)
 
 ## Required experiment categories
 

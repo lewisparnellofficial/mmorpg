@@ -106,7 +106,9 @@ authoritative notifications. `V` lists vendor stock, `B` buys one unit of the
 first displayed listing, `O` requests quest offers, `E` accepts the first
 displayed offer, `R` attempts to turn in the first displayed quest, and `L`
 submits a loot request for the selected target. These keys only submit server
-intents; they do not mutate gameplay state locally. Snapshot schema version 2
-supplies each player's inventory capacity explicitly; the client no longer
-assumes a fixed starter value when applying a complete snapshot. Pen-tablet
+intents; they do not mutate gameplay state locally. Snapshot schema version 3
+supplies each player's inventory capacity explicitly and carries an optional
+private party membership/leadership summary; the client no longer assumes a
+fixed starter value or receives remote private fields when applying a complete
+snapshot. Version-2 snapshots remain decodable. Pen-tablet
 input and the separate content editor remain independent technology spikes.

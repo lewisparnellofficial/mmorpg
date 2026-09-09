@@ -1,0 +1,45 @@
+# EXP-011: Graphical client runtime gate
+
+**Status:** Partial runtime evidence; Milestone 13 gate remains open
+
+## Objective
+
+Exercise the real Bevy client against the typed development server on the
+Linux desktop session, and distinguish window/renderer startup from the full
+three-client gameplay acceptance gate.
+
+## Run
+
+```bash
+cargo run -p mmorpg-server -- 127.0.0.1:4000
+printf '\n' | timeout 8s crates/mmorpg-client/target/debug/mmorpg-client \
+  127.0.0.1:4000
+```
+
+The client binary was rebuilt through its standalone manifest before the run.
+The development server was bound to loopback and the client used the default
+typed wire path.
+
+## Evidence
+
+- **Measured local result:** Bevy created the window named
+  `MMORPG Client — interactive slice (65v0)`, selected the Vulkan backend, and
+  detected an NVIDIA GeForce RTX 5070. The client loaded the `Greenfield`
+  starter zone and remained alive until the eight-second bounded observation
+  ended.
+- **Host:** Linux CachyOS rolling, kernel `7.2.2-1-cachyos`, AMD Ryzen 7
+  2700X, 8 cores, 31.2 GiB memory, NVIDIA driver `610.57.04`, Wayland/X
+  desktop session.
+- **Runtime limitation:** Vulkan validation output reported swapchain image
+  layout and acquire-semaphore errors, and the run did not provide evidence of
+  three simultaneous graphical clients, role interaction, stranger privacy,
+  restart/retry, or the full encounter loop.
+
+## Interpretation
+
+The client shell and renderer can start on this host, but this is not a passing
+Milestone 13 result. The Vulkan validation errors require investigation before
+using this environment for a repeatable graphical acceptance record. The
+three-client headless/graphical harness, role encounter, multiple loot
+generations, restart/retry, slow-client, and stranger-privacy scenarios remain
+unverified.

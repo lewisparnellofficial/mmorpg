@@ -11,7 +11,7 @@ temporary snapshot schema
 contains player identity/combat/economy scalars, NPC identity/combat state,
 inventory stack records, and quest state records. The adapter translates those
 records into the model so reconnect and reconciliation preserve the current
-starter inventory and quest state. Snapshot schema version 2 carries the
+starter inventory and quest state. Snapshot schema version 3 carries the
 authoritative inventory capacity per player; a missing capacity is rejected
 without replacing the existing presentation model. The typed wire snapshot
 uses the same explicit field.
