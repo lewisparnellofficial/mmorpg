@@ -28,17 +28,22 @@ durable operation journal.
 - The server retains at most 256 completed operation results in process memory;
   with `--character-store`, result payloads are also appended to an operation
   journal and loaded on restart.
-- The focused server test submits the same purchase operation twice and checks
+- The focused server tests submit the same purchase operation twice and check
   that the second submission returns the cached event without changing gold or
-  queueing another authoritative command.
+  queueing another authoritative command. They also submit a retryable wrapper
+  around a non-durable command, verify that the rejection is appended as a
+  failed operation record, and verify that the same rejection is loaded after
+  restart.
 - The aggregate validator runs the typed diagnostic and the three-client gate
   in addition to workspace, standalone-crate, editor, and experiment checks.
 
 ## Measurements
 
-- `cargo test --workspace`: passed (31 core, 24 server, 18 wire tests, plus
-  workspace compatibility fixtures and other crate tests).
+- `cargo test --workspace`: passed, including 31 core tests, 30 server tests,
+  18 wire tests, and the workspace compatibility fixtures.
 - Retry-specific server test: passed.
+- Rejected-retry restart test: passed; the failed operation reason survived a
+  server restart and was available for duplicate-retry rejection.
 - Typed gameplay smoke: passed with purchase, loot, and quest completion.
 - Three-client gate: passed; the tank and healer shared one party summary while
   the unrelated damage client received no private party summary.
@@ -78,16 +83,20 @@ cache without reapplying the core command.
 - The prototype does not provide cross-process fencing or recovery of in-flight
   operations after an external process crash. The deterministic shutdown path
   covers orderly local exit only.
-- Rejected operations do not yet carry a durable typed result record suitable
-  for replay; this slice is primarily a successful-operation duplicate fence.
+- Failed validation outcomes now carry a durable failed-operation record and
+  are replayed as the same error for a duplicate key after restart. Core
+  gameplay rejections and a general typed error-result schema remain outside
+  this narrow validation-level path.
 - The graphical client runtime gate remains partial because Vulkan validation
   errors were observed during the bounded client run; see EXP-011.
 
 ## Follow-up work
 
-- Design and implement a durable operation record with explicit pending,
-  committed, and failed states.
+- Extend the durable operation record toward explicit pending, committed, and
+  failed states for core gameplay outcomes, not only validation-level
+  rejections.
 - Define commit ordering and recovery behavior for crashes between the journal
   write and live simulation application.
-- Add restart and failure-injection tests, including duplicate retries after a
-  process restart and retries of rejected operations.
+- Add crash-oriented restart and failure-injection tests for the commit-before-
+  live-apply boundary, including duplicate retries after an interrupted
+  process restart.

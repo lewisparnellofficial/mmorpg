@@ -2,7 +2,7 @@ mod account_repository;
 
 use crate::account_repository::{
     AccountCharacterRepository, CheckpointJob, CheckpointWorker, DevelopmentAccountRepository,
-    OperationJournalJob, OperationJournalWorker, OperationKey,
+    OperationJournalJob, OperationJournalWorker, OperationKey, PersistedOperation,
 };
 use mmorpg_content::starter_catalog;
 use mmorpg_core::{CombatTiming, Command, EntityId, Event, ItemId, PartyId, QuestId, Role, World};
@@ -210,6 +210,8 @@ struct Server {
     prepared_operations: BTreeMap<OperationKey, (u64, Command)>,
     staged_operation_batch: Option<StagedOperationBatch>,
     completed_operations: BTreeMap<OperationKey, Vec<ServerMessage>>,
+    failed_operations: BTreeMap<OperationKey, String>,
+    pending_failed_operations: BTreeMap<OperationKey, (u64, String)>,
     operation_journal_worker: OperationJournalWorker,
     account_repository: Arc<dyn AccountCharacterRepository>,
     checkpoint_worker: CheckpointWorker,
@@ -246,11 +248,27 @@ impl Server {
             .expect("tick_hz is clamped above zero");
         let account_repository: Arc<dyn AccountCharacterRepository> = Arc::from(account_repository);
         let checkpoint_worker = CheckpointWorker::new(Arc::clone(&account_repository));
-        let (operation_journal_worker, completed_operations) = operation_journal_path
+        let (operation_journal_worker, persisted_operations) = operation_journal_path
             .map(|path| {
                 OperationJournalWorker::new(path).expect("operation journal should load and start")
             })
             .unwrap_or_else(|| (OperationJournalWorker::disabled(), BTreeMap::new()));
+        let mut completed_operations = BTreeMap::new();
+        let mut failed_operations = BTreeMap::new();
+        for (key, operation) in persisted_operations {
+            match operation {
+                PersistedOperation::Completed(payloads) => {
+                    let messages = payloads
+                        .into_iter()
+                        .filter_map(|payload| ServerMessage::decode_payload(&payload).ok())
+                        .collect();
+                    completed_operations.insert(key, messages);
+                }
+                PersistedOperation::Failed(reason) => {
+                    failed_operations.insert(key, reason);
+                }
+            }
+        }
         Self {
             world: World::new_starter_zone(),
             #[cfg(test)]
@@ -260,16 +278,9 @@ impl Server {
             commands: VecDeque::new(),
             prepared_operations: BTreeMap::new(),
             staged_operation_batch: None,
-            completed_operations: completed_operations
-                .into_iter()
-                .map(|(key, payloads)| {
-                    let messages = payloads
-                        .into_iter()
-                        .filter_map(|payload| ServerMessage::decode_payload(&payload).ok())
-                        .collect();
-                    (key, messages)
-                })
-                .collect(),
+            completed_operations,
+            failed_operations,
+            pending_failed_operations: BTreeMap::new(),
             operation_journal_worker,
             checkpoint_worker,
             account_repository,
@@ -643,8 +654,20 @@ impl Server {
         };
         let operation = if let Some(operation_id) = requested_operation_id {
             if !is_retryable_core_command(&command) {
-                self.queue_wire_error(
+                let client = &self.wire_clients[client_index];
+                let session = client
+                    .authenticated
+                    .expect("authenticated state checked above");
+                let character_id = client
+                    .selected_character_id
+                    .expect("bound gameplay client has selected character");
+                self.record_failed_operation(
                     client_id,
+                    OperationKey {
+                        account_id: session.account_id,
+                        character_id,
+                        operation_id,
+                    },
                     "operation wrapper is only valid for durable commands".to_owned(),
                 );
                 return;
@@ -673,6 +696,13 @@ impl Server {
                 }
                 return;
             }
+            if let Some(reason) = self.failed_operations.get(&key).cloned() {
+                self.queue_wire_error(client_id, reason);
+                return;
+            }
+            if self.pending_failed_operations.contains_key(&key) {
+                return;
+            }
             Some(key)
         } else {
             None
@@ -680,7 +710,11 @@ impl Server {
         let command = match wire_command_to_core(command, player_id) {
             Ok(command) => command,
             Err(error) => {
-                self.queue_wire_error(client_id, error);
+                if let Some(key) = operation {
+                    self.record_failed_operation(client_id, key, error);
+                } else {
+                    self.queue_wire_error(client_id, error);
+                }
                 return;
             }
         };
@@ -733,6 +767,32 @@ impl Server {
             command,
             operation,
         });
+    }
+
+    fn record_failed_operation(&mut self, client_id: u64, key: OperationKey, reason: String) {
+        if self.pending_failed_operations.contains_key(&key) {
+            return;
+        }
+        if !self.operation_journal_worker.enabled() {
+            self.queue_wire_error(client_id, reason);
+            return;
+        }
+        self.pending_failed_operations
+            .insert(key, (client_id, reason.clone()));
+        if self
+            .operation_journal_worker
+            .try_enqueue(OperationJournalJob::Failed { key, reason })
+            .is_err()
+        {
+            let (_, reason) = self
+                .pending_failed_operations
+                .remove(&key)
+                .expect("pending failed operation was inserted above");
+            self.queue_wire_error(
+                client_id,
+                format!("operation journal queue is full: {reason}"),
+            );
+        }
     }
 
     fn character_reserved_by_other(
@@ -1140,9 +1200,17 @@ impl Server {
         for result in results {
             if let Err(error) = result.result {
                 self.prepared_operations.remove(&result.key);
-                if !result.prepared {
+                if !result.prepared && !result.failed {
                     failed_batch = Some((result.key, error));
                     break;
+                }
+                if result.failed
+                    && let Some((client_id, _)) = self.pending_failed_operations.remove(&result.key)
+                {
+                    self.queue_wire_error(
+                        client_id,
+                        format!("could not persist operation failure: {error}"),
+                    );
                 }
                 eprintln!(
                     "operation_journal_error account={} character={} operation={} error={error}",
@@ -1158,6 +1226,13 @@ impl Server {
                     command,
                     Some(result.key),
                 );
+            } else if result.failed {
+                if let Some((client_id, reason)) =
+                    self.pending_failed_operations.remove(&result.key)
+                {
+                    self.failed_operations.insert(result.key, reason.clone());
+                    self.queue_wire_error(client_id, reason);
+                }
             } else if !result.prepared
                 && let Some(batch) = self.staged_operation_batch.as_mut()
                 && batch.operations.contains_key(&result.key)
@@ -3186,6 +3261,81 @@ mod tests {
         let _ = std::fs::remove_file(
             std::env::temp_dir().join(format!("mmorpg-staged-{unique}.operations")),
         );
+    }
+
+    #[test]
+    fn rejected_retryable_wrapper_is_journaled_and_replayed_after_restart() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let checkpoint_path =
+            std::env::temp_dir().join(format!("mmorpg-failed-operation-{unique}.state"));
+        let journal_path = checkpoint_path.with_extension("operations");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let _peer = TcpStream::connect(address).expect("connect test peer");
+        let (stream, _) = listener.accept().expect("accept test peer");
+        let mut server = Server::new(DEFAULT_TICK_HZ, false, Some(checkpoint_path.clone()));
+        let player_id = server
+            .world
+            .step([Command::JoinPlayer {
+                name: "Aria".to_owned(),
+                role: Role::DamageDealer,
+            }])
+            .into_iter()
+            .find_map(|event| match event {
+                Event::PlayerJoined { player } => Some(player.id),
+                _ => None,
+            })
+            .expect("test player should join");
+        let mut client = WireClient::new(1, stream);
+        client.authenticated = Some(AuthenticatedSession {
+            account_id: 1,
+            session_id: 1,
+        });
+        client.selected_character_id = Some(1);
+        client.content_compatible = true;
+        client.player_id = Some(player_id);
+        server.wire_clients.push(client);
+        let key = OperationKey {
+            account_id: 1,
+            character_id: 1,
+            operation_id: 808,
+        };
+
+        server.handle_wire_command(
+            1,
+            WireCommand::Retryable {
+                operation_id: key.operation_id,
+                command: Box::new(WireCommand::Move { dx: 1.0, dy: 0.0 }),
+            },
+        );
+
+        for _ in 0..200 {
+            server.next_tick = Instant::now() - Duration::from_millis(1);
+            server.advance_if_due();
+            if server.failed_operations.contains_key(&key) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        let reason = server
+            .failed_operations
+            .get(&key)
+            .cloned()
+            .expect("rejected retryable operation should be journaled");
+        assert_eq!(
+            reason,
+            "operation wrapper is only valid for durable commands"
+        );
+        drop(server);
+
+        let restarted = Server::new(DEFAULT_TICK_HZ, false, Some(checkpoint_path.clone()));
+        assert_eq!(restarted.failed_operations.get(&key), Some(&reason));
+        let _ = std::fs::remove_file(checkpoint_path);
+        let _ = std::fs::remove_file(journal_path);
     }
 
     #[test]

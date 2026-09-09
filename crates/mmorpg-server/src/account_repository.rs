@@ -180,7 +180,14 @@ pub enum OperationJournalJob {
 pub struct OperationJournalResult {
     pub key: OperationKey,
     pub prepared: bool,
+    pub failed: bool,
     pub result: Result<(), String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PersistedOperation {
+    Completed(Vec<Vec<u8>>),
+    Failed(String),
 }
 
 enum OperationJournalMessage {
@@ -208,7 +215,9 @@ impl OperationJournalWorker {
         }
     }
 
-    pub fn new(path: PathBuf) -> Result<(Self, BTreeMap<OperationKey, Vec<Vec<u8>>>), String> {
+    pub fn new(
+        path: PathBuf,
+    ) -> Result<(Self, BTreeMap<OperationKey, PersistedOperation>), String> {
         let completed = load_operation_journal(&path)?;
         let (sender, receiver) = mpsc::sync_channel(128);
         let queued = Arc::new(AtomicUsize::new(0));
@@ -221,15 +230,16 @@ impl OperationJournalWorker {
                     match message {
                         OperationJournalMessage::Job(job) => {
                             queued_for_thread.fetch_sub(1, Ordering::AcqRel);
-                            let (key, prepared) = match &job {
-                                OperationJournalJob::Prepare { key, .. } => (*key, true),
-                                OperationJournalJob::Complete { key, .. }
-                                | OperationJournalJob::Failed { key, .. } => (*key, false),
+                            let (key, prepared, failed) = match &job {
+                                OperationJournalJob::Prepare { key, .. } => (*key, true, false),
+                                OperationJournalJob::Complete { key, .. } => (*key, false, false),
+                                OperationJournalJob::Failed { key, .. } => (*key, false, true),
                             };
                             let result = append_operation_journal(&path, &job);
                             let _ = result_sender.send(OperationJournalResult {
                                 key,
                                 prepared,
+                                failed,
                                 result,
                             });
                         }
@@ -602,13 +612,15 @@ impl LocalCheckpointStore {
     }
 }
 
-fn load_operation_journal(path: &Path) -> Result<BTreeMap<OperationKey, Vec<Vec<u8>>>, String> {
+fn load_operation_journal(
+    path: &Path,
+) -> Result<BTreeMap<OperationKey, PersistedOperation>, String> {
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
     let text = fs::read_to_string(path)
         .map_err(|error| format!("cannot read operation journal: {error}"))?;
-    let mut completed = BTreeMap::new();
+    let mut operations = BTreeMap::new();
     for (line_index, line) in text.split('\n').enumerate() {
         if line.trim().is_empty() {
             continue;
@@ -633,9 +645,20 @@ fn load_operation_journal(path: &Path) -> Result<BTreeMap<OperationKey, Vec<Vec<
             continue;
         }
         if fields[1] == "failed" {
-            if !fields[5].starts_with("reason=") {
+            let Some(reason) = fields[5].strip_prefix("reason=") else {
                 return Err("malformed operation journal failure field".to_owned());
-            }
+            };
+            operations.insert(
+                OperationKey {
+                    account_id,
+                    character_id,
+                    operation_id,
+                },
+                PersistedOperation::Failed(
+                    String::from_utf8(decode_hex(reason)?)
+                        .map_err(|_| "invalid operation journal failure payload".to_owned())?,
+                ),
+            );
             continue;
         }
         if fields[1] != "completed" {
@@ -653,16 +676,16 @@ fn load_operation_journal(path: &Path) -> Result<BTreeMap<OperationKey, Vec<Vec<
         } else {
             return Err("malformed operation journal result field".to_owned());
         };
-        completed.insert(
+        operations.insert(
             OperationKey {
                 account_id,
                 character_id,
                 operation_id,
             },
-            payloads,
+            PersistedOperation::Completed(payloads),
         );
     }
-    Ok(completed)
+    Ok(operations)
 }
 
 fn append_operation_journal(path: &Path, job: &OperationJournalJob) -> Result<(), String> {
@@ -1226,7 +1249,12 @@ mod tests {
         drop(journal);
 
         let (_worker, loaded) = OperationJournalWorker::new(path.clone()).expect("journal reload");
-        assert_eq!(loaded.get(&key), Some(&vec![vec![0x01, 0xa5, 0xff]]));
+        assert_eq!(
+            loaded.get(&key),
+            Some(&PersistedOperation::Failed(
+                "test failure record".to_owned()
+            ))
+        );
         let _ = fs::remove_file(path);
     }
 }
