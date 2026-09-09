@@ -60,7 +60,7 @@ cargo run --quiet --manifest-path experiments/ui-scripting/Cargo.toml
 
 ## Measured local results
 
-The standalone test suite completed with **9 passed, 0 failed**. The tests
+The standalone test suite completed with **10 passed, 0 failed**. The tests
 covered:
 
 - the default UI and an addon using the same public functions;
@@ -73,7 +73,8 @@ covered:
   usable;
 - source-size and memory limits; and
 - callback failure disabling only the failing addon; and
-- rollback of all host-owned panel mutations from a failed callback.
+- rollback of all host-owned panel mutations from a failed callback; and
+- contract-queue coalescing before Luau dispatch.
 
 The demo process also completed and reported one created panel, one registered
 event, zero secure intents, and zero errors after a normal event dispatch.
@@ -104,6 +105,9 @@ mode, because sandbox mode makes the global table read-only.
 - Callback rollback currently covers host state only; callback-registration
   changes and the contract crate's operation-buffer lifecycle are not yet
   unified with this Luau adapter.
+- The adapter now consumes the contract event queue, but does not yet expose
+  the contract's full operation buffer, manifest validation, or storage API to
+  Luau.
 
 Next work should add manifest/value-boundary fuzzing, calibrate quotas on the
 minimum supported Linux client, and compare the same language-neutral contract

@@ -23,7 +23,10 @@ The runner enforces source-size, memory, instruction, UI-node, event, and text
 limits. A callback is applied as one host-state transaction: if it fails, its
 panel mutations are rolled back before the addon is disabled and the failure
 is recorded. Runtime errors disable only the failing addon and are recorded in
-its diagnostics. Separate runners cannot use each other's node handles.
+its diagnostics. Contract `UiEvent`s enter a bounded queue before dispatch;
+replaceable state coalesces by key, ordered events retain FIFO order, and an
+ordered overflow disables only the affected addon. Separate runners cannot
+use each other's node handles.
 
 This rollback is currently limited to host-owned panel state. The standalone
 contract crate's `UiOperation` buffer, package manifest, and storage lifecycle

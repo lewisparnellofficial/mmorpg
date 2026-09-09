@@ -17,6 +17,7 @@ use std::sync::{
 
 use mlua::{Function, Lua, Result as LuaResult, VmState};
 pub use mmorpg_ui_contract::ViewRecord;
+use mmorpg_ui_contract::{EventQueue, QueueOutcome, UiEvent};
 
 pub const DEFAULT_MAX_NODES: usize = 64;
 pub const DEFAULT_MAX_EVENTS: usize = 16;
@@ -139,6 +140,7 @@ pub struct AddonRunner {
     lua: Lua,
     host: Rc<RefCell<HostState>>,
     callbacks: Rc<RefCell<Vec<(String, mlua::RegistryKey)>>>,
+    event_queue: EventQueue,
     instruction_count: Arc<AtomicU64>,
     disabled: Option<String>,
 }
@@ -202,6 +204,7 @@ impl AddonRunner {
             lua,
             host,
             callbacks,
+            event_queue: EventQueue::default_for_addon(),
             instruction_count,
             disabled: None,
         };
@@ -225,8 +228,46 @@ impl AddonRunner {
         self.host.borrow().snapshot()
     }
 
+    /// Enqueues a contract event without running addon code on the producer.
+    /// Replaceable state is coalesced by the language-neutral contract; an
+    /// ordered event that cannot fit disables only this addon.
+    pub fn enqueue_event(&mut self, event: UiEvent) -> QueueOutcome {
+        let outcome = self.event_queue.push(event);
+        if outcome == QueueOutcome::Disabled {
+            self.disable("addon event queue overflow".to_owned());
+        }
+        outcome
+    }
+
+    pub fn queued_event_count(&self) -> usize {
+        self.event_queue.len()
+    }
+
+    /// Delivers all currently queued events in contract order. The queue is
+    /// drained before each callback, so the producer remains independent from
+    /// VM execution and a callback failure stops only this addon.
+    pub fn dispatch_queued(&mut self) -> DispatchResult {
+        let mut result = DispatchResult::Applied;
+        while let Some(event) = self.event_queue.pop_front() {
+            let view = event.view.as_ref();
+            result = self.deliver_event_with_view(&event.name, view);
+            if matches!(result, DispatchResult::Disabled(_)) {
+                break;
+            }
+        }
+        result
+    }
+
     /// Delivers only the sanitized fields in the visible client view model.
     pub fn deliver_event(&mut self, event_name: &str, state: &VisibleState) -> DispatchResult {
+        self.deliver_event_with_view(event_name, Some(state))
+    }
+
+    fn deliver_event_with_view(
+        &mut self,
+        event_name: &str,
+        state: Option<&VisibleState>,
+    ) -> DispatchResult {
         if let Some(reason) = self.disabled.clone() {
             return DispatchResult::Disabled(reason);
         }
@@ -234,12 +275,14 @@ impl AddonRunner {
         let result = (|| -> LuaResult<()> {
             let event = self.lua.create_table()?;
             event.set("name", event_name)?;
-            let visible = self.lua.create_table()?;
-            visible.set("player_name", state.player_name.as_str())?;
-            visible.set("target_name", state.target_name.as_deref())?;
-            visible.set("inventory_slots_used", state.inventory_slots_used)?;
-            visible.set("quest_progress", state.quest_progress)?;
-            event.set("visible", visible)?;
+            if let Some(state) = state {
+                let visible = self.lua.create_table()?;
+                visible.set("player_name", state.player_name.as_str())?;
+                visible.set("target_name", state.target_name.as_deref())?;
+                visible.set("inventory_slots_used", state.inventory_slots_used)?;
+                visible.set("quest_progress", state.quest_progress)?;
+                event.set("visible", visible)?;
+            }
 
             let callback_indices = self
                 .callbacks
@@ -610,5 +653,39 @@ mod tests {
         assert_eq!(after.nodes[0].text, "before failure");
         assert_eq!(after.secure_intents, before.secure_intents);
         assert_eq!(after.errors.len(), 1);
+    }
+
+    #[test]
+    fn queued_replaceable_events_coalesce_before_luau_dispatch() {
+        let mut runner = AddonRunner::load(
+            "queued",
+            r#"
+                local panel = ui.create_panel("initial")
+                ui.on("player.updated", function(event)
+                    ui.set_text(panel, event.visible.player_name)
+                end)
+            "#,
+            AddonPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            runner.enqueue_event(UiEvent::replaceable(
+                "player.updated",
+                "player",
+                VisibleState::new("old", None, 0, 0),
+            )),
+            QueueOutcome::Enqueued
+        );
+        assert_eq!(
+            runner.enqueue_event(UiEvent::replaceable(
+                "player.updated",
+                "player",
+                VisibleState::new("new", None, 0, 0),
+            )),
+            QueueOutcome::Coalesced
+        );
+        assert_eq!(runner.queued_event_count(), 1);
+        assert_eq!(runner.dispatch_queued(), DispatchResult::Applied);
+        assert_eq!(runner.snapshot().nodes[0].text, "new");
     }
 }
