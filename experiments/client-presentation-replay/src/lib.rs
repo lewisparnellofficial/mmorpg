@@ -18,6 +18,7 @@ pub struct ReplayReport {
     pub applied_events: usize,
     pub projected_position: (f32, f32),
     pub projected_area: mmorpg_core::ZoneArea,
+    pub projected_health: u32,
     pub projected_gold: u32,
     pub projected_pelts: u32,
     pub projected_rations: u32,
@@ -205,6 +206,7 @@ pub fn run_replay() -> ReplayReport {
         applied_events,
         projected_position: (player.position.x, player.position.y),
         projected_area: player.area,
+        projected_health: player.health,
         projected_gold: player.gold,
         projected_pelts: player.inventory.quantity(ItemId::FIELD_WOLF_PELT),
         projected_rations: player.inventory.quantity(ItemId::TOWN_RATION),
@@ -258,9 +260,10 @@ mod tests {
         let report = run_replay();
 
         assert_eq!(report.enemy_ids.len(), 3);
-        assert_eq!(report.applied_events, 52);
+        assert_eq!(report.applied_events, 55);
         assert_eq!(report.projected_position, (0.0, 0.0));
         assert_eq!(report.projected_area, mmorpg_core::ZoneArea::Town);
+        assert_eq!(report.projected_health, 76);
         assert_eq!(report.projected_pelts, 3);
         assert_eq!(report.projected_rations, 5);
         assert_eq!(report.projected_potions, 1);

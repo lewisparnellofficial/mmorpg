@@ -789,6 +789,15 @@ pub enum ServerEvent {
         damage: u32,
         target_health: u32,
     },
+    EnemyAttackResolved {
+        enemy_id: EntityId,
+        target_id: EntityId,
+        damage: u32,
+        target_health: u32,
+    },
+    PlayerDefeated {
+        player_id: EntityId,
+    },
     EnemyDefeated {
         enemy_id: EntityId,
     },
@@ -1197,6 +1206,8 @@ fn decode_event(event_name: &str, tokens: Vec<&str>) -> Result<ServerLine, Decod
         "player_moved" => (&["id", "pos", "area"], None),
         "target_selected" => (&["player", "target"], None),
         "attack" => (&["player", "target", "damage", "target_hp"], None),
+        "enemy_attack" => (&["enemy", "target", "damage", "target_hp"], None),
+        "player_defeated" => (&["id"], None),
         "enemy_defeated" => (&["id"], None),
         "vendor_listed" => (&["player", "vendor", "listings"], Some("listings")),
         "item_purchased" => (
@@ -1260,6 +1271,15 @@ fn decode_event(event_name: &str, tokens: Vec<&str>) -> Result<ServerLine, Decod
             target_id: parse_entity_id(take(&mut fields, "target")?, "target")?,
             damage: parse_u32(take(&mut fields, "damage")?, "damage")?,
             target_health: parse_u32(take(&mut fields, "target_hp")?, "target_hp")?,
+        },
+        "enemy_attack" => ServerEvent::EnemyAttackResolved {
+            enemy_id: parse_entity_id(take(&mut fields, "enemy")?, "enemy")?,
+            target_id: parse_entity_id(take(&mut fields, "target")?, "target")?,
+            damage: parse_u32(take(&mut fields, "damage")?, "damage")?,
+            target_health: parse_u32(take(&mut fields, "target_hp")?, "target_hp")?,
+        },
+        "player_defeated" => ServerEvent::PlayerDefeated {
+            player_id: parse_entity_id(take(&mut fields, "id")?, "id")?,
         },
         "enemy_defeated" => ServerEvent::EnemyDefeated {
             enemy_id: parse_entity_id(take(&mut fields, "id")?, "id")?,

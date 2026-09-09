@@ -442,6 +442,20 @@ fn wire_event(event: &WireServerEvent) -> Result<Event, AdapterError> {
         WireServerEvent::EnemyDefeated { enemy_id } => Event::EnemyDefeated {
             enemy_id: CoreEntityId(*enemy_id),
         },
+        WireServerEvent::EnemyAttackResolved {
+            enemy_id,
+            target_id,
+            damage,
+            target_health,
+        } => Event::EnemyAttackResolved {
+            enemy_id: CoreEntityId(*enemy_id),
+            target_id: CoreEntityId(*target_id),
+            damage: *damage,
+            target_health: *target_health,
+        },
+        WireServerEvent::PlayerDefeated { player_id } => Event::PlayerDefeated {
+            player_id: CoreEntityId(*player_id),
+        },
         WireServerEvent::EnemyRespawned {
             enemy_id,
             spawn_generation,
@@ -708,6 +722,20 @@ fn core_event(event: &ServerEvent) -> Result<Event, AdapterError> {
             target_id: core_entity_id(*target_id),
             damage: *damage,
             target_health: *target_health,
+        },
+        ServerEvent::EnemyAttackResolved {
+            enemy_id,
+            target_id,
+            damage,
+            target_health,
+        } => Event::EnemyAttackResolved {
+            enemy_id: core_entity_id(*enemy_id),
+            target_id: core_entity_id(*target_id),
+            damage: *damage,
+            target_health: *target_health,
+        },
+        ServerEvent::PlayerDefeated { player_id } => Event::PlayerDefeated {
+            player_id: core_entity_id(*player_id),
         },
         ServerEvent::EnemyDefeated { enemy_id } => Event::EnemyDefeated {
             enemy_id: core_entity_id(*enemy_id),

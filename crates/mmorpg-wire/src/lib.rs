@@ -747,6 +747,15 @@ pub enum ServerEvent {
         amount: u32,
         target_health: u32,
     },
+    EnemyAttackResolved {
+        enemy_id: u64,
+        target_id: u64,
+        damage: u32,
+        target_health: u32,
+    },
+    PlayerDefeated {
+        player_id: u64,
+    },
     EnemyDefeated {
         enemy_id: u64,
     },
@@ -1557,6 +1566,22 @@ fn encode_server_event(
             encoder.put_u8(6);
             encoder.put_u64(*enemy_id, "enemy_id")?;
         }
+        ServerEvent::EnemyAttackResolved {
+            enemy_id,
+            target_id,
+            damage,
+            target_health,
+        } => {
+            encoder.put_u8(20);
+            encoder.put_u64(*enemy_id, "enemy_id")?;
+            encoder.put_u64(*target_id, "target_id")?;
+            encoder.put_u32(*damage);
+            encoder.put_u32(*target_health);
+        }
+        ServerEvent::PlayerDefeated { player_id } => {
+            encoder.put_u8(21);
+            encoder.put_u64(*player_id, "player_id")?;
+        }
         ServerEvent::EnemyRespawned {
             enemy_id,
             spawn_generation,
@@ -1733,6 +1758,15 @@ fn decode_server_event(decoder: &mut ServerDecoder<'_>) -> Result<ServerEvent, S
         6 => Ok(ServerEvent::EnemyDefeated {
             enemy_id: decoder.take_nonzero_u64("enemy_id")?,
         }),
+        20 => Ok(ServerEvent::EnemyAttackResolved {
+            enemy_id: decoder.take_nonzero_u64("enemy_id")?,
+            target_id: decoder.take_nonzero_u64("target_id")?,
+            damage: decoder.take_u32("damage")?,
+            target_health: decoder.take_u32("target_health")?,
+        }),
+        21 => Ok(ServerEvent::PlayerDefeated {
+            player_id: decoder.take_nonzero_u64("player_id")?,
+        }),
         19 => Ok(ServerEvent::EnemyRespawned {
             enemy_id: decoder.take_nonzero_u64("enemy_id")?,
             spawn_generation: decoder.take_nonzero_u64("spawn_generation")?,
@@ -1861,7 +1895,7 @@ pub fn decode_framed_server_event(input: &[u8]) -> Result<FramedServerEvent, Ser
             available: input.len() - 5,
         });
     }
-    let known = (1..=19).contains(&opcode);
+    let known = (1..=21).contains(&opcode);
     if !known {
         return Ok(FramedServerEvent::SkippedUnknown { opcode, length });
     }
@@ -2320,6 +2354,25 @@ mod tests {
             decode_framed_server_event(&framed),
             Ok(FramedServerEvent::Known(event))
         );
+    }
+
+    #[test]
+    fn enemy_attack_and_player_defeat_events_round_trip_as_additive_opcodes() {
+        for event in [
+            ServerEvent::EnemyAttackResolved {
+                enemy_id: 2,
+                target_id: 5,
+                damage: 8,
+                target_health: 0,
+            },
+            ServerEvent::PlayerDefeated { player_id: 5 },
+        ] {
+            let framed = encode_framed_server_event(&event).expect("event encodes");
+            assert_eq!(
+                decode_framed_server_event(&framed),
+                Ok(FramedServerEvent::Known(event))
+            );
+        }
     }
 
     #[test]

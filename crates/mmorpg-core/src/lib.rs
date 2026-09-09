@@ -21,6 +21,11 @@ const VENDOR_INTERACTION_RANGE: f32 = 12.0;
 const STARTER_GOLD: u32 = 20;
 const STARTER_INVENTORY_CAPACITY: usize = 16;
 const ENEMY_RESPAWN_TICKS: u64 = 100;
+const ENEMY_LEASH_RANGE: f32 = 45.0;
+const ENEMY_MOVE_PER_TICK: f32 = 1.0;
+const ENEMY_ATTACK_RANGE: f32 = 2.0;
+const ENEMY_ATTACK_DAMAGE: u32 = 8;
+const ENEMY_ATTACK_COOLDOWN_TICKS: u64 = 20;
 
 /// Server-owned timing parameters for the explicit timed-combat path.
 ///
@@ -245,6 +250,19 @@ impl Position {
     }
 }
 
+fn step_toward(position: Position, destination: Position, step: f32) -> Position {
+    let dx = destination.x - position.x;
+    let dy = destination.y - position.y;
+    let distance = dx.hypot(dy);
+    if distance == 0.0 || distance <= step {
+        return destination;
+    }
+    Position::new(
+        position.x + dx / distance * step,
+        position.y + dy / distance * step,
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bounds {
     pub min_x: f32,
@@ -315,6 +333,14 @@ impl Player {
 pub enum NpcKind {
     Vendor,
     Enemy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EnemyLifecycle {
+    Idle,
+    Engaged { target_id: EntityId },
+    Returning,
+    Corpse,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -497,6 +523,15 @@ pub enum Event {
     EnemyDefeated {
         enemy_id: EntityId,
     },
+    EnemyAttackResolved {
+        enemy_id: EntityId,
+        target_id: EntityId,
+        damage: u32,
+        target_health: u32,
+    },
+    PlayerDefeated {
+        player_id: EntityId,
+    },
     EnemyRespawned {
         enemy_id: EntityId,
         spawn_generation: u64,
@@ -599,6 +634,9 @@ pub struct World {
     npcs: BTreeMap<EntityId, Npc>,
     vendor_stock: BTreeMap<(EntityId, ItemId), VendorStock>,
     enemy_rewards: BTreeMap<EntityId, EnemyReward>,
+    enemy_lifecycle: BTreeMap<EntityId, EnemyLifecycle>,
+    enemy_threat: BTreeMap<(EntityId, EntityId), u32>,
+    enemy_attack_ready: BTreeMap<EntityId, u64>,
     combat_cooldowns: BTreeMap<EntityId, u64>,
     pending_attacks: BTreeMap<EntityId, PendingAttack>,
 }
@@ -614,6 +652,9 @@ impl World {
             npcs: BTreeMap::new(),
             vendor_stock: BTreeMap::new(),
             enemy_rewards: BTreeMap::new(),
+            enemy_lifecycle: BTreeMap::new(),
+            enemy_threat: BTreeMap::new(),
+            enemy_attack_ready: BTreeMap::new(),
             combat_cooldowns: BTreeMap::new(),
             pending_attacks: BTreeMap::new(),
         };
@@ -736,6 +777,7 @@ impl World {
         }
         self.tick = self.tick.saturating_add(1);
         self.resolve_pending_attacks(&mut events);
+        self.advance_enemy_ai(&mut events);
         self.advance_enemy_lifecycle(&mut events);
         events
     }
@@ -856,10 +898,13 @@ impl World {
         {
             reward.owner = Some(player_id);
         }
+        self.add_enemy_threat(target_id, player_id, damage);
         if defeated {
             if let Some(target) = self.npcs.get_mut(&target_id) {
                 target.respawn_at_tick = Some(self.tick.saturating_add(ENEMY_RESPAWN_TICKS));
             }
+            self.enemy_lifecycle
+                .insert(target_id, EnemyLifecycle::Corpse);
             self.advance_kill_quests(player_id, target_template_id, events);
         }
     }
@@ -883,6 +928,9 @@ impl World {
             enemy.position = enemy.spawn_position;
             enemy.respawn_at_tick = None;
             enemy.spawn_generation = enemy.spawn_generation.saturating_add(1).max(1);
+            self.enemy_lifecycle.insert(enemy_id, EnemyLifecycle::Idle);
+            self.enemy_threat.retain(|(id, _), _| *id != enemy_id);
+            self.enemy_attack_ready.remove(&enemy_id);
             if let Some(reward) = self.enemy_rewards.get_mut(&enemy_id) {
                 reward.owner = None;
                 reward.claimed = false;
@@ -892,6 +940,165 @@ impl World {
                 enemy_id,
                 spawn_generation: enemy.spawn_generation,
             });
+        }
+    }
+
+    fn add_enemy_threat(&mut self, enemy_id: EntityId, player_id: EntityId, amount: u32) {
+        if amount == 0 {
+            return;
+        }
+        let entry = self.enemy_threat.entry((enemy_id, player_id)).or_default();
+        *entry = entry.saturating_add(amount);
+    }
+
+    fn advance_enemy_ai(&mut self, events: &mut Vec<Event>) {
+        let enemy_ids: Vec<_> = self
+            .npcs
+            .values()
+            .filter(|npc| npc.kind == NpcKind::Enemy && npc.health > 0)
+            .map(|npc| npc.id)
+            .collect();
+
+        for enemy_id in enemy_ids {
+            let state = self
+                .enemy_lifecycle
+                .get(&enemy_id)
+                .copied()
+                .unwrap_or(EnemyLifecycle::Idle);
+            match state {
+                EnemyLifecycle::Idle => {
+                    if let Some(target_id) = self.enemy_target(enemy_id) {
+                        self.enemy_lifecycle
+                            .insert(enemy_id, EnemyLifecycle::Engaged { target_id });
+                    }
+                }
+                EnemyLifecycle::Engaged { target_id } => {
+                    let Some((enemy_position, spawn_position)) = self
+                        .npcs
+                        .get(&enemy_id)
+                        .map(|enemy| (enemy.position, enemy.spawn_position))
+                    else {
+                        continue;
+                    };
+                    let Some(player) = self.players.get(&target_id).cloned() else {
+                        self.enemy_lifecycle
+                            .insert(enemy_id, EnemyLifecycle::Returning);
+                        continue;
+                    };
+                    let outside_leash = enemy_position.distance_squared(spawn_position)
+                        > ENEMY_LEASH_RANGE * ENEMY_LEASH_RANGE
+                        || player.position.distance_squared(spawn_position)
+                            > ENEMY_LEASH_RANGE * ENEMY_LEASH_RANGE;
+                    if player.health == 0 || outside_leash {
+                        self.enemy_lifecycle
+                            .insert(enemy_id, EnemyLifecycle::Returning);
+                        continue;
+                    }
+
+                    let has_threat = self
+                        .enemy_threat
+                        .get(&(enemy_id, target_id))
+                        .is_some_and(|threat| *threat > 0);
+                    if has_threat
+                        && enemy_position.distance_squared(player.position)
+                            <= ENEMY_ATTACK_RANGE * ENEMY_ATTACK_RANGE
+                    {
+                        self.resolve_enemy_attack(enemy_id, target_id, events);
+                    } else if let Some(enemy) = self.npcs.get_mut(&enemy_id) {
+                        enemy.position =
+                            step_toward(enemy.position, player.position, ENEMY_MOVE_PER_TICK);
+                    }
+                }
+                EnemyLifecycle::Returning => {
+                    let Some((position, spawn_position)) = self
+                        .npcs
+                        .get(&enemy_id)
+                        .map(|enemy| (enemy.position, enemy.spawn_position))
+                    else {
+                        continue;
+                    };
+                    if position == spawn_position {
+                        self.enemy_lifecycle.insert(enemy_id, EnemyLifecycle::Idle);
+                    } else if let Some(enemy) = self.npcs.get_mut(&enemy_id) {
+                        enemy.position = step_toward(position, spawn_position, ENEMY_MOVE_PER_TICK);
+                    }
+                }
+                EnemyLifecycle::Corpse => {}
+            }
+        }
+    }
+
+    fn enemy_target(&self, enemy_id: EntityId) -> Option<EntityId> {
+        let _enemy = self.npcs.get(&enemy_id)?;
+        let threat_target = self
+            .enemy_threat
+            .iter()
+            .filter(|((candidate_enemy, player_id), threat)| {
+                *candidate_enemy == enemy_id
+                    && **threat > 0
+                    && self
+                        .players
+                        .get(player_id)
+                        .is_some_and(|player| player.health > 0)
+            })
+            .max_by_key(|((_, player_id), threat)| (*threat, std::cmp::Reverse(*player_id)))
+            .map(|((_, player_id), _)| *player_id);
+        if threat_target.is_some() {
+            return threat_target;
+        }
+        self.players
+            .values()
+            .filter(|player| {
+                player.health > 0
+                    && _enemy.position.distance_squared(player.position) <= 20.0 * 20.0
+            })
+            .min_by(|left, right| {
+                _enemy
+                    .position
+                    .distance_squared(left.position)
+                    .total_cmp(&_enemy.position.distance_squared(right.position))
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+            .map(|player| player.id)
+    }
+
+    fn resolve_enemy_attack(
+        &mut self,
+        enemy_id: EntityId,
+        target_id: EntityId,
+        events: &mut Vec<Event>,
+    ) {
+        if self
+            .enemy_attack_ready
+            .get(&enemy_id)
+            .is_some_and(|ready_tick| self.tick < *ready_tick)
+        {
+            return;
+        }
+        let Some(target) = self.players.get_mut(&target_id) else {
+            return;
+        };
+        if target.health == 0 {
+            return;
+        }
+        target.health = target.health.saturating_sub(ENEMY_ATTACK_DAMAGE);
+        let target_health = target.health;
+        self.enemy_attack_ready.insert(
+            enemy_id,
+            self.tick.saturating_add(ENEMY_ATTACK_COOLDOWN_TICKS),
+        );
+        events.push(Event::EnemyAttackResolved {
+            enemy_id,
+            target_id,
+            damage: ENEMY_ATTACK_DAMAGE,
+            target_health,
+        });
+        if target_health == 0 {
+            events.push(Event::PlayerDefeated {
+                player_id: target_id,
+            });
+            self.enemy_lifecycle
+                .insert(enemy_id, EnemyLifecycle::Returning);
         }
     }
 
@@ -920,6 +1127,7 @@ impl World {
             },
         );
         if kind == NpcKind::Enemy {
+            self.enemy_lifecycle.insert(id, EnemyLifecycle::Idle);
             self.enemy_rewards.insert(
                 id,
                 EnemyReward {
@@ -1156,7 +1364,14 @@ impl World {
                         reward.owner = Some(player_id);
                     }
                 }
+                self.add_enemy_threat(target_id, player_id, damage);
                 if defeated {
+                    if let Some(target) = self.npcs.get_mut(&target_id) {
+                        target.respawn_at_tick =
+                            Some(self.tick.saturating_add(ENEMY_RESPAWN_TICKS));
+                    }
+                    self.enemy_lifecycle
+                        .insert(target_id, EnemyLifecycle::Corpse);
                     self.advance_kill_quests(player_id, target_template_id, events);
                 }
             }
@@ -1205,6 +1420,20 @@ impl World {
                         .min(target.max_health);
                     target.health - before
                 };
+                let nearby_enemies: Vec<_> = self
+                    .npcs
+                    .values()
+                    .filter(|enemy| {
+                        enemy.kind == NpcKind::Enemy
+                            && enemy.health > 0
+                            && enemy.position.distance_squared(healer_position)
+                                <= ENEMY_LEASH_RANGE * ENEMY_LEASH_RANGE
+                    })
+                    .map(|enemy| enemy.id)
+                    .collect();
+                for enemy_id in nearby_enemies {
+                    self.add_enemy_threat(enemy_id, player_id, target_health);
+                }
                 events.push(Event::HealResolved {
                     player_id,
                     target_id,
@@ -1773,6 +2002,58 @@ mod tests {
         assert_eq!(enemy.position, enemy.spawn_position);
         assert_eq!(enemy.spawn_generation, 2);
         assert_eq!(enemy.respawn_at_tick, None);
+    }
+
+    #[test]
+    fn enemy_threat_drives_attacks_and_leash_return() {
+        let mut world = World::new_starter_zone();
+        let player_id = join(&mut world, "Aria", Role::DamageDealer);
+        let enemy_id = first_enemy(&world);
+        world.step([
+            Command::Move {
+                player_id,
+                dx: 10.0,
+                dy: 0.0,
+            },
+            Command::Move {
+                player_id,
+                dx: 10.0,
+                dy: 0.0,
+            },
+            Command::SelectTarget {
+                player_id,
+                target_id: enemy_id,
+            },
+            Command::BasicAttack { player_id },
+        ]);
+
+        let mut attacks = Vec::new();
+        for _ in 0..5 {
+            attacks.extend(world.step([]));
+        }
+        assert!(attacks.contains(&Event::EnemyAttackResolved {
+            enemy_id,
+            target_id: player_id,
+            damage: ENEMY_ATTACK_DAMAGE,
+            target_health: 92,
+        }));
+        assert_eq!(world.player(player_id).unwrap().health, 92);
+
+        for _ in 0..8 {
+            world.step([Command::Move {
+                player_id,
+                dx: 10.0,
+                dy: 0.0,
+            }]);
+        }
+        for _ in 0..60 {
+            world.step([]);
+        }
+        assert_eq!(
+            world.npc(enemy_id).unwrap().position,
+            world.npc(enemy_id).unwrap().spawn_position
+        );
+        assert_eq!(world.player(player_id).unwrap().health, 92);
     }
 
     #[test]
@@ -2541,15 +2822,17 @@ mod tests {
         assert_eq!(world.tick(), 4);
 
         let events = world.step_with_combat_timing([Command::BasicAttack { player_id }], timing);
-        assert!(matches!(
-            events.as_slice(),
-            [Event::AttackResolved {
-                player_id: resolved_player,
-                target_id: resolved_target,
-                damage: 12,
-                target_health: 76,
-            }] if *resolved_player == player_id && *resolved_target == enemy_id
-        ));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                Event::AttackResolved {
+                    player_id: resolved_player,
+                    target_id: resolved_target,
+                    damage: 12,
+                    target_health: 76,
+                } if *resolved_player == player_id && *resolved_target == enemy_id
+            )
+        }));
         assert_eq!(world.npc(enemy_id).unwrap().health, 76);
     }
 }

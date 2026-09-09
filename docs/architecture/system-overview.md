@@ -103,9 +103,11 @@ cast-time and cooldown experiments. The original immediate development path
 remains available for compatibility, while timed combat state is owned by the
 world owner and resolves through the same authoritative events. Enemy respawn
 is now integrated as a bounded fixed-tick, generation-reset transition and is
-carried over typed wire; enemy patrol, aggro, threat, enemy attacks, and leash
-behavior remain standalone experiment work until their navigation, persistence,
-and ownership boundaries are integrated into the server.
+carried over typed wire. A bounded threat/leash slice also runs in the world
+owner: authoritative damage/healing creates threat, enemies can attack on a
+fixed cooldown, and they return after a leash violation. Proximity patrol and
+aggro, explicit taunt, corpse expiry, and multi-player loot selection remain
+standalone or provisional until their full ownership boundaries are integrated.
 
 The current server is intentionally a development process. It does not yet
 provide production authentication, durable persistence, interest-managed

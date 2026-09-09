@@ -1115,6 +1115,20 @@ fn wire_event(event: &Event) -> Option<ServerEvent> {
         Event::EnemyDefeated { enemy_id } => ServerEvent::EnemyDefeated {
             enemy_id: enemy_id.0,
         },
+        Event::EnemyAttackResolved {
+            enemy_id,
+            target_id,
+            damage,
+            target_health,
+        } => ServerEvent::EnemyAttackResolved {
+            enemy_id: enemy_id.0,
+            target_id: target_id.0,
+            damage: *damage,
+            target_health: *target_health,
+        },
+        Event::PlayerDefeated { player_id } => ServerEvent::PlayerDefeated {
+            player_id: player_id.0,
+        },
         Event::EnemyRespawned {
             enemy_id,
             spawn_generation,
@@ -1322,6 +1336,18 @@ fn format_event(event: &Event) -> String {
             player_id, target_id, amount, target_health
         ),
         Event::EnemyDefeated { enemy_id } => format!("EVENT enemy_defeated id={enemy_id}"),
+        Event::EnemyAttackResolved {
+            enemy_id,
+            target_id,
+            damage,
+            target_health,
+        } => format!(
+            "EVENT enemy_attack enemy={} target={} damage={} target_hp={}",
+            enemy_id, target_id, damage, target_health
+        ),
+        Event::PlayerDefeated { player_id } => {
+            format!("EVENT player_defeated id={player_id}")
+        }
         Event::EnemyRespawned {
             enemy_id,
             spawn_generation,
