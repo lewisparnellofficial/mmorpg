@@ -230,6 +230,7 @@ impl AddonRunner {
         if let Some(reason) = self.disabled.clone() {
             return DispatchResult::Disabled(reason);
         }
+        let checkpoint = self.host.borrow().clone();
         let result = (|| -> LuaResult<()> {
             let event = self.lua.create_table()?;
             event.set("name", event_name)?;
@@ -260,6 +261,10 @@ impl AddonRunner {
             Ok(()) => DispatchResult::Applied,
             Err(error) => {
                 let message = error.to_string();
+                // A callback is one presentation transaction. Restore every
+                // host-owned mutation made during the dispatch before
+                // recording the sanitized failure and disabling this addon.
+                *self.host.borrow_mut() = checkpoint;
                 self.disable(message.clone());
                 DispatchResult::Disabled(message)
             }
@@ -577,5 +582,33 @@ mod tests {
         ));
         assert!(failing.is_disabled());
         assert_eq!(failing.snapshot().errors.len(), 1);
+    }
+
+    #[test]
+    fn callback_failure_rolls_back_all_presentation_mutations() {
+        let mut failing = AddonRunner::load(
+            "transactional",
+            r#"
+                local panel = ui.create_panel("before failure")
+                ui.on("frame", function()
+                    ui.set_text(panel, "must not commit")
+                    ui.create_panel("also must not commit")
+                    error("transaction aborted")
+                end)
+            "#,
+            AddonPolicy::default(),
+        )
+        .unwrap();
+        let before = failing.snapshot();
+        assert_eq!(before.nodes.len(), 1);
+        assert!(matches!(
+            failing.deliver_event("frame", &state()),
+            DispatchResult::Disabled(message) if message.contains("transaction aborted")
+        ));
+        let after = failing.snapshot();
+        assert_eq!(after.nodes.len(), before.nodes.len());
+        assert_eq!(after.nodes[0].text, "before failure");
+        assert_eq!(after.secure_intents, before.secure_intents);
+        assert_eq!(after.errors.len(), 1);
     }
 }

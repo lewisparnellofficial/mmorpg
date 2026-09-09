@@ -20,8 +20,14 @@ caller may use `AddonRunner::secure_input` after validating ownership; that
 operation is deliberately outside the Lua environment.
 
 The runner enforces source-size, memory, instruction, UI-node, event, and text
-limits. Runtime errors disable only the failing addon and are recorded in its
-diagnostics. Separate runners cannot use each other's node handles.
+limits. A callback is applied as one host-state transaction: if it fails, its
+panel mutations are rolled back before the addon is disabled and the failure
+is recorded. Runtime errors disable only the failing addon and are recorded in
+its diagnostics. Separate runners cannot use each other's node handles.
+
+This rollback is currently limited to host-owned panel state. The standalone
+contract crate's `UiOperation` buffer, package manifest, and storage lifecycle
+are not yet the implementation behind this Luau adapter.
 
 This is evidence for a Luau embedding direction, not a security certification.
 The remaining production questions include package/signature policy, exact

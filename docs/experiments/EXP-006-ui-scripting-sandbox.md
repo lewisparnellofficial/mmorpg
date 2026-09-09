@@ -29,7 +29,10 @@ manifest rejection, and account/package-scoped storage failure atomicity.
 The Luau experiment now consumes the contract's immutable `ViewRecord` as its
 `VisibleState` compatibility type. UI-node operations remain a deliberately
 limited adapter prototype; the full transactional operation application and
-manifest/storage lifecycle are still owned only by the contract crate.
+manifest/storage lifecycle are still owned only by the contract crate. Within
+the adapter prototype, each callback is a host-state transaction: if the
+callback fails, host-owned panel mutations from that dispatch are rolled back
+before the addon is disabled and the failure is recorded.
 
 The implementation is in
 [`experiments/ui-scripting`](../../experiments/ui-scripting/README.md). It uses
@@ -57,7 +60,7 @@ cargo run --quiet --manifest-path experiments/ui-scripting/Cargo.toml
 
 ## Measured local results
 
-The standalone test suite completed with **8 passed, 0 failed**. The tests
+The standalone test suite completed with **9 passed, 0 failed**. The tests
 covered:
 
 - the default UI and an addon using the same public functions;
@@ -69,7 +72,8 @@ covered:
 - interruption of an infinite loop while a separate default-UI runner stays
   usable;
 - source-size and memory limits; and
-- callback failure disabling only the failing addon.
+- callback failure disabling only the failing addon; and
+- rollback of all host-owned panel mutations from a failed callback.
 
 The demo process also completed and reported one created panel, one registered
 event, zero secure intents, and zero errors after a normal event dispatch.
@@ -97,6 +101,9 @@ mode, because sandbox mode makes the global table read-only.
   wall-clock benchmark, fuzzing campaign, or minimum-hardware calibration.
 - The empty `game` and `storage` namespaces are placeholders, not the final
   public API.
+- Callback rollback currently covers host state only; callback-registration
+  changes and the contract crate's operation-buffer lifecycle are not yet
+  unified with this Luau adapter.
 
 Next work should add manifest/value-boundary fuzzing, calibrate quotas on the
 minimum supported Linux client, and compare the same language-neutral contract
