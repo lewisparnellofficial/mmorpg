@@ -666,6 +666,17 @@ fn spawn_wire_network_worker(
                         }
                     }
                     queue_session_outputs(&mut outgoing, session_outputs);
+                    if let ServerMessage::CharacterSelected {
+                        character_id,
+                        name,
+                        role,
+                    } = &message
+                    {
+                        println!("server selected character {character_id} {name} role={role:?}");
+                    }
+                    if let ServerMessage::Connected { player_id, role } = &message {
+                        println!("server connected player {player_id} role={role:?}");
+                    }
                     if matches!(message, ServerMessage::CharacterList { ref characters, .. } if characters.is_empty())
                     {
                         let _ = event_tx.send(NetworkEvent::Status(

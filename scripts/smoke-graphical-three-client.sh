@@ -64,6 +64,33 @@ for character_id in 1 2 3; do
     fi
 done
 
+accepted_peers=$(rg -c "accepted_typed_(peer|additional_peer)=" "$work_dir/server.log" || true)
+if (( accepted_peers < 3 )); then
+    echo "server accepted only $accepted_peers typed graphical peers" >&2
+    sed -n '1,120p' "$work_dir/server.log" >&2
+    exit 1
+fi
+
+declare -A expected_roles=(
+    [1]=DamageDealer
+    [2]=Tank
+    [3]=Healer
+)
+for character_id in 1 2 3; do
+    log="$work_dir/client-$character_id.log"
+    role="${expected_roles[$character_id]}"
+    if ! rg -q "server selected character $character_id .* role=$role" "$log"; then
+        echo "graphical client $character_id did not receive its server-confirmed $role role" >&2
+        sed -n '1,160p' "$log" >&2
+        exit 1
+    fi
+    if ! rg -q "server connected player .* role=$role" "$log"; then
+        echo "graphical client $character_id did not enter the world as $role" >&2
+        sed -n '1,160p' "$log" >&2
+        exit 1
+    fi
+done
+
 echo "graphical three-client smoke: startup and role selection passed"
 echo "logs: $work_dir"
 smoke_status=0

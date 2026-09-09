@@ -28,9 +28,10 @@ For the opt-in three-window startup smoke, use:
 
 The script launches three real clients with `--character-id 1`, `2`, and `3`,
 then checks that each process loads `Greenfield` and reaches the typed startup
-character-selection path. It is a bounded startup/role-selection check, not a
-substitute for the full encounter, privacy, persistence, or renderer-quality
-acceptance gate.
+character-selection path. It also checks the server-confirmed role and world
+player binding for each client, plus at least three accepted typed peers. It is
+a bounded startup/role-selection check, not a substitute for the full
+encounter, privacy, persistence, or renderer-quality acceptance gate.
 
 ## Evidence
 
