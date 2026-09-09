@@ -157,9 +157,10 @@ or renderer-quality acceptance gate.
   debug capture with the Lossless Scaling layer disabled still reported the
   same application-visible `VK_IMAGE_LAYOUT_UNDEFINED` present reports and
   already-signaled acquire-semaphore reports. A second capture using explicit
-  `PresentMode::Fifo` reproduced those reports. The warnings therefore are not
-  resolved by present-mode selection; this change improves fallback behavior but
-  does not close the debug renderer gate.
+  `PresentMode::Fifo`, and a third using explicit `PresentMode::Immediate`,
+  reproduced those reports. The warnings therefore are not resolved by
+  present-mode selection; this change improves fallback behavior but does not
+  close the debug renderer gate.
 - **Graphical restart-persistence result (2026-09-09):** The new bounded smoke
   ran the real Bevy client through the purchase, quest acceptance, three-kill
   loot, and quest-reward flow, closed the client, allowed the server's
