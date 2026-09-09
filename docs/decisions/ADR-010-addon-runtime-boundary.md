@@ -83,8 +83,9 @@ outside the player-addon threat model.
   execution, callback transactionality, queue isolation, storage atomicity,
   secure-input separation, adversarial corpus tests, and repeated fuzz runs.
 - The Wasmi comparison proves allowlisted imports, rejection before
-  instantiation, fuel interruption, host-side resource limits, and no WASI
-  imports.
+  instantiation, fuel interruption, host-side resource limits, no WASI
+  imports, and a bounded guest-memory `create_panel` call that maps into the
+  shared `ui.v1` operation type with malformed-pointer handling.
 - `scripts/smoke-ui-process-isolation.sh` proves on capable hosts that the
   Wasmi comparison can run with unshared namespaces, an empty network route,
   read-only system bindings, and a private `/tmp`.

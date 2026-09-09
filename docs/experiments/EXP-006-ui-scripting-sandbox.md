@@ -211,12 +211,22 @@ exhaustive security guarantee.
 
 Because the Luau campaign found a native parser crash, the repository now also
 contains `experiments/ui-wasm-comparison`, a standalone Wasmi proof of the
-stronger isolation alternative. Its local run linked only one explicit UI
-import, rejects every other import before instantiation, rejected WASI by
-having no WASI imports, interrupted an infinite loop with fuel in 27,269
-microseconds, and enforced a four-page host-side linear-memory limit. This is
-an ABI and control-boundary comparison, not a production runtime selection or
-a complete scripted-UI implementation.
+stronger isolation alternative. Its local run links only one explicit UI
+import, rejects every other import before instantiation, rejects WASI by
+having no WASI imports, interrupts an infinite loop with fuel, and enforces a
+four-page host-side linear-memory limit. The comparison now maps a bounded
+`(pointer, length)` guest-memory call to a real
+`mmorpg-ui-contract::UiOperation::CreatePanel`, validates the operation with
+the shared package/generation rules, and tests an out-of-bounds pointer
+returning an error without a host panic. A representative run reported:
+
+```text
+wasm comparison: allowlisted_import=pass host_memory_limit=pass fuel=out_of_fuel fuel_trap_us=30666 max_memory_pages=4 wasi_imports=none
+```
+
+This is stronger ABI and control-boundary evidence, not a production runtime
+selection or a complete scripted-UI implementation. The graphical client and
+its process supervisor still do not use this adapter.
 
 ## Result
 
