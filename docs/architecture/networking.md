@@ -56,8 +56,10 @@ A provisional model is:
 
 The development server now routes every world step, including empty ticks,
 through one server-owned fixed-tick timing path. The current default is 20 Hz;
-the compatibility `World::step` API uses zero cast/cooldown timing while the
-server retains the same timing object for command and deferred-work processing.
+the live server uses a two-tick cast time and two-tick basic-combat cooldown,
+while the compatibility `World::step` API retains zero cast/cooldown timing for
+older core callers. Empty server ticks still advance deferred work and enemy
+lifecycle state through the same owner.
 This is an implementation boundary, not a capacity result. The exact tick
 budget must still be established through profiling, especially for the
 200-player encounter.

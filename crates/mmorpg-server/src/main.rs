@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_ADDRESS: &str = "127.0.0.1:4000";
 const DEFAULT_TICK_HZ: u64 = 20;
+const DEFAULT_CAST_TIME_TICKS: u64 = 2;
+const DEFAULT_COMBAT_COOLDOWN_TICKS: u64 = 2;
 const MAX_WIRE_INPUT_BYTES: usize = mmorpg_wire::MAX_FRAME_SIZE * 2;
 const MAX_WIRE_OUTPUT_BYTES: usize = 256 * 1024;
 const MAX_REPLACEABLE_EVENTS: usize = 256;
@@ -248,8 +250,12 @@ impl Server {
     ) -> Self {
         let tick_hz = tick_hz.max(1);
         let tick_interval = Duration::from_secs_f64(1.0 / tick_hz as f64);
-        let combat_timing = CombatTiming::new(tick_hz.min(u32::MAX as u64) as u32, 0, 0)
-            .expect("tick_hz is clamped above zero");
+        let combat_timing = CombatTiming::new(
+            tick_hz.min(u32::MAX as u64) as u32,
+            DEFAULT_CAST_TIME_TICKS,
+            DEFAULT_COMBAT_COOLDOWN_TICKS,
+        )
+        .expect("tick_hz is clamped above zero");
         let account_repository: Arc<dyn AccountCharacterRepository> = Arc::from(account_repository);
         let checkpoint_worker = CheckpointWorker::new(Arc::clone(&account_repository));
         let (operation_journal_worker, persisted_operations) = operation_journal_path
@@ -3146,6 +3152,21 @@ mod tests {
             );
         }
         assert_eq!(server.commands.len(), MAX_PENDING_COMMANDS);
+    }
+
+    #[test]
+    fn live_server_uses_fixed_deferred_combat_timing() {
+        let server = Server::new(DEFAULT_TICK_HZ, false, None);
+
+        assert_eq!(server.combat_timing.tick_hz(), DEFAULT_TICK_HZ as u32);
+        assert_eq!(
+            server.combat_timing.cast_time_ticks(),
+            DEFAULT_CAST_TIME_TICKS
+        );
+        assert_eq!(
+            server.combat_timing.cooldown_ticks(),
+            DEFAULT_COMBAT_COOLDOWN_TICKS
+        );
     }
 
     #[test]

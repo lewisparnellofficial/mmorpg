@@ -267,7 +267,10 @@ fn defeat_and_loot(client: &mut GateClient, enemy_id: u64, operation_id: u64) {
     });
 
     let mut defeated = false;
-    for _ in 0..16 {
+    // The server applies a two-tick cast and two-tick cooldown. Rejected
+    // attempts still advance the fixed-tick owner, so allow enough attempts
+    // for the nine successful damage attacks plus those timing windows.
+    for _ in 0..64 {
         client
             .connection
             .send_typed_command(&ClientCommand::BasicAttack)
@@ -293,7 +296,10 @@ fn defeat_and_loot(client: &mut GateClient, enemy_id: u64, operation_id: u64) {
             break;
         }
     }
-    assert!(defeated, "enemy {enemy_id} did not die within 16 attacks");
+    assert!(
+        defeated,
+        "enemy {enemy_id} did not die within 64 attack attempts"
+    );
     expect_event(
         &mut client.connection,
         "enemy defeat",

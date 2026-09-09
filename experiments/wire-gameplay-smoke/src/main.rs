@@ -236,7 +236,11 @@ fn main() {
         });
 
         let mut defeated = false;
-        for _ in 0..16 {
+        // The server applies a two-tick cast and two-tick cooldown. Rejected
+        // attempts still advance the fixed-tick owner, so allow enough
+        // attempts for the nine successful damage attacks plus those timing
+        // windows.
+        for _ in 0..64 {
             connection
                 .send_typed_command(&ClientCommand::BasicAttack)
                 .expect("attack command should send");
@@ -261,7 +265,10 @@ fn main() {
                 break;
             }
         }
-        assert!(defeated, "enemy {enemy_id} did not die within 16 attacks");
+        assert!(
+            defeated,
+            "enemy {enemy_id} did not die within 64 attack attempts"
+        );
         expect_event(
             &mut connection,
             "enemy defeat",
