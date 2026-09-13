@@ -213,6 +213,43 @@ or renderer-quality acceptance gate.
   smoke passed the purchase and rewarded-quest restore check. These are
   presentation/integration regressions; neither test is used as evidence
   that the debug Vulkan renderer is correct.
+- **Root-cause correlation (2026-09-13):** The focused failure exactly matches
+  [Bevy issue #22733](https://github.com/bevyengine/bevy/issues/22733): its
+  reports contain the same `VUID-VkPresentInfoKHR-pImageIndices-01430`
+  (`VK_IMAGE_LAYOUT_UNDEFINED`) followed by
+  `VUID-vkAcquireNextImageKHR-semaphore-01286` (acquire semaphore already
+  signaled). Bevy maintainers closed that issue as fixed by wgpu v30, and
+  explicitly stated that it will be part of Bevy 0.20 rather than Bevy 0.19.
+  The corresponding wgpu correction is
+  [PR #9361](https://github.com/gfx-rs/wgpu/pull/9361), merged 2026-04-14. It
+  prepares a surface texture for presentation by clearing an uninitialized
+  texture and transitioning it to `PRESENT`, so a frame with no render work
+  cannot be presented in `UNDEFINED` layout. The PR adds a reproduction test.
+  The exact locked `wgpu-hal 29.0.4` source still uses the predecessor path:
+  its Vulkan `discard_texture` is a no-op and its `present` call does not
+  perform that clear/transition. This supplies a concrete lower-stack owner
+  and mechanism for the two errors: an unrendered acquired image is presented
+  in `UNDEFINED`; because no submission waited on its acquisition semaphore,
+  reusing that now-signaled binary semaphore violates the Vulkan acquire
+  precondition. It is therefore a single presentation-lifetime defect, not
+  evidence of project-owned image-index, resize, or frame-submission code.
+  The host’s disabled Lossless Scaling layer remains a separate loader-chain
+  concern. A fresh run of `./scripts/smoke-graphical-renderer-debug.sh` used
+  `VK_LOADER_LAYERS_DISABLE=VK_LAYER_LSFGVK_frame_generation` and
+  `WINIT_UNIX_BACKEND=wayland`, selected the RTX 5070 / NVIDIA 615.71.09
+  Vulkan adapter, reached `Greenfield`, and again produced three layout VUIDs
+  followed by three acquire-semaphore VUIDs. Its five-second post-warm-up
+  measurement was `samples=160 p50_ms=31.126 p95_ms=38.015 p99_ms=41.594
+  max_ms=57.380`; it failed both debug frame-time limits. No renderer
+  diagnostic was suppressed by this investigation.
+- **Upgrade feasibility check (2026-09-13):** A direct `cargo update -p wgpu
+  --precise 30.0.1` was rejected because Bevy 0.19.1's `bevy_render` requires
+  `wgpu ^29.0.3`. Bevy 0.20 is not currently published in the crates.io
+  registry or in the upstream release tags; v0.19.1 is the latest released
+  Bevy tag. Therefore a clean supported dependency upgrade cannot be made in
+  this branch today without moving the entire client to an unreleased Bevy
+  git revision (or maintaining a local wgpu backport). Neither a partial
+  wgpu override nor a claim of an upgrade fix is valid evidence.
 
 ## Interpretation
 
