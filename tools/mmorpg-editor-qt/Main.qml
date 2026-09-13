@@ -3,13 +3,13 @@ import QtQuick.Controls 6.8
 import QtQuick.Layouts 6.8
 import QtQuick3D 6.8
 
-ApplicationWindow {
+Item {
     id: root
-    visible: true
-    width: 1280
-    height: 800
-    title: "MMORPG Terrain Editor — Qt tablet proof"
-    color: "#171b22"
+
+    Rectangle {
+        anchors.fill: parent
+        color: "#171b22"
+    }
 
     ColumnLayout {
         anchors.fill: parent

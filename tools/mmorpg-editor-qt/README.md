@@ -38,5 +38,11 @@ The build does not launch a window and therefore belongs in aggregate
 validation. Build the Rust bridge before launching the shell; the convenience
 launcher does this automatically. Run the shell with `./scripts/run-editor.sh`
 from a Linux desktop session. Override the bridge and output paths with
-`MMORPG_EDITOR_CORE_BRIDGE`, `MMORPG_EDITOR_TERRAIN_OUTPUT`, and
-`MMORPG_EDITOR_CAPTURE_OUTPUT` when needed.
+`MMORPG_EDITOR_CORE_BRIDGE`, `MMORPG_EDITOR_TERRAIN_OUTPUT`,
+`MMORPG_EDITOR_CAPTURE_OUTPUT`, and `MMORPG_EDITOR_DIAGNOSTICS` when needed.
+The diagnostics path defaults to `/tmp/mmorpg-editor-qt-diagnostics.csv` and
+records native tablet phases, normalized bridge events, preview latency, and
+render durations for the physical input gate. It also records event routing,
+interaction-state transitions, cancellation reasons, and a shutdown summary
+with the active-stroke invariant. Generated diagnostics should not be
+committed.
