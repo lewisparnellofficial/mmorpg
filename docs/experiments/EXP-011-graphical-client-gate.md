@@ -189,15 +189,41 @@ or renderer-quality acceptance gate.
   authoritative healer recovery of the tank, three quest kills with
   retryable loot, quest turn-in, and two enemy respawn generations. This does
   not substitute for the graphical run.
+- **Explicit debug renderer gate (2026-09-12):** The new focused renderer
+  smoke requested `--render-backend vulkan` on the documented Wayland host
+  with `VK_LAYER_LSFGVK_frame_generation` disabled. Bevy selected an NVIDIA
+  GeForce RTX 5070 through Vulkan; the current host reported driver
+  `615.71.09`, kernel `7.2.4-3-cachyos`, and the client loaded `Greenfield`.
+  The complete unfiltered client log remains available when the smoke fails.
+  The run reproduced three `VK_IMAGE_LAYOUT_UNDEFINED` present reports and
+  three `vkAcquireNextImageKHR` already-signaled semaphore reports. Its
+  bounded debug frame-time report was `samples=165 p50_ms=29.737
+  p95_ms=35.810 p99_ms=40.942 max_ms=61.282`, exceeding both fixed limits.
+  This is a reproducible failure of the debug renderer gate, not an accepted
+  limitation or a passing renderer result.
+- **Renderer-smoke tightening (2026-09-12):** The optimized release smoke
+  now requests explicit Vulkan instead of automatic backend selection. It
+  passed on the same host with `samples=1625 p50_ms=3.035 p95_ms=3.692
+  p99_ms=4.126 max_ms=4.920` and no matching renderer or loader diagnostics.
+  This confirms a clean optimized startup path but does not clear the debug
+  Vulkan result above.
+- **Post-change graphical regression (2026-09-12):** The graphical
+  three-role smoke passed purchase, quest, tank, healer, combat, loot,
+  recovery, and stranger-privacy checks. The graphical restart-persistence
+  smoke passed the purchase and rewarded-quest restore check. These are
+  presentation/integration regressions; neither test is used as evidence
+  that the debug Vulkan renderer is correct.
 
 ## Interpretation
 
 The client shell, bounded graphical role encounter, three-window restart
 reconnect, and graphical slow-peer survival now have repeatable local
-evidence. This is still not a passing Milestone 13 result: Vulkan validation
-errors require investigation before using this environment for a
-renderer-quality acceptance record; graphical frame-time and physical
-renderer-quality evidence remain unverified.
-The headless harness still provides the stronger privacy, retry, persistence,
-and respawn evidence; it does not substitute for those remaining graphical
-scenarios.
+evidence. The focused explicit debug renderer gate makes the remaining
+failure concrete: the current NVIDIA/Wayland host still reports Vulkan
+swapchain layout and acquire-semaphore validation errors and misses the
+debug frame-time bounds. The optimized release path passes its bounded
+frame-time check, but that is not a substitute for debug renderer evidence.
+This is still not a passing Milestone 13 result, and no host limitation has
+been owner-approved. The headless harness still provides the stronger
+privacy, retry, persistence, and respawn evidence; it does not substitute
+for the remaining renderer-quality disposition.

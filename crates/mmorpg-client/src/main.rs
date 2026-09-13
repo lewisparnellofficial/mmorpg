@@ -77,14 +77,18 @@ impl RenderBackendChoice {
             Self::Gl => "gl",
         }
     }
+
+    fn backends(self) -> Option<Backends> {
+        match self {
+            Self::Automatic => None,
+            Self::Vulkan => Some(Backends::VULKAN),
+            Self::Gl => Some(Backends::GL),
+        }
+    }
 }
 
 fn render_plugin(choice: RenderBackendChoice) -> RenderPlugin {
-    let Some(backends) = (match choice {
-        RenderBackendChoice::Automatic => None,
-        RenderBackendChoice::Vulkan => Some(Backends::VULKAN),
-        RenderBackendChoice::Gl => Some(Backends::GL),
-    }) else {
+    let Some(backends) = choice.backends() else {
         return RenderPlugin::default();
     };
     RenderPlugin {
@@ -2424,6 +2428,13 @@ mod tests {
         );
         assert_eq!(RenderBackendChoice::parse("metal"), None);
         assert_eq!(RenderBackendChoice::Gl.label(), "gl");
+    }
+
+    #[test]
+    fn render_backend_selector_keeps_automatic_and_explicit_masks_distinct() {
+        assert_eq!(RenderBackendChoice::Automatic.backends(), None);
+        assert_eq!(RenderBackendChoice::Vulkan.backends(), Some(Backends::VULKAN));
+        assert_eq!(RenderBackendChoice::Gl.backends(), Some(Backends::GL));
     }
 
     #[test]

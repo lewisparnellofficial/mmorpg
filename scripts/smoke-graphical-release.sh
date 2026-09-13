@@ -32,6 +32,7 @@ VK_LOADER_LAYERS_DISABLE=VK_LAYER_LSFGVK_frame_generation \
 WINIT_UNIX_BACKEND=wayland timeout 10s \
     "$repo_root/crates/mmorpg-client/target/release/mmorpg-client" \
     127.0.0.1:4830 --wire-address 127.0.0.1:4831 --character-id 1 \
+    --render-backend vulkan \
     --frame-time-stats \
     >"$client_log" 2>&1
 client_status=$?
