@@ -2,7 +2,7 @@
 id = "ISSUE-001"
 type = "experiment"
 title = "Close the physical Wayland tablet editor gate"
-status = "ready"
+status = "blocked"
 priority = "P1"
 owner = ""
 created = "2026-09-12"
@@ -137,14 +137,31 @@ The issue closes with either accepted physical evidence or a documented hardware
   `eraser` and completed a real eraser press/motion/release lifecycle. Raised
   pen hover generated motion without terrain input, but still produced no
   explicit Qt proximity-enter/leave events.
+- Moved to `docs/issues/blocked/` after the physical and raw-input audits
+  established that this Qt/Wayland setup exposes hover motion and eraser
+  identity but no proximity-enter/leave lifecycle signal.
 
 ## Completion report
 
-- Result:
-- Commit(s):
-- Changed files:
-- Tests and validation run:
-- Acceptance criteria not met:
-- Follow-up issues:
-- Known limitations:
-- Integration notes:
+- Result: Blocked. The physical pen path is functional and the eraser,
+  pressure, routing, timing, capture, replay, and focus-loss behavior are
+  evidenced, but explicit physical proximity enter/leave is unavailable from
+  the current Qt/Wayland input path.
+- Commit(s): `388fd83`
+- Changed files: `tools/mmorpg-editor-qt/main.cpp`,
+  `tools/mmorpg-editor-qt/Main.qml`, `tools/mmorpg-editor-qt/README.md`,
+  `docs/experiments/EXP-007-qt-tablet-shell.md`, and this issue record.
+- Tests and validation run: Qt Release configure/build,
+  `./scripts/smoke-editor-bridge.sh`, physical Wacom runs, lifecycle CSV
+  capture, and filtered raw monitoring of `/dev/input/event27`.
+- Acceptance criteria not met: explicit proximity enter/leave observation.
+- Follow-up issues: `ISSUE-009` — investigate a Wayland-native tablet
+  proximity source and backend strategy.
+- Known limitations: normal pen hover motion is visible and eraser identity is
+  available, but the current device/backend does not expose a usable physical
+  proximity transition to Qt. The abnormal `press → proximity-leave` path is
+  covered conceptually but still needs a deterministic boundary test.
+- Integration notes: editor feature work may proceed behind the existing
+  device-neutral bridge. Do not claim the complete physical tablet gate or
+  accept `ISSUE-004` until ISSUE-009 resolves the proximity question or the
+  project owner explicitly accepts the platform limitation.
