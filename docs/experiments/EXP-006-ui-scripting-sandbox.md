@@ -71,6 +71,7 @@ cargo fmt --manifest-path experiments/ui-scripting/Cargo.toml -- --check
 cargo test --manifest-path experiments/ui-scripting/Cargo.toml
 cargo run --quiet --manifest-path experiments/ui-scripting/Cargo.toml
 ./scripts/smoke-ui-adversarial.sh
+# Optional modeled resource-envelope check; not part of validate-all.sh.
 ./scripts/smoke-ui-constrained.sh
 ./scripts/smoke-ui-process-isolation.sh
 ./scripts/smoke-client-addon-process.sh

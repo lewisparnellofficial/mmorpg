@@ -77,9 +77,9 @@ or renderer-quality acceptance gate.
   for all three requested characters. This verifies the bounded worker
   reconnect path while the clients remain alive; it does not verify durable
   world state across the process restart.
-- **Aggregate gate:** `scripts/validate-all.sh` now invokes the three-window
-  reconnect smoke after the renderer-active gameplay and role smokes, so the
-  reconnect evidence is part of the repeatable graphical validation boundary.
+- **Aggregate gate:** `scripts/validate-all.sh` invokes the three-role gameplay
+  smoke and the three-window reconnect smoke as the repeatable graphical
+  gameplay/startup validation boundary.
 - **Optimized release smoke:** `scripts/validate-all.sh` also runs
   `scripts/smoke-graphical-release.sh`. It builds the release client, forces
   the Wayland backend, disables the known-broken optional Lossless Scaling
@@ -98,13 +98,13 @@ or renderer-quality acceptance gate.
   verified that the graphical client remained alive after loading `Greenfield`.
   This is a client-survival smoke, not a renderer frame-time or production
   backpressure measurement.
-- **Measured renderer-active result:** The standalone graphical gameplay smoke
-  launched a real Bevy window with `--acceptance-smoke` and observed
-  authoritative vendor purchase, quest acceptance, movement into range, three
-  enemy defeats, three loot rewards, and quest turn-in through the normal typed
-  worker and presentation adapter. Vulkan validation errors were still present
-  on this host; this is gameplay/presentation evidence, not renderer-quality
-  acceptance evidence.
+- **Measured renderer-active result:** The graphical three-role smoke launched
+  real Bevy windows with `--acceptance-smoke` and observed authoritative vendor
+  purchase, quest acceptance, movement into range, three enemy defeats, three
+  loot rewards, and quest turn-in through the normal typed worker and
+  presentation adapter. Vulkan validation errors were still present on this
+  host; this is gameplay/presentation evidence, not renderer-quality acceptance
+  evidence.
 - **Measured renderer-active role result:** The graphical three-role smoke
   launched three real Bevy clients concurrently and observed the damage
   character's purchase, quest, combat, loot, and turn-in flow, plus the tank's

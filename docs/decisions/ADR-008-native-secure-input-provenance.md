@@ -100,8 +100,8 @@ The decision is accepted for the current development slice based on:
 - UI-scripting tests proving protected actions are absent from the script
   API, addon handles cannot cross ownership boundaries, callbacks roll back,
   and the default UI remains isolated from addon failures.
-- Aggregate graphical gameplay and three-role validation passing through the
-  typed wire/server-authority boundary on 2026-09-09.
+- Aggregate three-role graphical gameplay validation passing through the typed
+  wire/server-authority boundary on 2026-09-09.
 
 ## Conditions for revisiting
 

@@ -98,7 +98,10 @@ outside the player-addon threat model.
   fresh host that completes the same lifecycle.
 - `scripts/smoke-ui-constrained.sh` records a one-core/1-GiB modeled profile;
   it is explicitly not minimum-hardware evidence.
-- The aggregate validation passes with these checks included.
+- The normal aggregate validation includes the deterministic adversarial and
+  process-isolation checks. The constrained one-core/1-GiB run remains an
+  explicit modeled resource-envelope check rather than a default aggregate
+  gate.
 
 ## Conditions for acceptance or revision
 
