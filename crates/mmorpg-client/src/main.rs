@@ -65,6 +65,7 @@ fn main() {
     };
     let ClientConfig {
         typed_address,
+        auth_token,
         preferred_character_id,
         addon_root,
         addon_process_host,
@@ -101,6 +102,7 @@ fn main() {
     let (event_tx, event_rx) = mpsc::channel();
     spawn_wire_network_worker(
         typed_address.clone(),
+        auth_token,
         preferred_character_id,
         command_rx,
         event_tx,
@@ -394,7 +396,13 @@ mod tests {
 
         let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let (event_tx, event_rx) = mpsc::channel();
-        spawn_wire_network_worker(address, Some(7), command_rx, event_tx);
+        spawn_wire_network_worker(
+            address,
+            DEV_AUTH_TOKEN.to_owned(),
+            Some(7),
+            command_rx,
+            event_tx,
+        );
 
         let character_list = wait_for_test_character_list(&event_rx);
         assert_eq!(character_list[0].character_id, 7);

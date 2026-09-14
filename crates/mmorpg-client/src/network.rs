@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) fn spawn_wire_network_worker(
     server_address: String,
+    auth_token: String,
     preferred_character_id: Option<u64>,
     command_rx: Receiver<ClientCommand>,
     event_tx: Sender<NetworkEvent>,
@@ -64,10 +65,8 @@ pub(crate) fn spawn_wire_network_worker(
                 return;
             }
             let mut outgoing = VecDeque::<Vec<u8>>::new();
-            let mut session = TypedSession::with_content_digest(
-                DEV_AUTH_TOKEN,
-                starter_catalog().content_digest(),
-            );
+            let mut session =
+                TypedSession::with_content_digest(&auth_token, starter_catalog().content_digest());
             queue_session_outputs(&mut outgoing, session.handle(SessionInput::Connect));
             let mut incoming = Vec::new();
 

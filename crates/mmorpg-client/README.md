@@ -28,6 +28,26 @@ cargo check --manifest-path crates/mmorpg-client/Cargo.toml
 cargo run --manifest-path crates/mmorpg-client/Cargo.toml
 ```
 
+The client follows the same sequence as normal play: authenticate the account,
+receive its character list, select a character, pass the content check, enter
+the world, and apply the authoritative bootstrap snapshot. For repeatable
+local testing, the graphical client supports these startup options:
+
+```text
+<server-address>                 typed server address (default 127.0.0.1:4000)
+--token <value>                  development authentication token
+--character-id <id>              select this listed character automatically
+--acceptance-smoke               run the bounded starter loop after world entry
+```
+
+`--token` is an account-login fixture in the loopback-only development server;
+the server derives the authenticated account from it. `--character-id` only
+selects an entry returned by the authenticated character list and cannot bind
+an arbitrary character. Omitting `--character-id` keeps the interactive
+character-selection prompt. All of these options use the normal typed session
+state machine and do not bypass authentication, content compatibility, or
+server authorization.
+
 The default connection is typed wire. To use a second typed listener during
 staged smoke testing, pass it with `--wire-address`:
 

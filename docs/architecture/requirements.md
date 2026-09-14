@@ -44,6 +44,42 @@ The first vertical slice should contain:
 
 The first slice does not need to include raids, battlegrounds, guilds, an auction house, professions, or a complete MMORPG feature set.
 
+## Intended player login experience
+
+The normal client journey is:
+
+1. The player launches the Linux client and supplies or enters account
+   authentication information.
+2. The client authenticates the account and receives the server-authoritative
+   list of characters available to that account.
+3. The player selects a character from that list.
+4. The client performs the content-compatibility and world-entry steps for the
+   selected character.
+5. The client receives an authoritative bootstrap snapshot and presents the
+   character in the game world.
+
+The client must not treat a character ID or account ID supplied locally as
+proof of ownership. IDs are selection and testing inputs; the server resolves
+the authenticated account, validates character ownership, and authorizes
+world entry.
+
+For local development and repeatable testing, the graphical client should
+provide command-line options for:
+
+- the server address;
+- the development authentication token or equivalent account-login fixture;
+- automatic selection of a specific character from the authenticated
+  character list; and
+- an opt-in acceptance-smoke mode that automatically exercises the post-entry
+  starter loop.
+
+These flags are test and development conveniences. They must drive the same
+authentication, character-list, character-selection, content-check, and
+world-entry state machine as interactive use; they must not create a bypass
+around authentication or server validation. Production account credentials
+and account-selection semantics remain separate from the local development
+token fixture.
+
 ## Technology constraints
 
 - The server should be written in Rust.

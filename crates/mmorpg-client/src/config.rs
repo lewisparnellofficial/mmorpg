@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) struct ClientConfig {
     pub(crate) typed_address: String,
+    pub(crate) auth_token: String,
     pub(crate) preferred_character_id: Option<u64>,
     pub(crate) addon_root: Option<String>,
     pub(crate) addon_process_host: Option<String>,
@@ -18,6 +19,8 @@ impl ClientConfig {
             .next()
             .unwrap_or_else(|| DEFAULT_SERVER_ADDRESS.to_owned());
         let mut wire_address = None;
+        let mut auth_token = DEV_AUTH_TOKEN.to_owned();
+        let mut auth_token_set = false;
         let mut preferred_character_id = None;
         let mut addon_root = None;
         let mut addon_process_host = None;
@@ -27,6 +30,22 @@ impl ClientConfig {
         let mut render_backend = RenderBackendChoice::Automatic;
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
+                "--token" => {
+                    if auth_token_set {
+                        eprintln!("--token may only be specified once");
+                        return None;
+                    }
+                    let Some(value) = arguments.next() else {
+                        eprintln!("--token requires a value");
+                        return None;
+                    };
+                    if value.is_empty() {
+                        eprintln!("--token requires a non-empty value");
+                        return None;
+                    }
+                    auth_token = value;
+                    auth_token_set = true;
+                }
                 "--wire-address" => {
                     if wire_address.is_some() {
                         eprintln!("--wire-address may only be specified once");
@@ -119,6 +138,7 @@ impl ClientConfig {
         println!("render_backend_request={}", render_backend.label());
         Some(Self {
             typed_address,
+            auth_token,
             preferred_character_id,
             addon_root,
             addon_process_host,
